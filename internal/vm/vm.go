@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -47,6 +48,7 @@ type ExecutionProgress struct {
 type frame struct {
 	functionID   int
 	instructions code.Instructions
+	decoded      []decodedInstruction
 	ip           int
 	base         int
 	upvalues     []*value.Cell
@@ -55,16 +57,19 @@ type frame struct {
 
 // VM 执行 Mio 字节码
 type VM struct {
-	bytecode  *compiler.Bytecode
-	stack     []value.Value
-	frames    []frame
-	globals   []value.Value
-	output    io.Writer
-	registry  *mma.ModuleRegistry
-	native    []nativeBinding
-	resources *mma.ResourceManager
-	bound     bool
-	validated bool
+	bytecode         *compiler.Bytecode
+	stack            []value.Value
+	frames           []frame
+	globals          []value.Value
+	output           io.Writer
+	registry         *mma.ModuleRegistry
+	native           []nativeBinding
+	resources        *mma.ResourceManager
+	bound            bool
+	decodedBytecode  *compiler.Bytecode
+	mainDecoded      []decodedInstruction
+	functionsDecoded [][]decodedInstruction
+	decodedSources   []code.Instructions
 
 	lastPopped    value.Value
 	hasLastPopped bool
@@ -144,16 +149,25 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 		}
 		v.bound = true
 	}
-	if !v.validated {
-		if err := validateInstructionBoundaries(v.bytecode.Instructions); err != nil {
+	if !v.decodingMatches() {
+		main, err := decodeInstructions(v.bytecode.Instructions)
+		if err != nil {
 			return fmt.Errorf("main instructions: %w", err)
 		}
-		for index, function := range v.bytecode.Functions {
-			if err := validateInstructionBoundaries(function.Instructions); err != nil {
+		functions := make([][]decodedInstruction, len(v.bytecode.Functions))
+		for index := range v.bytecode.Functions {
+			functions[index], err = decodeInstructions(v.bytecode.Functions[index].Instructions)
+			if err != nil {
 				return fmt.Errorf("function %d instructions: %w", index, err)
 			}
 		}
-		v.validated = true
+		v.mainDecoded, v.functionsDecoded = main, functions
+		v.decodedBytecode = v.bytecode
+		v.decodedSources = make([]code.Instructions, len(functions)+1)
+		v.decodedSources[0] = bytes.Clone(v.bytecode.Instructions)
+		for index := range functions {
+			v.decodedSources[index+1] = bytes.Clone(v.bytecode.Functions[index].Instructions)
+		}
 	}
 
 	if cap(v.globals) < v.bytecode.GlobalsCount {
@@ -162,12 +176,13 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 		v.globals = v.globals[:v.bytecode.GlobalsCount]
 		clear(v.globals)
 	}
-	v.frames = append(v.frames[:0], frame{functionID: -1, instructions: v.bytecode.Instructions})
+	v.frames = append(v.frames[:0], frame{functionID: -1, instructions: v.bytecode.Instructions, decoded: v.mainDecoded})
 
 	ctx := options.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	done := ctx.Done()
 	limit := options.InstructionLimit
 	if limit == 0 {
 		limit = DefaultInstructionLimit
@@ -176,7 +191,6 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 	if options.InstructionCount != nil {
 		defer func() { *options.InstructionCount = executed }()
 	}
-	var operands [2]int
 
 	for len(v.frames) > 0 {
 		frameIndex := len(v.frames) - 1
@@ -194,10 +208,12 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 		if current.ip < 0 || current.ip > len(current.instructions) {
 			return fmt.Errorf("instruction pointer %d out of range", current.ip)
 		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("execution interrupted: %w", ctx.Err())
-		default:
+		if done != nil {
+			select {
+			case <-done:
+				return fmt.Errorf("execution interrupted: %w", ctx.Err())
+			default:
+			}
 		}
 		if executed >= limit {
 			return fmt.Errorf("instruction limit %d exceeded", limit)
@@ -211,19 +227,10 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 			}
 			options.Progress(ExecutionProgress{Instructions: executed, Function: function, Offset: ip})
 		}
-		op := code.Opcode(current.instructions[ip])
-		def, err := code.Lookup(op)
-		if err != nil {
-			return fmt.Errorf("at offset %d: %w", ip, err)
-		}
-		read := 0
-		if len(def.OperandWidths) != 0 {
-			read, err = code.ReadOperandsInto(def, current.instructions[ip+1:], operands[:len(def.OperandWidths)])
-			if err != nil {
-				return fmt.Errorf("at offset %d: %w", ip, err)
-			}
-		}
-		nextIP := ip + 1 + read
+		instruction := &current.decoded[ip]
+		op := instruction.op
+		operands := instruction.operands
+		nextIP := instruction.next
 
 		switch op {
 		case code.OpConstant:
@@ -254,7 +261,7 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 			}
 
 		case code.OpAdd, code.OpSub, code.OpMul, code.OpDiv:
-			if err := v.executeArithmetic(op, def.Name, ip); err != nil {
+			if err := v.executeArithmetic(op, opcodeNames[op], ip); err != nil {
 				return err
 			}
 
@@ -680,7 +687,7 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 			v.stack[len(v.stack)-1] = value.NewInt(int64(length))
 
 		case code.OpSetIndex, code.OpSetNullableIndex:
-			name := def.Name
+			name := opcodeNames[op]
 			if len(v.stack)-v.operandBase() < 3 {
 				return fmt.Errorf("stack underflow for %s at %d", name, ip)
 			}
@@ -757,9 +764,9 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 
 		case code.OpEqual, code.OpNotEqual, code.OpLess, code.OpLessEqual, code.OpGreater, code.OpGreaterEqual:
 			if len(v.stack)-v.operandBase() < 2 {
-				return fmt.Errorf("stack underflow for %s at %d", def.Name, ip)
+				return fmt.Errorf("stack underflow for %s at %d", opcodeNames[op], ip)
 			}
-			if err := v.executeComparison(op, def.Name); err != nil {
+			if err := v.executeComparison(op, opcodeNames[op]); err != nil {
 				return fmt.Errorf("at offset %d: %w", ip, err)
 			}
 
@@ -835,7 +842,7 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 			if functionID < 0 || functionID >= len(v.bytecode.Functions) {
 				return fmt.Errorf("FunctionID %d out of range at %d", functionID, ip)
 			}
-			function := v.bytecode.Functions[functionID]
+			function := &v.bytecode.Functions[functionID]
 			cells := make([]*value.Cell, len(function.Captures))
 			for i, capture := range function.Captures {
 				if capture.Local {
@@ -902,7 +909,7 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 			if current.functionID < 0 {
 				return fmt.Errorf("OpReturn outside function at %d", ip)
 			}
-			function := v.bytecode.Functions[current.functionID]
+			function := &v.bytecode.Functions[current.functionID]
 			if function.ReturnsValue {
 				return fmt.Errorf("function %d returned without a value at %d", current.functionID, ip)
 			}
@@ -917,7 +924,7 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 			if current.functionID < 0 {
 				return fmt.Errorf("OpReturnValue outside function at %d", ip)
 			}
-			function := v.bytecode.Functions[current.functionID]
+			function := &v.bytecode.Functions[current.functionID]
 			if !function.ReturnsValue {
 				return fmt.Errorf("unit function %d returned a value at %d", current.functionID, ip)
 			}
@@ -937,7 +944,7 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 			continue
 
 		default:
-			return fmt.Errorf("unsupported opcode %s at %d", def.Name, ip)
+			return fmt.Errorf("unsupported opcode %s at %d", opcodeNames[op], ip)
 		}
 
 		v.frames[frameIndex].ip = nextIP
@@ -1089,7 +1096,43 @@ func (v *VM) resetExecutionState() {
 	v.hasLastPopped = false
 }
 
-func validateInstructionBoundaries(instructions code.Instructions) error {
+// decodedInstruction retains original byte offsets, so jumps, budgets and
+// diagnostics still refer to Mochi instructions. No instructions are fused.
+type decodedInstruction struct {
+	operands [2]int
+	next     int
+	op       code.Opcode
+}
+
+var opcodeNames = func() [256]string {
+	var names [256]string
+	for index := range names {
+		if definition, err := code.Lookup(code.Opcode(index)); err == nil {
+			names[index] = definition.Name
+		}
+	}
+	return names
+}()
+
+// Check between runs so callers can replace or edit a bytecode program without
+// executing stale operands. Concurrent mutation during Run is unsupported.
+func (v *VM) decodingMatches() bool {
+	if v.decodedBytecode != v.bytecode || len(v.decodedSources) != len(v.bytecode.Functions)+1 {
+		return false
+	}
+	if !bytes.Equal(v.decodedSources[0], v.bytecode.Instructions) {
+		return false
+	}
+	for index := range v.bytecode.Functions {
+		if !bytes.Equal(v.decodedSources[index+1], v.bytecode.Functions[index].Instructions) {
+			return false
+		}
+	}
+	return true
+}
+
+func decodeInstructions(instructions code.Instructions) ([]decodedInstruction, error) {
+	decoded := make([]decodedInstruction, len(instructions))
 	boundaries := make([]bool, len(instructions)+1)
 	boundaries[len(instructions)] = true
 	type jumpReference struct {
@@ -1104,27 +1147,28 @@ func validateInstructionBoundaries(instructions code.Instructions) error {
 		op := code.Opcode(instructions[offset])
 		definition, err := code.Lookup(op)
 		if err != nil {
-			return fmt.Errorf("at offset %d: %w", offset, err)
+			return nil, fmt.Errorf("at offset %d: %w", offset, err)
 		}
 		read, err := code.ReadOperandsInto(definition, instructions[offset+1:], operands[:len(definition.OperandWidths)])
 		if err != nil {
-			return fmt.Errorf("at offset %d: %w", offset, err)
+			return nil, fmt.Errorf("at offset %d: %w", offset, err)
 		}
 		if op == code.OpJump || op == code.OpJumpIfFalse {
 			jumps = append(jumps, jumpReference{offset: offset, target: operands[0]})
 		}
+		decoded[offset] = decodedInstruction{op: op, operands: operands, next: offset + 1 + read}
 		offset += 1 + read
 	}
 
 	for _, jump := range jumps {
 		if jump.target < 0 || jump.target >= len(boundaries) {
-			return fmt.Errorf("jump target %d out of range at %d", jump.target, jump.offset)
+			return nil, fmt.Errorf("jump target %d out of range at %d", jump.target, jump.offset)
 		}
 		if !boundaries[jump.target] {
-			return fmt.Errorf("jump target %d is not an instruction boundary at %d", jump.target, jump.offset)
+			return nil, fmt.Errorf("jump target %d is not an instruction boundary at %d", jump.target, jump.offset)
 		}
 	}
-	return nil
+	return decoded, nil
 }
 
 func (v *VM) push(item value.Value) error {
@@ -1410,7 +1454,7 @@ func (v *VM) getGlobal(index int, ip int) error {
 }
 
 func (v *VM) setLocal(current *frame, index int, ip int, fresh bool) error {
-	function := v.bytecode.Functions[current.functionID]
+	function := &v.bytecode.Functions[current.functionID]
 	if index < 0 || index >= function.LocalCount {
 		return fmt.Errorf("local slot %d out of range at %d", index, ip)
 	}
@@ -1430,7 +1474,7 @@ func (v *VM) setLocal(current *frame, index int, ip int, fresh bool) error {
 }
 
 func (v *VM) getLocal(current *frame, index int, ip int) error {
-	function := v.bytecode.Functions[current.functionID]
+	function := &v.bytecode.Functions[current.functionID]
 	if index < 0 || index >= function.LocalCount {
 		return fmt.Errorf("local slot %d out of range at %d", index, ip)
 	}
@@ -1456,7 +1500,7 @@ func (v *VM) callClosure(functionID int, upvalues []*value.Cell, ip int) error {
 	if len(v.frames)-1 >= MaxCallDepth {
 		return fmt.Errorf("call depth limit %d exceeded", MaxCallDepth)
 	}
-	function := v.bytecode.Functions[functionID]
+	function := &v.bytecode.Functions[functionID]
 	if len(v.stack)-v.operandBase() < function.ParameterCount {
 		return fmt.Errorf("stack underflow for OpCall at %d", ip)
 	}
@@ -1489,7 +1533,7 @@ func (v *VM) callClosure(functionID int, upvalues []*value.Cell, ip int) error {
 	if len(upvalues) != len(function.Captures) {
 		return fmt.Errorf("function %d requires %d captures, got %d at %d", functionID, len(function.Captures), len(upvalues), ip)
 	}
-	v.frames = append(v.frames, frame{functionID: functionID, instructions: function.Instructions, base: base, upvalues: upvalues})
+	v.frames = append(v.frames, frame{functionID: functionID, instructions: function.Instructions, decoded: v.functionsDecoded[functionID], base: base, upvalues: upvalues})
 	return nil
 }
 
@@ -1668,7 +1712,7 @@ func fromMMAValue(input mma.Value) (value.Value, error) {
 
 // captureLocal 获取或创建局部变量的共享 Cell
 func (v *VM) captureLocal(current *frame, index int, ip int) (*value.Cell, error) {
-	function := v.bytecode.Functions[current.functionID]
+	function := &v.bytecode.Functions[current.functionID]
 	if index < 0 || index >= function.LocalCount {
 		return nil, fmt.Errorf("local capture index %d out of range at %d", index, ip)
 	}
@@ -1691,7 +1735,7 @@ func (v *VM) operandBase() int {
 	if len(v.frames) == 0 {
 		return 0
 	}
-	current := v.frames[len(v.frames)-1]
+	current := &v.frames[len(v.frames)-1]
 	if current.functionID < 0 {
 		return 0
 	}
