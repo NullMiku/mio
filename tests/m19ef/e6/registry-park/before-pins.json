@@ -1,0 +1,12 @@
+{
+  "factory_sha256": "0f5b029050ed28aefd47a637c0e23145c06a2915c278094a816bc1fc8ab6f350",
+  "native_signed_sha256": {
+    "0": "e0c1e7d2b9c62a92311fbe45c3b4a9fc25c1c78963776db823208f1f440faa15",
+    "1": "db8038bda9481cc8818db975d3aadc4bc0df9ce20310172ae847ee2dae03e244",
+    "2": "1369e1668f8f7a70e6f7ca10bf82ed84dcfcfaf42784415006f4063f6326b5d9",
+    "3": "fbe08fd00b868952a6389047a0bc50ff2d8c6752ddbd996671050f9a82dadc6b"
+  },
+  "park_factory_sha256": "49afdfaa1c82a7ee9ac5599ff829b42acebc79fb191c58334acad89daf5156d9",
+  "resume_native_signed_sha256": "ad408e319b0eaa32e6f0c5b46bff1bc37c432eb20ae0a2c7b2428b88a29d3929",
+  "source": "preserved deterministic before-native packets, E6-registry-park-before-20261103-01"
+}

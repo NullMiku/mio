@@ -1,0 +1,21 @@
+waza registry_lock_program(cooperative:bool) -> ir.Function {
+    kaku f=ir.function("registry_lock");tprepare(f);ir.invoke_function(f,"platform_now",4,[]);ir.branch(f,ir.zero,4,"timeout");tconstant(f,6,1000000000);ir.put(f,ir.copy,8,4,0,0);ir.put(f,ir.add,4,4,6,0);ir.put(f,ir.less_unsigned,8,4,8,0);ir.branch(f,ir.nonzero,8,"timeout");
+    // Cooperative registry acquisition distinguishes real GC progress from
+    // a stalled lock. A gc_poll may legitimately park beyond the soft1s
+    // deadline; renewing only on a changed heartbeat avoids false failure.
+    // The independent30s ceiling still bounds starvation under continuous GC.
+    moshi(cooperative){tload(f,10,thread_registry);ir.put(f,ir.acquire_load,11,10,0,gc_registry_heartbeat);tconstant(f,12,29000000000);ir.put(f,ir.add,12,4,12,0);ir.put(f,ir.less_unsigned,7,12,4,0);ir.branch(f,ir.nonzero,7,"timeout");}
+    tload(f,2,thread_registry);ir.put(f,ir.address,2,2,0,40);tconstant(f,3,1);tconstant(f,5,0);
+    ir.branch(f,ir.label,0,"retry");array.push(f.steps,ir.Step {kind:ir.compare_exchange,destination:1,left:2,right:3,immediate:0,name:"",arguments:[5],order:acq_rel,failure_order:acquire});ir.branch(f,ir.zero,1,"acquired");
+    moshi(cooperative){tload(f,9,thread_registered);ir.branch(f,ir.zero,9,"not_registered");tload(f,9,thread_shadow);ir.invoke_function(f,"gc_poll",1,[0,9]);ir.branch(f,ir.nonzero,1,"poll_failed");ir.branch(f,ir.label,0,"not_registered");}
+    ir.invoke_function(f,"platform_now",6,[]);ir.branch(f,ir.zero,6,"timeout");
+    moshi(cooperative){
+        ir.put(f,ir.less_unsigned,7,6,12,0);ir.branch(f,ir.zero,7,"timeout");
+        ir.put(f,ir.acquire_load,13,10,0,gc_registry_heartbeat);ir.put(f,ir.equal,14,13,11,0);ir.branch(f,ir.nonzero,14,"no_registry_progress");
+        ir.put(f,ir.copy,11,13,0,0);tconstant(f,14,1000000000);ir.put(f,ir.add,4,6,14,0);ir.put(f,ir.less_unsigned,7,4,6,0);ir.branch(f,ir.nonzero,7,"timeout");
+        ir.branch(f,ir.label,0,"no_registry_progress");
+    }
+    ir.put(f,ir.less_unsigned,7,6,4,0);ir.branch(f,ir.nonzero,7,"retry");
+    ir.branch(f,ir.label,0,"timeout");treturn(f,2);
+    ir.branch(f,ir.label,0,"acquired");treturn(f,0);ir.branch(f,ir.label,0,"poll_failed");ir.put(f,ir.result,0,1,0,0);kaesu f;
+}

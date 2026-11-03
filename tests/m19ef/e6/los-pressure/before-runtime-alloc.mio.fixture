@@ -1,0 +1,75 @@
+waza emit_runtime_alloc(code: arm64.Assembler, gc_stress: bool, observation: bool) -> unit {
+    kaku name="runtime_alloc";moshi(worker_roots_enabled(code)){name="runtime_alloc_legacy";}
+    arm64.assembler_label(code, name);
+    emit(code, arm64.stp_pre_x(29, 30, 31, -16)); emit(code, arm64.add_imm_x(29, 31, 0, iie));
+    emit(code, arm64.stp_pre_x(19, 20, 31, -16)); emit(code, arm64.stp_pre_x(21, 22, 31, -16));
+    move_x(code, 19, 0); move_x(code, 20, 1); emit(code, arm64.movz_x(21, 0, 0));
+    move_bits(code, 9, uint32(0), uint32(runtime_max_heap_bytes));
+    emit(code, arm64.cmp_x(19, 9)); arm64.assembler_b_cond(code, 8, "runtime_alloc_fail");
+    moshi (gc_stress) {
+        moshi(old_mark_proto_enabled(code)){
+            arm64.assembler_bl(code,"old_stress_minor");arm64.assembler_cbz_x(code,9,"runtime_stress_major");arm64.assembler_bl(code,"gen_minor");arm64.assembler_b(code,"runtime_stress_collected");arm64.assembler_label(code,"runtime_stress_major");
+        }
+        arm64.assembler_bl(code,"runtime_collect");
+        moshi(old_mark_proto_enabled(code)){arm64.assembler_label(code,"runtime_stress_collected");}
+        emit(code,arm64.movz_x(21,1,0));
+    }
+    arm64.assembler_bl(code,"memory_sample");
+    arm64.assembler_label(code, "runtime_alloc_retry");
+    emit(code, arm64.add_imm_x(9, 19, 31, iie)); emit(code, arm64.movn_x(10, 15, 0)); emit(code, arm64.and_x(22, 9, 10));
+    emit(code,arm64.ldr_x(10,23,304)); emit(code,arm64.add_x(10,10,22)); emit(code,arm64.ldr_x(9,23,8)); emit(code,arm64.add_imm_x(11,23,3072,iie)); emit(code,arm64.sub_x(9,9,11)); emit(code,arm64.cmp_x(10,9)); arm64.assembler_b_cond(code,8,"los_alloc_exhausted");
+    emit(code,arm64.ldr_x(9,23,memory_ObjectLimit)); emit(code,arm64.cmp_x(10,9)); arm64.assembler_b_cond(code,8,"los_alloc_exhausted");
+    emit(code,arm64.ldr_x(9,23,memory_Goal)); emit(code,arm64.cmp_x(10,9)); arm64.assembler_b_cond(code,8,"los_alloc_exhausted");
+    emit(code,arm64.ldr_x(10,23,los_Threshold)); arm64.assembler_cbnz_x(code,10,"los_threshold_ready");
+    move_bits(code,10,uint32(0),uint32(131072)); arm64.assembler_label(code,"los_threshold_ready"); emit(code,arm64.cmp_x(22,10)); arm64.assembler_b_cond(code,3,"los_alloc_small");
+    arm64.assembler_bl(code,"los_alloc"); arm64.assembler_cbnz_x(code,0,"runtime_alloc_done"); arm64.assembler_b(code,"los_alloc_exhausted");
+    arm64.assembler_label(code,"los_alloc_small");
+    move_x(code,0,23); emit(code,arm64.add_imm_x(1,23,3072,iie)); emit(code,arm64.ldr_x(2,23,8)); emit(code,arm64.sub_x(3,2,1)); emit(code,arm64.ldr_x(4,23,0)); emit(code,arm64.sub_x(4,4,1)); emit(code,arm64.add_x(4,4,22)); emit(code,arm64.movz_x(5,0,0)); arm64.assembler_bl(code,"memory.commit"); arm64.assembler_cbz_x(code,0,"los_alloc_exhausted");
+    emit(code, arm64.lsr_x(11, 22, 4)); emit(code, arm64.cmp_imm_x(11, 31, iie));
+    arm64.assembler_b_cond(code, 3, "runtime_alloc_class_ok"); arm64.assembler_b_cond(code, 0, "runtime_alloc_class_ok"); emit(code, arm64.movz_x(11, 31, 0));
+    arm64.assembler_label(code, "runtime_alloc_class_ok");
+    arm64.assembler_label(code, "runtime_alloc_bin");
+    emit(code, arm64.lsl_x(9, 11, 3)); emit(code, arm64.add_imm_x(12, 23, 24, iie)); emit(code, arm64.add_x(12, 12, 9));
+    arm64.assembler_label(code, "runtime_alloc_free");
+    emit(code, arm64.ldr_x(13, 12, 0)); arm64.assembler_cbz_x(code, 13, "runtime_alloc_next_bin");
+    emit(code, arm64.ldr_x(14, 13, 8)); emit(code, arm64.cmp_x(14, 19)); arm64.assembler_b_cond(code, 2, "runtime_alloc_take");
+    emit(code, arm64.add_imm_x(12, 13, 16, iie)); arm64.assembler_b(code, "runtime_alloc_free");
+    arm64.assembler_label(code, "runtime_alloc_take");
+    emit(code, arm64.ldr_x(9, 13, 16)); emit(code, arm64.str_x(9, 12, 0));
+    // Split oversized free blocks, preserving a >=32-byte remainder with room
+    // for its header and free-list link. Never change a live object's address.
+    emit(code, arm64.add_imm_x(14, 14, 16, iie)); emit(code, arm64.sub_x(14, 14, 22));
+    emit(code, arm64.cmp_imm_x(14, 32, iie)); arm64.assembler_b_cond(code, 3, "runtime_alloc_taken");
+    emit(code, arm64.add_x(15, 13, 22)); emit(code, arm64.str_x(31, 15, 0));
+    emit(code, arm64.sub_imm_x(9, 14, 16, iie)); emit(code, arm64.str_x(9, 15, 8));
+    emit(code, arm64.sub_imm_x(9, 22, 16, iie)); emit(code, arm64.str_x(9, 13, 8));
+    emit(code, arm64.lsr_x(11, 14, 4)); emit(code, arm64.cmp_imm_x(11, 31, iie));
+    arm64.assembler_b_cond(code, 9, "runtime_alloc_split_class"); emit(code, arm64.movz_x(11, 31, 0));
+    arm64.assembler_label(code, "runtime_alloc_split_class");
+    emit(code, arm64.lsl_x(11, 11, 3)); emit(code, arm64.add_imm_x(12, 23, 24, iie)); emit(code, arm64.add_x(12, 12, 11));
+    emit(code, arm64.ldr_x(9, 12, 0)); emit(code, arm64.str_x(9, 15, 16)); emit(code, arm64.str_x(15, 12, 0));
+    arm64.assembler_label(code, "runtime_alloc_taken");
+    moshi(old_sweep_enabled(code)){arm64.assembler_bl(code,"sweep_bin_reused");}
+    emit(code, arm64.str_x(20, 13, 0)); emit(code, arm64.add_imm_x(0, 13, 16, iie)); arm64.assembler_b(code, "runtime_alloc_done");
+    arm64.assembler_label(code, "runtime_alloc_next_bin");
+    emit(code, arm64.add_imm_x(11, 11, 1, iie)); emit(code, arm64.cmp_imm_x(11, 32, iie)); arm64.assembler_b_cond(code, 3, "runtime_alloc_bin");
+    emit(code, arm64.ldr_x(13, 23, 0)); emit(code, arm64.add_x(14, 13, 22)); emit(code, arm64.ldr_x(9, 23, 8)); emit(code, arm64.cmp_x(14, 9));
+    arm64.assembler_b_cond(code, 9, "runtime_alloc_bump");
+    arm64.assembler_label(code,"los_alloc_exhausted");
+    emit(code, arm64.cmp_imm_x(21, 2, iie)); arm64.assembler_b_cond(code, 2, "runtime_alloc_fail");
+    emit(code, arm64.add_imm_x(21, 21, 1, iie)); emit(code, arm64.cmp_imm_x(21, 1, iie));
+    arm64.assembler_b_cond(code, 1, "gen_alloc_major");
+    arm64.assembler_bl(code, "runtime_collect"); move_x(code,0,19); arm64.assembler_bl(code,"memory_grow"); arm64.assembler_b(code, "runtime_alloc_retry");
+    arm64.assembler_label(code, "gen_alloc_major"); arm64.assembler_bl(code, "gen_major"); move_x(code,0,19); arm64.assembler_bl(code,"memory_grow"); arm64.assembler_b(code, "runtime_alloc_retry");
+    arm64.assembler_label(code, "runtime_alloc_bump");
+    emit(code, arm64.str_x(14, 23, 0)); emit(code, arm64.str_x(20, 13, 0)); emit(code, arm64.sub_imm_x(9, 22, 16, iie)); emit(code, arm64.str_x(9, 13, 8)); emit(code, arm64.add_imm_x(0, 13, 16, iie)); arm64.assembler_b(code, "runtime_alloc_done");
+    arm64.assembler_label(code, "runtime_alloc_fail"); emit(code,arm64.add_imm_x(9,19,31,iie)); emit(code,arm64.movn_x(10,15,0)); emit(code,arm64.and_x(9,9,10)); emit(code,arm64.str_x(9,23,2816)); emit(code, arm64.movz_x(0, 0, 0));
+    arm64.assembler_label(code, "runtime_alloc_done");
+    arm64.assembler_cbz_x(code, 0, "gen_alloc_registered"); arm64.assembler_bl(code, "gen_register");
+    arm64.assembler_label(code, "gen_alloc_registered");
+    emit_observation_alloc(code);
+    arm64.assembler_bl(code,"memory_sample");
+    emit(code, arm64.ldp_post_x(21, 22, 31, 16)); emit(code, arm64.ldp_post_x(19, 20, 31, 16)); emit(code, arm64.ldp_post_x(29, 30, 31, 16)); emit(code, arm64.ret());
+}
+
+// M16b type 101/102 runtime. Copy loops have no allocation/call safepoints.
