@@ -1,0 +1,32 @@
+首先完整阅读 specs/001-go-free-single-binary/PURE_MIO_ARCHITECTURE.md。它记录用户最高优先级架构约束，覆盖 v0.2 中允许正式构建使用其他语言及本地 Commit 的旧条款。不得执行 Commit、Push、Tag、Release。
+
+你正在维护 Mio 项目，用户已授权你在安全隔离工作树内**连续实际完成 GF1、GF2、GF3、GF4、GF5**，不需要我每个阶段再给提示词或确认。目标是发布形态只有一个纯 Mio 原生 `mio` 可执行文件，普通源码检查/编译/运行/测试不依赖 Go、Go Runtime、Mochi VM、第二个 Mio 工具、外部 linker 或磁盘 Bunko。
+
+请从 Mio 仓库根目录阅读：
+
+specs/001-go-free-single-binary/START_HERE.md
+specs/001-go-free-single-binary/AGENTS.md
+specs/001-go-free-single-binary/autonomy.md
+specs/001-go-free-single-binary/GF0_BASELINE.md
+specs/001-go-free-single-binary/spec.md
+specs/001-go-free-single-binary/contracts.md
+specs/001-go-free-single-binary/worktree.md
+specs/001-go-free-single-binary/plan.md
+specs/001-go-free-single-binary/tasks.md
+specs/001-go-free-single-binary/acceptance.md
+specs/001-go-free-single-binary/phases/GF1.md
+specs/001-go-free-single-binary/phases/GF2.md
+specs/001-go-free-single-binary/phases/GF3.md
+specs/001-go-free-single-binary/phases/GF4.md
+specs/001-go-free-single-binary/phases/GF5.md
+specs/001-go-free-single-binary/status.json
+
+并优先核验仓库现有 specs/001-go-free-single-binary/gf0/AUDIT.md 与外部 GF0 证据。
+
+先只读审计当前 Git/Worktree、冻结最新 GF0/M19c 源码，然后建立专用 GF 开发 worktree，原仓库/其他 Race、M19d worktree 均不可修改。注意新 worktree 不会继承未提交/未跟踪源码，必须安全导入、比对 SHA256，不能丢失用户改动。
+
+**不要只做规划，也不要在 GF1 PASS 后停下来问我是否开始 GF2。** 直接实现 GF1 修复五项语义缺口（尤其窄整数静默错误），按规范逐步完成原生前端、同进程 Native Pipeline、内嵌 Bunko、单文件 CLI/本地签名、完整 Go-free 源码 Seed→A→B→C→D、自举/GC/发行 CI；每阶段实际测试和记录证据，PASS 自动进入下一阶段。遇到缺陷自行定位修复并继续，保持阶段状态准确。
+
+无需逐项请求授权来修改隔离工作树、运行构建测试或制作本地发行候选。禁止 reset/clean/stash 原仓库、破坏历史证据、杀其他项目进程、自动 Push、Tag、正式 Release、使用生产凭据或改写远程 Git 历史。重型测试与其他工作树错峰执行。历史 M19b Race NOT_ACCEPTED 不可伪装 PASS。
+
+必须尽最大能力在当前可执行环境持续完成全部 GF1～GF5；若受真实环境、运行时间、必要权限阻塞，保存可恢复源码与日志、准确标记未通过，不得假定后台还能继续或报告虚假成功。最后给出最终二进制、来源、每代哈希、A1～A12 状态、实际测试、剩余阻塞和仅需用户执行的不可逆远端动作。

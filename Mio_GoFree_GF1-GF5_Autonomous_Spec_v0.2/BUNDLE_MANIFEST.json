@@ -1,0 +1,82 @@
+{
+  "bundle_version": "0.2",
+  "scope": "GF1-GF5",
+  "files": {
+    "README_使用说明.md": {
+      "bytes": 1930,
+      "sha256": "2684b7f1de63c79b9f2c55cdf51d310e7fb4e6ba03413661f60f9506f9f9936b"
+    },
+    "install_spec.py": {
+      "bytes": 4186,
+      "sha256": "523ee2a05fa8eb8e126644a28f40f5256157334334fe75c1bed89c5a913fa28b"
+    },
+    "specs/001-go-free-single-binary/AGENTS.md": {
+      "bytes": 2625,
+      "sha256": "9cd3322c4ddb953aa306de1dc7f0f0509f048a9c37ddd7e1c830b5948a79fe51"
+    },
+    "specs/001-go-free-single-binary/CODEX_START.txt": {
+      "bytes": 2753,
+      "sha256": "f68a1b10b91da25336101eaff2d11812ca1c29d21e0fd2c73d3965bfb9f6e564"
+    },
+    "specs/001-go-free-single-binary/GF0_BASELINE.md": {
+      "bytes": 3161,
+      "sha256": "07dee64cd7b38f26c753e921e460b7f58dd6206958ef23ac12136e3fac1e1568"
+    },
+    "specs/001-go-free-single-binary/START_HERE.md": {
+      "bytes": 3228,
+      "sha256": "e0db6cbce3602f5ecba3496eb309c4e6e19938cc639448505cbd8acb76461bc4"
+    },
+    "specs/001-go-free-single-binary/acceptance.md": {
+      "bytes": 5463,
+      "sha256": "86171b3364bbd74bc8812962d5337a25c879bf25452e51d1dca2a5ece74e2f6b"
+    },
+    "specs/001-go-free-single-binary/autonomy.md": {
+      "bytes": 4409,
+      "sha256": "40d2cdec89a7087b60063fd796f2236eb9292a3e4f2391a1982538c6e0fb8941"
+    },
+    "specs/001-go-free-single-binary/contracts.md": {
+      "bytes": 4611,
+      "sha256": "b4f03330789910d579ff6e29ae09f14b78e9a1ee44dc5091234b4e10336a85ed"
+    },
+    "specs/001-go-free-single-binary/phases/GF1.md": {
+      "bytes": 4722,
+      "sha256": "5c50cd7bb7cc9825bc81dc0c14f38bfc072773c9010f8a1f6d31582861f062ef"
+    },
+    "specs/001-go-free-single-binary/phases/GF2.md": {
+      "bytes": 2523,
+      "sha256": "371eb930016a1b29cb99a4c9aa8803cb856cb6b68b58fccb10b6e5e9abb1a22a"
+    },
+    "specs/001-go-free-single-binary/phases/GF3.md": {
+      "bytes": 3367,
+      "sha256": "78f79b5dcbd0b28a22282f519d233d40f36901f6a4e97c7d9ba1309f2f5af4f5"
+    },
+    "specs/001-go-free-single-binary/phases/GF4.md": {
+      "bytes": 3260,
+      "sha256": "45a461e8e80446f8d8bc2848574f992bf2b2b0a0b3b8dfe0c58ba92e50164ad6"
+    },
+    "specs/001-go-free-single-binary/phases/GF5.md": {
+      "bytes": 4475,
+      "sha256": "e264b7fc2b274691cd8c40c4d20047325694db1abf0489ad4d8590c47ba60af3"
+    },
+    "specs/001-go-free-single-binary/plan.md": {
+      "bytes": 3560,
+      "sha256": "91b713be5f0eeab1b96860aec2fea7e00e28e7716e5da2c03e4ecc1ae4cd3e63"
+    },
+    "specs/001-go-free-single-binary/spec.md": {
+      "bytes": 6819,
+      "sha256": "64b93201811b7de9ad27a68dab0a505f4716a91eece23632c5891d056ff50568"
+    },
+    "specs/001-go-free-single-binary/status.json": {
+      "bytes": 1320,
+      "sha256": "c8ccffba158b938ea0ba42dbe9f134afa4c04ecb87850750454aa71f371ab10b"
+    },
+    "specs/001-go-free-single-binary/tasks.md": {
+      "bytes": 4246,
+      "sha256": "f5798af4a729c2b3604a97f64b5ef00e28d0f8d12a0a74ca6fd40d436ff59561"
+    },
+    "specs/001-go-free-single-binary/worktree.md": {
+      "bytes": 4225,
+      "sha256": "afdb44a080082e83b3271f841d2159dab6aa3cf805295d79b8c76b803cb80d7d"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "gf0_status": "PASS",
+  "scope": "dependency audit and source baseline freeze only",
+  "go_free_single_binary": "NOT_ACCEPTED",
+  "head": "a96d83ca0ee30239026b9ba27d5a5d547349f647",
+  "source_manifest_sha256": "57f92e4bd36851a12aae62511e46016bd4c28ab00002db2ffaec3086d81a4ea6",
+  "historical_manifest_sha256": "aaa6e10aa344566c8ff72e2964b0c4f5c78b823591a83bff1ac31448b210f4e7",
+  "corpus_status_counts": {
+    "PASS": 11,
+    "BLOCKED_NATIVE": 4,
+    "FAIL": 1
+  },
+  "native_frontend_probe": {
+    "sha256": "b44a55bf3f9020e6b0ff83ad137b25774814a32dfe8acaf070abcd167bfd1465",
+    "bytes": 120707,
+    "historical_golden": "b44a55bf3f9020e6b0ff83ad137b25774814a32dfe8acaf070abcd167bfd1465",
+    "matches_historical_golden": true
+  },
+  "historical_full_race": "NOT_ACCEPTED",
+  "heavy_full_validation": "NOT RUN: M19 concurrent Race workload",
+  "next_phase": "GF1 only; see AUDIT.md blockers and plan",
+  "evidence_root": "/Volumes/Sector0/AppData/Mio/mio-gf0-audit-20261026-01"
+}

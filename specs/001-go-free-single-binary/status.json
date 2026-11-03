@@ -1,0 +1,549 @@
+{
+  "schema_version": 1,
+  "spec_version": "0.2",
+  "project": "Mio Go-free Single Binary",
+  "source": "GF0 audit 2026-10-26; must verify source and evidence before resuming",
+  "gf0": {
+    "status": "PASS",
+    "source_manifest_sha256": "57f92e4bd36851a12aae62511e46016bd4c28ab00002db2ffaec3086d81a4ea6",
+    "historical_manifest_sha256": "aaa6e10aa344566c8ff72e2964b0c4f5c78b823591a83bff1ac31448b210f4e7",
+    "report": "gf0/AUDIT.md"
+  },
+  "phases": {
+    "GF1": {
+      "status": "PASS",
+      "evidence": "build/gofree-evidence/GF1/REPORT.md",
+      "blockers": [],
+      "completed_evidence": [
+        "probe-r16: original16 + Map/numeric/recursive generics/float/narrow extras under native GCStress, all PASS; error exits3/3 PASS",
+        "frontend-r9: original source16/16 + errors3/3 + frozen GF0 Compiler-B SHA + native frontend/backend source + multimodule PASS",
+        "native-regression-r3: M19b precise metadata, M19c LOS/memory/OOM and invalid indirect-call rejection PASS"
+      ],
+      "source_manifest_sha256": "385832fe0606d51bd87011013193481acedcefcc526853959b53621764561dae",
+      "limitations": [
+        "Exploratory full-compiler allocation-by-allocation GCStress exceeded 120s on frozen bootstrap and frontend self source; NOT_ACCEPTED, CPU sample preserved; not cited as a passed GF1 gate or GF4 witness."
+      ],
+      "revalidated_source_manifest_sha256": "7f9a2718b3270a9fb40415c210cc232e8324177866b0127962a63057440bdfee",
+      "revalidation_evidence": "build/gofree-evidence/GF2/REPORT.md",
+      "final_revalidation_evidence": "build/gofree-evidence/GF3/final-r2/REPORT.md"
+    },
+    "GF2": {
+      "status": "PASS",
+      "evidence": "build/gofree-evidence/GF2/REPORT.md",
+      "source_manifest_sha256": "053afb91ee65fd3784779e4dda6c52671a6a88b0e91464c2a2443b3b1141a195",
+      "blockers": [],
+      "completed_evidence": {
+        "backend-array-r4": 30,
+        "backend-array-normal-r1": 30,
+        "frontend-array-r2": 53,
+        "probe-array-r1": 63,
+        "self-source-r1": 3
+      },
+      "limitations": [
+        "Developer stdin driver and on-disk Bunko; external audit signing. GF3 required for final CLI/signing/resource closure.",
+        "Development candidate single self-build fixed point is not the GF4 final CLI multigeneration chain."
+      ],
+      "revalidated_source_manifest_sha256": "7f9a2718b3270a9fb40415c210cc232e8324177866b0127962a63057440bdfee",
+      "final_revalidation_evidence": "build/gofree-evidence/GF3/final-r2/REPORT.md"
+    },
+    "GF3": {
+      "status": "PASS",
+      "evidence": "build/gofree-evidence/GF3/final-r2/REPORT.md",
+      "blockers": [],
+      "completed_evidence": {
+        "cli-offline-r6": {
+          "passed": 20,
+          "scope": "development candidate; check/build/run/exec/disasm, embedded Bunko, signing, offline isolation"
+        },
+        "json-r1": {
+          "passed": 63,
+          "scope": "native JSON independent differential cases"
+        },
+        "test-runtime-r4": {
+          "passed": 7,
+          "scope": "native test plan plus six signed isolated images; exact assertion records; CPU and blocked-I/O deadlines; continuation"
+        },
+        "regexp-r3": {
+          "passed": 2376,
+          "scope": "basic syntax and boolean matches vs isolated RE2 reference"
+        },
+        "regexp-unicode-r2": {
+          "passed": 4656,
+          "scope": "expanded Unicode 15 properties/aliases/complements/simple-fold differential matrix"
+        },
+        "unicodegen-r2": {
+          "passed": 1,
+          "scope": "244 table names, 38792 integers exactly preserved by native Mio generator"
+        },
+        "clock-r1": {
+          "passed": 1,
+          "scope": "native monotonic counter measured 100ms and inspected instruction encoding"
+        },
+        "test-cli-r2": {
+          "passed": 6,
+          "scope": "six isolated tests, regex filter, empty directory, invalid signature before filter, Japanese output, MachO boundary/layout tests"
+        },
+        "lsp-foundation-r2": {
+          "passed": 3,
+          "scope": "native UTF16 positions, framed transport header/error cases, buffered pipelined frames; no language-service acceptance claim"
+        },
+        "stdlib-native-r3": {
+          "passed": 42,
+          "scope": "full native Bunko suite at frozen source snapshot; all source hashes stable"
+        },
+        "sha256-stdlib-r1": {
+          "passed": 3,
+          "scope": "added native standard vectors, subrange/context reuse and million-a"
+        },
+        "global-boundary-r1": {
+          "passed": 1,
+          "scope": "2048 user globals plus private OS/testing state execute correctly; 2049 rejected"
+        },
+        "lsp-transport-r1": {
+          "passed": 12,
+          "scope": "live fragmented framed I/O before stdin EOF, pipeline and malformed/oversized messages"
+        },
+        "lsp-documents-r2": {
+          "passed": 6,
+          "scope": "native document/version/change, URI and transport/UTF16 foundation"
+        },
+        "env-r1": {
+          "passed": 1,
+          "scope": "native environment ABI, Unicode/empty/missing/invalid values, names and bounded copy"
+        },
+        "embed-regenerate-r6": {
+          "passed": 41,
+          "scope": "all bundled non-test sources exact bytes, lengths and SHA256"
+        },
+        "cli-offline-r7": {
+          "passed": 20,
+          "scope": "updated candidate, 41-source embedded Bunko, build/check/run/exec/disasm and arguments/exit/signatures"
+        },
+        "test-offline-r1": {
+          "passed": 16,
+          "scope": "one installed mio executable; blocked repository reads/network; embedded tests and locale priority"
+        },
+        "frontend-analysis-r1": {
+          "passed": 4,
+          "scope": "native shared overlay analysis, partial syntax and dependency recovery; aggregate final rerun remains"
+        },
+        "frontend-analysis-r3": {
+          "passed": 1,
+          "scope": "native structured diagnostics including empty lexical AST recovery"
+        },
+        "lsp-semantic-link-r2": {
+          "passed": 3,
+          "scope": "native semantic index identity, shadowing and imported function navigation foundation; no complete LSP server acceptance"
+        },
+        "nonnil-flow-r2": {
+          "passed": 6,
+          "scope": "native Mio source-to-IR-to-signed-AOT execution; captured record/scalar mutations and repeated nil guards"
+        },
+        "frontend-flow-regressions-r2": {
+          "passed": 6,
+          "scope": "native frontend accepts repeated nil check and preserved outer proofs; rejects unexecuted closure/function proof leaks and nonnullable nil comparison"
+        },
+        "typecheck-flow-reference-r1": {
+          "passed": 2,
+          "scope": "updated Mio checker in isolated historical reference environment only; not native acceptance"
+        },
+        "embed-regenerate-r7": {
+          "passed": 41,
+          "scope": "all embedded resources exact bytes, lengths and SHA256 at recorded snapshot"
+        },
+        "typecheck-flow-r2": {
+          "passed": 13,
+          "scope": "complete native Mio checker unit suite, including both nullable/closure regressions and outer-proof preservation; unified CLI r10 with explicit current Bunko"
+        },
+        "typecheck-flow-reference-r2": {
+          "passed": 2,
+          "scope": "isolated reference execution including new outer-proof assertions; auxiliary only"
+        },
+        "stdlib-native-r5": {
+          "passed": 47,
+          "scope": "complete native Bunko suite including v15 decoder/lower safety and updated capture fact tests; source hashes stable"
+        },
+        "type-facts-native-r1": {
+          "passed": 3,
+          "scope": "precise GC root categories, nullable base constraints, actual closure capture versus noncaptured call facts"
+        },
+        "embed-regenerate-r8": {
+          "passed": 41,
+          "scope": "Mio Native generator; all embedded resources exact bytes/lengths/SHA256; generated source SHA256 3f3a9a7671bae7433ff8b719aaf7e6808e7cae7082918c76a64a4ab6cf536272"
+        },
+        "lsp-native-r3": {
+          "passed": 9,
+          "scope": "complete current document/UTF16/framing/semantic-index foundation tests under unified native CLI; not full LSP service acceptance"
+        },
+        "lsp-rpc-r2": {
+          "passed": 3,
+          "scope": "new Mio-native JSON-RPC lifecycle, exact IDs, errors, pre-cancellation; not yet wired to stdio/CLI"
+        },
+        "typecheck-flow-r3": {
+          "passed": 13,
+          "scope": "latest Mio checker complete native suite including delayed-body entry isolation; compiled/executed by native unified CLI"
+        },
+        "frontend-flow-regressions-r3": {
+          "passed": 9,
+          "scope": "fresh native frontend source accept/reject gates including both directions of fact isolation and closure own-guard acceptance"
+        },
+        "lsp-rpc-r4": {
+          "passed": 5,
+          "scope": "native JSON-RPC lifecycle plus document open/change/save/close and atomic invalid changes; semantic services/stdin integration pending"
+        },
+        "frontend-flow-cli-r1": {
+          "passed": 9,
+          "scope": "normal unified native CLI source accept/reject gates including both original defects and delayed body proof isolation"
+        },
+        "lsp-stdio-r1": {
+          "passed": 6,
+          "scope": "live-pipe framing/lifecycle, exact IDs, document clear, parse recovery and exit states; semantic providers not in this candidate"
+        },
+        "cli-offline-r8": {
+          "passed": 23,
+          "scope": "one installed native mio, embedded r8 Bunko, empty PATH, blocked repository/network, v14 decoder parity and v15 typed-field export/disasm/native execution"
+        },
+        "test-offline-r2": {
+          "passed": 16,
+          "scope": "latest native candidate single-executable offline test and locale/filter gates"
+        },
+        "resolver-shadow-r1": {
+          "passed": 10,
+          "scope": "complete latest Mio resolver native tests including locals/parameters shadowing import aliases; fresh unified CLI containing this latest resolver still required"
+        },
+        "lsp-navigation-r2": {
+          "passed": 8,
+          "scope": "native RPC lifecycle/documents plus shared frontend hover/definition/references/document symbols, dependency edits and unsaved URI; new providers not yet integrated into a rebuilt CLI"
+        },
+        "lsp-diagnostics-r2": {
+          "passed": 4,
+          "scope": "native compiler diagnostics codes/UTF16/version/clear, config switches/plaintext hover, dependency errors with actual related locations; stdio rebuilt candidate pending"
+        },
+        "lsp-signature-r1": {
+          "passed": 3,
+          "scope": "native real/incomplete/function-value call signatures, nested argument delimiters and noncall/comment suppression; richer member/generic coverage pending"
+        },
+        "value-free-generics-r3": {
+          "passed": 3,
+          "scope": "fresh Mio-native frontend v15 IR plus Mio-native AOT execution; two-component development audit, unified CLI rebuild pending"
+        },
+        "typecheck-generics-r1": {
+          "passed": 14,
+          "scope": "complete native Mio checker suite including invalid instantiated containers"
+        },
+        "codegen-generics-r1": {
+          "passed": 10,
+          "scope": "complete native Mio codegen suite including instance reuse, recursion, cross-package checked type copying"
+        },
+        "resolver-generics-r1": {
+          "passed": 11,
+          "scope": "complete native resolver suite, generic type parameters retain lexical bindings without runtime captures"
+        },
+        "generic-source-matrix-r2": {
+          "passed": 9,
+          "scope": "two native development components; source-driven instance reuse/recursion/nested nullable record enum arrays/transitive calls/returned closures/numeric recursion all execute; unified CLI pending"
+        },
+        "lsp-completion-r2": {
+          "passed": 3,
+          "scope": "native completion basic scope/shadowing/snippets/comment-string suppression/UTF16 edits; member providers and unified stdio acceptance incomplete"
+        },
+        "codegen-generics-r2": {
+          "passed": 10,
+          "scope": "complete native codegen suite with generic returned closure assertions; unchanged source hashes"
+        },
+        "generic-invalid-source-r1": {
+          "passed": 4,
+          "scope": "fresh native frontend rejects invalid generic array/nullable result types before IR emission"
+        },
+        "generic-source-cli-r1": {
+          "passed": 9,
+          "scope": "normal single-process unified CLI source compilation with fork/network denied; standalone signed native outputs"
+        },
+        "frontend-flow-cli-r2": {
+          "passed": 9,
+          "scope": "r12 normal CLI original and additional nullable/closure source gates"
+        },
+        "cli-offline-r9": {
+          "passed": 23,
+          "scope": "r12 single-installed-binary offline native command/embedded Bunko/sign/v14-v15 compatibility"
+        },
+        "lsp-stdio-r3": {
+          "passed": 6,
+          "scope": "r12 live stdio lifecycle/UTF16 versioned diagnostic publishing/error recovery/shutdown/cancellation foundation; full semantic services not accepted"
+        },
+        "generic-source-cli-r2": {
+          "passed": 12,
+          "scope": "r12 normal single-process source builds and standalone outputs, actual mutation/nested/cross-package record-enum storage"
+        },
+        "test-offline-r3": {
+          "passed": 16,
+          "scope": "r12 only installed mio, embedded Bunko native test runner/locale/regex/error gates"
+        },
+        "lsp-members-r2": {
+          "passed": 7,
+          "scope": "native source tests for basic and checked member completion; later source not in r12 CLI"
+        },
+        "lsp-rpc-cache-r2": {
+          "passed": 24,
+          "scope": "complete native RPC source suite, including bounded content/dependency-aware cache and all prior providers; newest sources not in r12 CLI"
+        },
+        "native-poll-r2": {
+          "passed": 4,
+          "scope": "Mio-native development driver/signer, controlled pipe idle/data/EOF/invalid-fd, no fork/network; not final LSP cancellation"
+        },
+        "embed-regenerate-r9": {
+          "passed": 41,
+          "scope": "Mio-native generator, independent exact bytes/length/SHA audit; latest bundle compiling into r13"
+        },
+        "lsp-native-r4": {
+          "passed": 11,
+          "scope": "complete parent LSP native suite including incremental framing API; stdio integration still pending"
+        },
+        "lsp-stdio-r5": {
+          "passed": 7,
+          "scope": "r13 live stdio lifecycle/diagnostics and representative six semantic providers; not complete compatibility or in-flight cancellation"
+        },
+        "native-poll-cli-r1": {
+          "passed": 4,
+          "scope": "r13 normal source compile/sign and standalone syscall readiness audit"
+        },
+        "native-poll-wait-r2": {
+          "passed": 7,
+          "scope": "native development driver/signer, real timed/indefinite readiness waits and error/boundary checks; not in-flight LSP acceptance"
+        },
+        "embed-regenerate-r10": {
+          "passed": 41,
+          "scope": "unchanged native Mio generator, exact byte/length/SHA audit; latest bundle not yet in a unified CLI"
+        },
+        "embed-regenerate-r11": {
+          "passed": 41,
+          "scope": "native generator exact resource audit; predates typed-call width fix, not final acceptance"
+        },
+        "typed-call-native-r3": {
+          "passed": 4,
+          "scope": "Mio native developer compiler/signer; standalone typed field boolean/arithmetic/unit/factory callback execution. Not unified CLI acceptance."
+        },
+        "embed-regenerate-r12": {
+          "passed": 41,
+          "scope": "Native resource generation and exact byte/length/SHA audit after lower instruction-width repair; currently being built into cli-bootstrap-r16."
+        },
+        "cli-offline-r10": {
+          "passed": 25,
+          "scope": "r16 unified native installed CLI, frozen v14/v15 compatibility plus v16 source export"
+        },
+        "typed-call-cli-r1": {
+          "passed": 4,
+          "scope": "r16 normal CLI source compile/sign and independent native typed indirect-call apps"
+        },
+        "stdlib-native-r6": {
+          "passed": 49,
+          "scope": "complete native Bunko suite at source checkpoint before latest service changes; decoder/lower typed-call regressions included"
+        },
+        "progress-native-r1": {
+          "passed": 2,
+          "scope": "native per-invocation cancellation/reset/clear and independent context/interval regressions"
+        },
+        "frontend-progress-native-r1": {
+          "passed": 6,
+          "scope": "complete native frontend suite including cooperative cancel and later context reuse"
+        },
+        "lsp-cooperative-r2": {
+          "passed": 4,
+          "scope": "development LSP-only component: live fragmented in-flight cancel 0.1166s, stale diagnostic suppression, debounce and embedded source navigation including external cache edits; integrated CLI verification separate"
+        },
+        "lsp-semantic-parity-r2": {
+          "passed": 6,
+          "scope": "development LSP-only component six historical semantic service gates; later unknown-hover negative exposed a real remaining defect"
+        },
+        "lsp-live-cli-r6": {
+          "passed": 7,
+          "scope": "r17 integrated CLI live-pipe lifecycle and six representative semantic providers"
+        },
+        "lsp-rpc-complete-r3": {
+          "passed": 33,
+          "scope": "Complete native RPC source suite before final diagnostics/path changes; not final snapshot"
+        },
+        "lsp-cooperative-cli-r1": {
+          "passed": 4,
+          "scope": "r17 integrated CLI, fragmented in-flight cancellation0.11979s, debounce/stale diagnostics, embedded source preservation"
+        },
+        "lsp-cooperative-cli-r2": {
+          "passed": 4,
+          "scope": "r19 integrated CLI after physical source-identity repair"
+        },
+        "lsp-path-r2": {
+          "passed": 1,
+          "scope": "r19 physical symlink overlay seen by importing document; retains original client URI and disk contents"
+        },
+        "lsp-semantic-cli-r2": {
+          "passed": 7,
+          "scope": "r19 positive/negative native semantics, including unknown-expression hover repair"
+        },
+        "path-runtime-r2": {
+          "passed": 7,
+          "scope": "Mio native development compiler and signer OS ABI probe; symlink Unicode spaces, char/regular/pipe status, small buffer rejection, old stat packet preservation and1000 repeated calls"
+        },
+        "final-r2": {
+          "status": "PASS",
+          "selfhost": 103,
+          "bunko": 49,
+          "source_gc": 72,
+          "index": "build/gofree-evidence/GF3/final-r2/REGRESSION_INDEX.json"
+        }
+      },
+      "remaining": [],
+      "limitations": [
+        "Development evidence is not final-source GF3 acceptance.",
+        "GF1/GF2 PASS refer to recorded source snapshots and require final revalidation.",
+        "typed-call-native-r1 runtime FAIL 3/4 retained; width correction now passes final-r2 typed-call CLI4/4 and full Bunko49/49. cli-bootstrap-r14 failed; r15 interrupted, neither accepted.",
+        "final-r1 diagnostics12/12 and offline25/25 passed, but frontend native suite could not select six entries after package identity migration; retained FAIL, no phase promotion. Registry/virtual identity repair passes final-r2 frontend6/6 and path10/10; the failed candidate remains retained."
+      ],
+      "reference_variances": [
+        "final-r2 regexp: 8846/9030 exact reference matches;184 independently verified existing Unicode property extensions, unresolved0. Explicit compatibility disposition in REGEXP_COMPATIBILITY.md; original raw FAIL comparisons remain unchanged."
+      ],
+      "final_candidate": {
+        "directory": "build/gofree-evidence/GF3/final-r2",
+        "status": "GF3_PASS",
+        "sha256": "de0c45e1dfd99f8b99518655f8b683849a4deb610f1a603d922096d3fce03992",
+        "unsigned_sha256": "32cbfc2175b012960770eb618759d5d1e097dbf03193d3e67b16a6fe4b6305dd",
+        "source_manifest_sha256": "7f9a2718b3270a9fb40415c210cc232e8324177866b0127962a63057440bdfee",
+        "pending": [],
+        "regression_index": "build/gofree-evidence/GF3/final-r2/REGRESSION_INDEX.json"
+      },
+      "current_work": [
+        "GF3 final-source/one-candidate gates passed; automatically proceeding to GF4."
+      ],
+      "source_manifest_sha256": "7f9a2718b3270a9fb40415c210cc232e8324177866b0127962a63057440bdfee"
+    },
+    "GF4": {
+      "status": "PASS",
+      "evidence": "build/gofree-evidence/GF4/REPORT.md",
+      "blockers": [],
+      "current_work": [
+        "GF4 complete; automatically proceeding to GF5."
+      ],
+      "active_evidence": "build/gofree-evidence/GF4/bootstrap-r2/chain",
+      "generations": [
+        {
+          "stage": "A",
+          "status": "PASS_GENERATION_BUILD",
+          "compiler_sha256": "de0c45e1dfd99f8b99518655f8b683849a4deb610f1a603d922096d3fce03992",
+          "signed_sha256": "4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da",
+          "unsigned_sha256": "ffaa38f1955e27757888097bab950bba6dfb81d8200b868fe4a4fc085e3470c7"
+        },
+        {
+          "stage": "B",
+          "status": "PASS_GENERATION_BUILD",
+          "compiler_sha256": "4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da",
+          "signed_sha256": "4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da",
+          "unsigned_sha256": "ffaa38f1955e27757888097bab950bba6dfb81d8200b868fe4a4fc085e3470c7"
+        },
+        {
+          "stage": "C",
+          "status": "PASS_GENERATION_BUILD",
+          "compiler_sha256": "4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da",
+          "signed_sha256": "4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da",
+          "unsigned_sha256": "ffaa38f1955e27757888097bab950bba6dfb81d8200b868fe4a4fc085e3470c7"
+        },
+        {
+          "stage": "D",
+          "status": "PASS_GENERATION_BUILD",
+          "compiler_sha256": "4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da",
+          "signed_sha256": "4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da",
+          "unsigned_sha256": "ffaa38f1955e27757888097bab950bba6dfb81d8200b868fe4a4fc085e3470c7"
+        }
+      ],
+      "completed_evidence": {
+        "seed-runtime-r1": {
+          "passed": 11,
+          "scope": "native runtime emitter metadata including actual shadow pop/major reclamation"
+        },
+        "A-regressions": {
+          "passed": 87,
+          "source_gc": 72,
+          "runtime_metadata": 11,
+          "typed_call_source": 4,
+          "evidence": "build/gofree-evidence/GF4/bootstrap-r2/regressions-r2/A"
+        },
+        "B-regressions": {
+          "passed": 87,
+          "source_gc": 72,
+          "runtime_metadata": 11,
+          "typed_call_source": 4,
+          "evidence": "build/gofree-evidence/GF4/bootstrap-r2/regressions-r2/B"
+        },
+        "C-regressions": {
+          "passed": 87,
+          "source_gc": 72,
+          "runtime_metadata": 11,
+          "typed_call_source": 4,
+          "evidence": "build/gofree-evidence/GF4/bootstrap-r2/regressions-r2/C"
+        },
+        "D-regressions": {
+          "passed": 87,
+          "source_gc": 72,
+          "runtime_metadata": 11,
+          "typed_call_source": 4,
+          "evidence": "build/gofree-evidence/GF4/bootstrap-r2/regressions-r2/D"
+        }
+      },
+      "source_manifest_sha256": "7f9a2718b3270a9fb40415c210cc232e8324177866b0127962a63057440bdfee",
+      "final_candidate": {
+        "phase": "GF4",
+        "status": "PASS",
+        "source_manifest_sha256": "7f9a2718b3270a9fb40415c210cc232e8324177866b0127962a63057440bdfee",
+        "candidate": "build/gofree-evidence/GF4/bootstrap-r2/chain/D/mio",
+        "candidate_sha256": "4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da",
+        "unsigned_sha256": "ffaa38f1955e27757888097bab950bba6dfb81d8200b868fe4a4fc085e3470c7",
+        "complete_unsigned_B_C_D_equal": true,
+        "complete_signed_B_C_D_equal": true,
+        "generation_regressions": 348,
+        "report": "build/gofree-evidence/GF4/REPORT.md"
+      }
+    },
+    "GF5": {
+      "status": "IN_PROGRESS",
+      "evidence": "build/gofree-evidence/GF5",
+      "blockers": [],
+      "current_work": [
+        "Implement minimal visible Mio-native CI/package/install orchestration using the existing unified CLI and trusted GF4 native product; keep compiler core frozen.",
+        "Preserve legacy release/Race facts and remote actions NOT_RUN."
+      ]
+    }
+  },
+  "acceptance": {
+    "A1": "NOT_RUN",
+    "A2": "NOT_RUN",
+    "A3": "NOT_RUN",
+    "A4": "NOT_RUN",
+    "A5": "NOT_RUN",
+    "A6": "NOT_RUN",
+    "A7": "NOT_RUN",
+    "A8": "NOT_RUN",
+    "A9": "NOT_RUN",
+    "A10": "NOT_RUN",
+    "A11": "NOT_RUN",
+    "A12": "NOT_RUN"
+  },
+  "go_free_single_binary": "NOT_ACCEPTED",
+  "m19b_full_race_historical": "NOT_ACCEPTED",
+  "remote_release": "NOT_RUN",
+  "source_manifest_current": "cli-bootstrap-r23/source-manifest.json: new scoped path/test-registry repair build in progress; final-r1 retained FAIL_FINAL_REGRESSION",
+  "notes": [
+    "Do not overwrite historical GF0/M18/M19 evidence",
+    "All PASS claims require final-source real execution"
+  ],
+  "worktree": "/Users/hatsunemiku/.codex/worktrees/mio-gofree-v02/mio",
+  "branch": "EXP/go-free-single-binary",
+  "architecture_revision": "PURE_MIO_ARCHITECTURE.md (user override 2026-10-26)",
+  "prohibited_actions": [
+    "commit",
+    "push",
+    "tag",
+    "release"
+  ],
+  "formal_toolchain_languages": [
+    "Mio Native AOT"
+  ],
+  "reference_tools_scope": "isolated development/reference/audit only; not production build or release dependencies"
+}

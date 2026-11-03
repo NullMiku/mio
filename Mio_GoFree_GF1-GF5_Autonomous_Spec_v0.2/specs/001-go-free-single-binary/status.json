@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "spec_version": "0.2",
+  "project": "Mio Go-free Single Binary",
+  "source": "GF0 audit 2026-10-26; must verify source and evidence before resuming",
+  "gf0": {
+    "status": "PASS",
+    "source_manifest_sha256": "57f92e4bd36851a12aae62511e46016bd4c28ab00002db2ffaec3086d81a4ea6",
+    "historical_manifest_sha256": "aaa6e10aa344566c8ff72e2964b0c4f5c78b823591a83bff1ac31448b210f4e7",
+    "report": "gf0/AUDIT.md"
+  },
+  "phases": {
+    "GF1": {"status": "NOT_RUN", "evidence": null, "blockers": []},
+    "GF2": {"status": "NOT_RUN", "evidence": null, "blockers": []},
+    "GF3": {"status": "NOT_RUN", "evidence": null, "blockers": []},
+    "GF4": {"status": "NOT_RUN", "evidence": null, "blockers": []},
+    "GF5": {"status": "NOT_RUN", "evidence": null, "blockers": []}
+  },
+  "acceptance": {
+    "A1": "NOT_RUN", "A2": "NOT_RUN", "A3": "NOT_RUN", "A4": "NOT_RUN",
+    "A5": "NOT_RUN", "A6": "NOT_RUN", "A7": "NOT_RUN", "A8": "NOT_RUN",
+    "A9": "NOT_RUN", "A10": "NOT_RUN", "A11": "NOT_RUN", "A12": "NOT_RUN"
+  },
+  "go_free_single_binary": "NOT_ACCEPTED",
+  "m19b_full_race_historical": "NOT_ACCEPTED",
+  "remote_release": "NOT_RUN",
+  "source_manifest_current": null,
+  "notes": ["Do not overwrite historical GF0/M18/M19 evidence", "All PASS claims require final-source real execution"]
+}
