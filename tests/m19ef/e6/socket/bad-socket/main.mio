@@ -1,0 +1,3 @@
+yobu "mio/sys/socket";
+// Resource tokens cannot be fabricated from ordinary integers.
+socket.status(123,[uint8(0)]);

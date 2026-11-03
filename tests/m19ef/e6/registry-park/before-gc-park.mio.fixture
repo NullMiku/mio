@@ -1,0 +1,15 @@
+waza gc_park_locked_program() -> ir.Function {
+    // Caller holds this context's mutex. On return it still holds that mutex.
+    // A returned error never authorizes resuming while a collector is active.
+    // A stuck owner causes process abort rather than releasing live root frames.
+    kaku f=ir.function("gc_park_locked");tprepare(f);tload(f,10,thread_registry);ir.put(f,ir.acquire_load,11,10,0,gc_registry_owner);ir.branch(f,ir.zero,11,"idle");ir.put(f,ir.equal,12,11,0,0);ir.branch(f,ir.nonzero,12,"idle");
+    tload(f,13,thread_progress);ir.put(f,ir.acquire_load,12,10,0,gc_registry_epoch);ir.put(f,ir.release_store,0,0,12,thread_ack_epoch);tpublish(f,thread_progress,thread_gc_parked);
+    ir.put(f,ir.acquire_load,15,10,0,gc_registry_heartbeat);ir.invoke_function(f,"platform_now",14,[]);tconstant(f,16,30000000000);ir.put(f,ir.add,14,14,16,0);
+    ir.branch(f,ir.label,0,"wait");ir.put(f,ir.acquire_load,11,10,0,gc_registry_owner);ir.branch(f,ir.zero,11,"resumed");ir.put(f,ir.acquire_load,12,10,0,gc_registry_epoch);ir.put(f,ir.release_store,0,0,12,thread_ack_epoch);
+    ir.put(f,ir.acquire_load,12,10,0,gc_registry_heartbeat);ir.put(f,ir.equal,17,12,15,0);ir.branch(f,ir.nonzero,17,"check_deadline");ir.put(f,ir.copy,15,12,0,0);ir.invoke_function(f,"platform_now",14,[]);ir.put(f,ir.add,14,14,16,0);
+    ir.branch(f,ir.label,0,"check_deadline");ir.invoke_function(f,"platform_now",17,[]);ir.put(f,ir.less_unsigned,18,17,14,0);ir.branch(f,ir.zero,18,"fatal");
+    tload(f,2,thread_mutex);tload(f,3,thread_condition);tconstant(f,4,10000000);ir.invoke_function(f,"platform_wait",5,[3,2,4]);ir.branch(f,ir.zero,5,"wait");tcheck(f,5,1,"wait");terror(f,5);ir.branch(f,ir.jump,0,"wait");
+    ir.branch(f,ir.label,0,"resumed");ir.put(f,ir.acquire_load,12,10,0,gc_registry_epoch);ir.put(f,ir.release_store,0,0,12,thread_seen_epoch);ir.put(f,ir.release_store,0,0,13,thread_progress);treturn(f,0);
+    ir.branch(f,ir.label,0,"idle");treturn(f,0);
+    ir.branch(f,ir.label,0,"fatal");tconstant(f,1,81);ir.call(f,abort_runtime,1,[1]);treturn(f,3);kaesu f;
+}

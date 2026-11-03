@@ -1,0 +1,7 @@
+{
+  "files": {
+    "before-large_objects.mio.fixture": "04d1a5d83cc03d154de08df3dbbfdf57dd8eef178791d46ac306ce2c08923bcf",
+    "before-runtime-alloc.mio.fixture": "b1bbbdfeafacbe1b0381353858901498cde59639b3c7ff034ed70b7c98e96277"
+  },
+  "reason": "preserved before-repair emitter bodies for independent historical byte-equivalence; never a current-runtime PASS"
+}
