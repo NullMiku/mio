@@ -1,0 +1,159 @@
+yobu "kiso/runtime/admission";
+yobu "kiso/array";
+waza check(ok: bool,label: string) -> unit {moshi(!ok){chant(label);}}
+waza fresh(hard: int64) -> admission.Controller {
+ kaku c=admission.create(hard,10,100,0);
+ moshi(c!=mu){
+  check(admission.observe_words(c,[0,0,0,0,1000000,0,0,2],admission.Feedback{latency_ms:0,target_ms:0,queue_wait_ms:0},0),"initial snapshot");
+  kaesu c;
+ }
+ kaesu fresh(1);
+}
+waza pressure(c: admission.Controller,level: int64,used: int64,now: int64) -> unit {
+ check(admission.observe_words(c,[level,4,used,used,1000000,0,0,2],admission.Feedback{latency_ms:0,target_ms:0,queue_wait_ms:0},now),"pressure accepted");
+}
+waza limits() -> unit {
+ check(admission.create(0,10,0,0)==mu,"invalid config");
+ kaku c=fresh(4);kaku ids=array.with_capacity[int64](4);kaku i=0;
+ aida(i<4){kaku r=admission.try_acquire(c,i,10,1000,0);check(r.state==admission.Granted,"four classes");array.push(ids,r.id);i=i+1;}
+ check(admission.try_acquire(c,0,10,1000,0).reason==admission.Capacity,"global hard");
+ check(admission.active(c)==4,"active count");
+ check(admission.release(c,ids[0],0),"release");check(!admission.release(c,ids[0],0),"duplicate release");
+ check(admission.try_acquire(c,9,10,1000,0).reason==admission.Invalid,"untrusted class");
+ check(admission.try_acquire(c,0,10,0,0).reason==admission.Deadline,"expired submit");
+ kaku d=fresh(8);check(admission.configure(d,0,1,1,5),"class config");
+ check(admission.try_acquire(d,0,10,1000,0).state==1,"class first");
+ check(admission.try_acquire(d,0,10,1000,0).reason==admission.Capacity,"class hard");
+ check(admission.try_acquire(d,1,10,1000,0).state==1,"independent class");
+ kaku q=admission.enqueue(d,0,10,1000,0);check(q.state==2,"class queued");
+ check(admission.enqueue(d,0,10,1000,0).reason==admission.QueueFull,"class queue hard");
+ kaku events=admission.tick(d,5);check(admission.state(d,q.id)==admission.TimedOut,"class deadline");
+ check(admission.active(d)==2,"expired runner retained");
+ check(admission.release(d,1,5),"deadline acknowledgement");check(admission.stat(d,0,9)==2,"runner and waiter timed out");
+}
+waza bounded_queue() -> unit {
+ kaku c=fresh(8);pressure(c,3,0,0);
+ check(admission.try_acquire(c,0,10,100,0).reason==admission.Pressure,"critical rejects");
+ kaku a=admission.enqueue(c,0,10,100,0);kaku b=admission.enqueue(c,1,10,10,0);
+ check(a.state==2 && b.state==2,"critical bounded wait");
+ check(admission.next_deadline(c)==10,"earliest timer");
+ check(admission.enqueue(c,2,10,100,0).reason==admission.QueueFull,"global queue full");
+ check(len(admission.tick(c,9))==0,"no early timeout");
+ check(len(admission.tick(c,10))==1,"caller deadline");
+ check(admission.state(c,b.id)==admission.TimedOut,"caller timeout state");
+ check(len(admission.tick(c,19))==0,"19ms");
+ check(len(admission.tick(c,20))==1,"20ms timeout");
+ check(admission.waiting(c)==0,"expiry removed");
+ check(admission.next_deadline(c)==-1,"no idle polling");
+ check(len(admission.tick(c,21))==0,"no infinite waiting");
+ check(!admission.cancel(c,a.id),"terminal cancel");
+ kaku d=fresh(1);kaku run=admission.try_acquire(d,3,10,100,0);
+ kaku q=admission.enqueue(d,0,10,100,0);
+ check(admission.cancel(d,q.id),"cancel waiter");check(admission.waiting(d)==0,"cancel removes waiter");
+ check(admission.cancel(d,run.id),"cancel running");check(admission.active(d)==1,"cancel does not fake completion");
+ check(admission.try_acquire(d,1,10,100,0).state==admission.Rejected,"cancel retains permit");
+ check(admission.release(d,run.id,0),"cancel ack");check(admission.stat(d,3,8)==1,"cancel stats");
+ check(admission.try_acquire(d,1,10,100,0).state==1,"cancel recovers slot");
+ check(!admission.release(d,run.id,0),"stale id after reuse");
+}
+waza recovery() -> unit {
+ kaku c=fresh(40);kaku r=admission.try_acquire(c,0,10,10000,0);
+ pressure(c,3,0,1);check(admission.allowed(c)==0,"fast restriction");check(admission.active(c)==1,"running survives Critical");
+ pressure(c,3,0,10);check(admission.allowed(c)==0,"respect pressure hysteresis");
+ pressure(c,0,999999,20);check(admission.allowed(c)==0,"unsafe margin blocks probe");
+ pressure(c,0,0,21);check(admission.allowed(c)==1,"single probe");
+ check(admission.release(c,r.id,21),"old completion");
+ kaku q=admission.enqueue(c,1,10,10000,21);check(q.state==1,"probe granted");
+ check(admission.enqueue(c,2,10,10000,21).state==2,"probe bounded queue");
+ check(len(admission.tick(c,21))==0,"no queue flood");
+ pressure(c,0,0,3020);check(admission.allowed(c)==1,"3s stability required");
+ pressure(c,0,0,3021);check(admission.allowed(c)==3,"5 percent recovery step");
+ pressure(c,0,0,100000);check(admission.allowed(c)==5,"no catchup burst");
+ pressure(c,1,0,100001);check(admission.allowed(c)==5,"Elevated freezes growth");
+ pressure(c,2,0,100002);check(admission.allowed(c)==4,"High shrinks");
+ pressure(c,3,0,100003);check(admission.allowed(c)==0,"Critical reentry");
+ pressure(c,0,0,100004);check(admission.allowed(c)==1,"recovery restarts");
+ kaku f=admission.Feedback{latency_ms:50,target_ms:10,queue_wait_ms:15};
+ kaku d=fresh(20);check(admission.observe_words(d,[0,0,0,0,1000000,0,0,2],f,1),"feedback");check(admission.allowed(d)==18,"latency budget");
+ pressure(d,1,0,2);check(admission.allowed(d)==18,"Elevated no blind increase");
+ check(!admission.observe_words(d,[0,0,0,0,1000000,0,0,3],f,3),"reject unpublished odd snapshot");
+ check(!admission.observe_words(d,[0,0,0,0,1000000,0,0,2],f,1),"monotonic clock");
+ check(admission.observe_words(d,[0,0,0,0,1000000,0,1,2],f,3),"GC input");
+ check(admission.allowed(d)==0,"no admission during GC");
+}
+waza memory_budget() -> unit {
+ kaku c=fresh(8);pressure(c,0,999870,0); // 30 bytes after reserve
+ check(admission.allowed(c)==3,"memory clamp");
+ kaku a=admission.try_acquire(c,0,20,100,0);check(a.state==1,"large estimate");
+ check(admission.try_acquire(c,1,20,100,0).reason==admission.Memory,"inflight reservation");
+ check(admission.release(c,a.id,0),"memory release permit");
+ pressure(c,0,999890,1);check(admission.allowed(c)==1,"release did not free observed heap");
+ check(admission.try_acquire(c,0,20,100,1).reason==admission.Memory,"heap still charged");
+}
+waza fair() -> unit {
+ kaku c=fresh(40);kaku i=0;kaku first=0;
+ aida(i<40){kaku r=admission.try_acquire(c,3,10,10000,0);check(r.state==1,"idle borrowing");moshi(i==0){first=r.id;}i=i+1;}
+ kaku counts=array.make[int64](4,0);i=0;
+ aida(i<4){check(admission.enqueue(c,i,10,10000,0).state==2,"competing queue");i=i+1;}
+ check(admission.release(c,first,0),"reclaim borrowed token");
+ i=0;aida(i<100){
+  kaku events=admission.tick(c,0);check(len(events)==1,"bounded fair progress");
+  moshi(len(events)==1){
+   kaku id=events[0].id;kaku cl=admission.class_of(c,id);
+   counts[cl]=counts[cl]+1;check(admission.release(c,id,0),"fair completion");
+   check(admission.enqueue(c,cl,10,10000,0).state==2,"fair refill");
+  }i=i+1;
+ }
+ check(counts[0]==50 && counts[1]==30 && counts[2]==10 && counts[3]==10,"5:3:1:1 fairness and no starvation");
+ chant(counts[0]);chant(counts[1]);chant(counts[2]);chant(counts[3]);
+}
+waza roots() -> unit {
+ kaku c=fresh(8);kaku alias=c;kaku data=array.make[int64](20000,713);
+ kaku i=0;aida(i<12){
+  pressure(c,3,0,i*2);pressure(c,0,0,i*2+1);
+  kaku churn=array.make[uint8](131072,uint8(7));check(churn[131071]==uint8(7),"LOS churn");
+  check(data[19999]==713,"root survives pressure changes");check(admission.allowed(alias)==1,"controller alias survives GC");i=i+1;
+ }
+}
+waza edges() -> unit {
+ kaku big=fresh(128);check(admission.queue_capacity(big)==32,"queue cap 32");
+ kaku small=fresh(5);check(admission.queue_capacity(small)==2,"ceil healthy quarter");
+ check(admission.try_acquire(small,0,9,100,0).reason==admission.Invalid,"estimate floor");
+ check(!admission.observe_words(small,[0],admission.Feedback{latency_ms:0,target_ms:0,queue_wait_ms:0},0),"snapshot length");
+ kaku c=fresh(8);check(admission.configure(c,0,1,2,60000),"head class config");
+ kaku run=admission.try_acquire(c,0,10,100,0);kaku blocked=admission.enqueue(c,0,10,100,0);
+ kaku first=admission.enqueue(c,1,10,100,0);
+ check(admission.try_acquire(c,2,10,100,0).state==admission.Rejected,"newcomer cannot bypass queue");
+ kaku e=admission.tick(c,0);check(len(e)==1,"blocked class does not block another");
+ moshi(len(e)==1){check(e[0].id==first.id,"class FIFO");}
+ check(admission.cancel(c,blocked.id),"head cancel");
+ check(admission.release(c,run.id,0),"head completion");
+ check(!admission.configure(c,0,1,1,100),"no live reconfiguration");
+ kaku d=fresh(2);kaku a=admission.try_acquire(d,0,10,5,0);kaku b=admission.try_acquire(d,1,10,5,0);
+ kaku events=admission.tick(d,5);check(len(events)==2,"all running expiry notifications");
+ check(admission.active(d)==2 && admission.state(d,a.id)==admission.TimeoutPending,"deadline keeps running budget");
+ check(len(admission.tick(d,6))==0,"expiry notified once");
+ check(admission.release(d,a.id,6) && admission.release(d,b.id,6),"timeout acknowledgement");
+ check(admission.total_stat(d,9)==2 && admission.total_stat(d,7)==0,"terminal statistics distinct");
+}
+waza lifecycle_invariants() -> unit {
+ kaku c=fresh(12);kaku seed=7;kaku last=0;kaku n=0;
+ aida(n<300){
+  seed=seed*17+13;seed=seed-seed/100003*100003;
+  kaku action=seed-seed/7*7;kaku cl=seed-seed/4*4;
+  kaku id=last;moshi(last>0){id=seed-seed/last*last+1;}
+  moshi(action<3){kaku r=admission.enqueue(c,cl,10,1000,n);moshi(r.id>0){last=r.id;}}
+  moshi(action==3){admission.cancel(c,id);}
+  moshi(action==4){admission.release(c,id,n);}
+  moshi(action==5){pressure(c,cl,0,n);}
+  moshi(action==6){pressure(c,0,0,n);}
+  admission.tick(c,n);
+  check(admission.active(c)==admission.total_stat(c,admission.StatActive),"active accounting invariant");
+  check(admission.waiting(c)==admission.total_stat(c,admission.StatWaiting),"queue accounting invariant");
+  check(admission.active(c)>=0 && admission.active(c)<=12,"global bound invariant");
+  check(admission.waiting(c)>=0 && admission.waiting(c)<=3,"queue bound invariant");
+  kaku j=0;aida(j<4){check(admission.stat(c,j,3)>=0 && admission.stat(c,j,4)>=0,"class nonnegative invariant");j=j+1;}
+  n=n+1;
+ }
+}
+lifecycle_invariants();edges();limits();bounded_queue();recovery();memory_budget();fair();roots();chant("PASS");
