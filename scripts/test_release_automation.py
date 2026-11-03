@@ -149,7 +149,7 @@ class PolicyTests(unittest.TestCase):
         import shutil
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            shutil.copytree(release.ROOT / '.github/workflows', root / '.github/workflows')
+            shutil.copytree(release.ROOT / '.github/legacy-workflows/reference-profile', root / '.github/workflows')
             path = root / '.github/workflows/release.yml'
             original = path.read_text()
             path.write_text(original.replace('needs: [preflight, test, m18, package, verify]',

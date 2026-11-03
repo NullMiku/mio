@@ -1,0 +1,52 @@
+// Isolated native audit fixture. Port of the existing M19b metadata probes;
+// actual lower/runtime source is copied unchanged beside this file for private access.
+yobu "kiso/fs";
+yobu "kiso/os";
+yobu "kiso/aot/sign";
+waza audit_eq(code: arm64.Assembler, register: int64, value: int64) -> unit {emit(code,arm64.movz_x(11,value,0));emit(code,arm64.cmp_x(register,11));arm64.assembler_b_cond(code,1,"runtime_error");}
+waza audit_alloc(code: arm64.Assembler, destination: int64, reference: bool) -> unit {emit(code,arm64.movz_x(0,16,0));emit(code,arm64.movz_x(1,105,0));arm64.assembler_bl(code,"runtime_alloc");arm64.assembler_cbz_x(code,0,"runtime_error");move_x(code,destination,0);kaku kind=6;moshi(reference){kind=262;}emit(code,arm64.movz_x(9,kind,0));emit(code,arm64.str_x(9,destination,0));emit(code,arm64.str_x(31,destination,8));}
+waza audit_root(code: arm64.Assembler, slot: int64, register: int64) -> unit {emit(code,arm64.str_x(register,31,16+slot*8));}
+waza audit_minor(code: arm64.Assembler, count: int64) -> unit {kaku at=0;aida(at<count){arm64.assembler_bl(code,"gen_minor");at=at+1;}}
+waza audit_metric(code: arm64.Assembler, offset: int64, value: int64) -> unit {emit(code,arm64.ldr_x(10,23,offset));audit_eq(code,10,value);}
+waza audit_flags(code: arm64.Assembler, pointer: int64, value: int64) -> unit {emit(code,arm64.sub_imm_x(9,pointer,16,iie));emit(code,arm64.ldr_x(10,9,0));emit(code,arm64.lsr_x(10,10,32));audit_eq(code,10,value);}
+waza audit_mode(mode: string, output: string) -> bool {
+ kaku code=arm64.assembler();emit_runtime_init(code,4096,3072);
+ emit(code,arm64.sub_imm_x(31,31,64,iie));emit(code,arm64.str_x(31,31,0));emit(code,arm64.movz_x(9,4,0));emit(code,arm64.str_x(9,31,8));kaku at=0;aida(at<4){audit_root(code,at,31);at=at+1;}emit(code,arm64.add_imm_x(24,31,0,iie));
+ moshi(mode=="ages"){
+  audit_alloc(code,20,iie);audit_root(code,0,20);audit_flags(code,20,0);at=1;aida(at<=3){audit_minor(code,1);kaku flag=at*16;moshi(at==3){flag=flag+264;}audit_flags(code,20,flag);at=at+1;}emit(code,arm64.ldr_x(10,31,16));emit(code,arm64.cmp_x(10,20));arm64.assembler_b_cond(code,1,"runtime_error");audit_metric(code,gen_PromotedObjects,1);
+ }
+ moshi(mode=="remembered" || mode=="precision" || mode=="minor-scan"){
+  audit_alloc(code,20,mode!="precision");audit_root(code,0,20);
+  moshi(mode=="minor-scan"){at=0;aida(at<63){audit_alloc(code,21,hai);emit(code,arm64.str_x(20,21,8));move_x(code,20,21);audit_root(code,0,20);at=at+1;}}
+  audit_minor(code,4);audit_metric(code,gen_RememberedCount,0);audit_alloc(code,21,iie);emit(code,arm64.movz_x(9,77,0));emit(code,arm64.str_x(9,21,8));emit(code,arm64.str_x(21,20,8));emit_gen_remember(code,20);emit_gen_remember(code,20);audit_metric(code,gen_RememberedCount,1);audit_minor(code,1);
+  moshi(mode!="precision"){emit(code,arm64.ldr_x(9,20,8));emit(code,arm64.ldr_x(10,9,8));audit_eq(code,10,77);}sore{audit_metric(code,gen_YoungBytes,0);}
+  moshi(mode=="minor-scan"){audit_metric(code,gen_ScannedOld,65);}
+  emit(code,arm64.str_x(31,20,8));emit_gen_remember(code,20);audit_minor(code,1);audit_metric(code,gen_RememberedCount,0);audit_metric(code,gen_YoungBytes,0);
+ }
+ moshi(mode=="promotion-edge"){
+  audit_alloc(code,20,hai);audit_root(code,0,20);audit_minor(code,2);audit_alloc(code,21,iie);emit(code,arm64.movz_x(9,91,0));emit(code,arm64.str_x(9,21,8));emit(code,arm64.str_x(21,20,8));audit_minor(code,1);audit_flags(code,20,312);audit_minor(code,1);emit(code,arm64.ldr_x(9,20,8));emit(code,arm64.ldr_x(10,9,8));audit_eq(code,10,91);
+ }
+ moshi(mode=="major"){
+  audit_alloc(code,20,hai);audit_root(code,0,20);audit_minor(code,3);audit_root(code,0,31);audit_minor(code,1);audit_metric(code,gen_OldBytes,32);arm64.assembler_bl(code,"gen_major");audit_metric(code,gen_OldBytes,0);audit_alloc(code,21,iie);audit_root(code,0,21);audit_minor(code,1);audit_flags(code,21,16);
+ }
+ moshi(mode=="precision-storage"){
+  emit(code,arm64.movz_x(0,40,0));emit(code,arm64.movz_x(1,102,0));arm64.assembler_bl(code,"runtime_alloc");move_x(code,20,0);emit(code,arm64.movz_x(9,2051,0));emit(code,arm64.str_x(9,20,0));emit(code,arm64.movz_x(9,1,0));emit(code,arm64.str_x(9,20,8));emit(code,arm64.str_x(9,20,16));emit(code,arm64.str_x(31,20,24));emit(code,arm64.str_x(31,20,32));audit_root(code,0,20);audit_minor(code,3);audit_alloc(code,21,iie);emit(code,arm64.str_x(21,20,32));emit_gen_remember(code,20);audit_minor(code,1);audit_metric(code,gen_YoungBytes,0);audit_metric(code,gen_OldBytes,64);emit(code,arm64.ldr_x(10,20,32));emit(code,arm64.cmp_x(10,21));arm64.assembler_b_cond(code,1,"runtime_error");
+ }
+ moshi(mode=="adaptive"){
+  at=0;aida(at<18){audit_alloc(code,20,iie);audit_minor(code,1);at=at+1;}audit_metric(code,gen_Threshold,8);audit_alloc(code,20,iie);audit_root(code,0,20);audit_minor(code,4);audit_metric(code,gen_Threshold,7);
+ }
+ moshi(mode=="cross-graph"){
+  audit_alloc(code,20,hai);audit_root(code,0,20);audit_alloc(code,21,hai);audit_root(code,1,21);emit(code,arm64.str_x(21,20,8));audit_minor(code,3);audit_alloc(code,22,hai);emit(code,arm64.str_x(22,20,8));emit(code,arm64.str_x(22,21,8));emit_gen_remember(code,20);emit_gen_remember(code,21);audit_alloc(code,25,iie);emit(code,arm64.movz_x(9,123,0));emit(code,arm64.str_x(9,25,8));emit(code,arm64.str_x(25,22,8));audit_minor(code,1);audit_alloc(code,22,hai);audit_root(code,0,22);audit_root(code,1,31);emit(code,arm64.str_x(21,22,8));audit_minor(code,1);emit(code,arm64.ldr_x(9,22,8));emit(code,arm64.ldr_x(9,9,8));emit(code,arm64.ldr_x(9,9,8));emit(code,arm64.ldr_x(10,9,8));audit_eq(code,10,123);
+ }
+ moshi(mode=="alternating"){
+  audit_alloc(code,20,hai);audit_root(code,0,20);at=0;aida(at<40){audit_alloc(code,21,iie);emit(code,arm64.movz_x(9,at,0));emit(code,arm64.str_x(9,21,8));emit(code,arm64.str_x(21,20,8));emit_gen_remember(code,20);audit_minor(code,1);moshi(at-(at/4)*4==0){arm64.assembler_bl(code,"gen_major");}emit(code,arm64.ldr_x(9,20,8));emit(code,arm64.ldr_x(10,9,8));audit_eq(code,10,at);at=at+1;}audit_root(code,0,31);arm64.assembler_bl(code,"gen_major");audit_metric(code,gen_OldBytes,0);audit_metric(code,gen_YoungBytes,0);
+ }
+ moshi(mode=="shadow-frame-pop"){
+  audit_alloc(code,20,hai);audit_root(code,0,20);audit_minor(code,3);audit_metric(code,gen_OldBytes,32);emit_shadow_pop(code,64);audit_eq(code,24,0);arm64.assembler_bl(code,"gen_major");audit_metric(code,gen_OldBytes,0);audit_metric(code,gen_YoungBytes,0);
+ }
+ emit(code,arm64.movz_x(0,0,0));emit(code,arm64.movz_x(16,1,0));emit(code,arm64.svc(128));
+ kaku labels: []string=["runtime_error","runtime_oom","runtime_gc_bad_type","runtime_gc_bad_kind","runtime_gc_bad_count"];at=0;aida(at<len(labels)){arm64.assembler_label(code,labels[at]);at=at+1;}
+ emit(code,arm64.movz_x(0,1,0));emit(code,arm64.movz_x(16,1,0));emit(code,arm64.svc(128));emit_managed_runtime(code,iie,3072,iie);kaku result=arm64.assembler_assemble(code);moshi(result.error!=mu){kaesu iie;}
+ kaku image=macho.executable(macho.ImageSpec {words:result.words,constants:[],globals:0,patches:[]});moshi(image.error!=mu){kaesu iie;}kaku signed=sign.adhoc(image.bytes);moshi(signed.error!=""){kaesu iie;}kaesu fs.write_all(output,signed.bytes).error==mu && os.chmod(output,493)==0;
+}
+waza audit_main() -> unit {kaku args=os.arguments();moshi(len(args)!=2){os.exit(2);kaesu;}kaku modes: []string=["ages","remembered","promotion-edge","major","precision","adaptive","cross-graph","alternating","minor-scan","precision-storage","shadow-frame-pop"];kaku at=0;aida(at<len(modes)){kaku target=string.concat(args[1],string.concat("/",modes[at]));moshi(!audit_mode(modes[at],target)){os.exit(1);kaesu;}at=at+1;}}audit_main();

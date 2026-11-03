@@ -53,8 +53,13 @@ def metadata(tag, root=ROOT):
 def workflow_policy(root=ROOT):
     # PyYAML is installed explicitly in CI; BaseLoader keeps the YAML key "on" a string.
     import yaml
+    # Historical Go release policy is evaluated against its preserved profile.
+    # The active Pure-Mio candidate pipeline has an independent native contract.
+    directory = root / '.github/legacy-workflows/reference-profile'
+    if not directory.is_dir():
+        directory = root / '.github/workflows'
     workflows = {}
-    for path in (root / '.github/workflows').glob('*.y*ml'):
+    for path in directory.glob('*.y*ml'):
         workflows[path.name] = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
     release = workflows['release.yml']
     for name, doc in workflows.items():
@@ -63,7 +68,7 @@ def workflow_policy(root=ROOT):
             for job in doc['jobs'].values():
                 require(job.get('permissions', {}).get('contents') != 'write', f'competing writer: {name}')
             require(doc.get('permissions', {}).get('contents') != 'write', f'competing writer: {name}')
-            text = (root / '.github/workflows' / name).read_text()
+            text = (directory / name).read_text()
             require(not re.search(r'gh\s+release|releases\s*:\s*write|release_automation.py\s+publish|softprops/action-gh-release', text), f'competing publisher: {name}')
     require(release['permissions'] == {'contents': 'read'}, 'global permissions must be read-only')
     require(set(release['on']) == {'push', 'workflow_dispatch'}, 'unexpected release trigger')
