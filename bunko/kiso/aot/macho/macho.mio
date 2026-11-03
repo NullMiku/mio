@@ -146,12 +146,22 @@ waza patch_words(spec: ImageSpec, layout: Layout) -> ImageResult {
     kaesu ImageResult { bytes: binary.writer_bytes(temp), layout: layout, error: mu };
 }
 
-koukai waza executable(spec: ImageSpec) -> ImageResult {
+koukai waza executable(spec: ImageSpec) -> ImageResult { kaesu executable_bounded(spec,2052); }
+// Keep the source-language/private ABI global envelope intact. A target runtime
+// may append separately owned words; it may not consume existing user slots.
+koukai waza executable_with_runtime_data(spec: ImageSpec, runtime_words: int64) -> ImageResult {
+    moshi(spec.globals<0 || spec.globals>2052 || runtime_words<0 || runtime_words>8192){
+        kaesu ImageResult {bytes:[],layout:plan(0,0,0),error:MachOError.TooManyGlobals()};
+    }
+    kaesu executable_bounded(ImageSpec {words:spec.words,constants:spec.constants,
+        globals:spec.globals+runtime_words,patches:spec.patches},10244);
+}
+waza executable_bounded(spec: ImageSpec, maximum_globals:int64) -> ImageResult {
     kaku empty_layout = plan(0, 0, 0);
     moshi (len(spec.words) == 0) { kaesu ImageResult { bytes: [], layout: empty_layout, error: MachOError.EmptyText() }; }
     // The lowerer still enforces 2048 user globals. Four private ABI words
     // preserve that capacity when assertion reporting and OS arguments coexist.
-    moshi (spec.globals < 0 || spec.globals > 2052) { kaesu ImageResult { bytes: [], layout: empty_layout, error: MachOError.TooManyGlobals() }; }
+    moshi (spec.globals < 0 || spec.globals > maximum_globals) { kaesu ImageResult { bytes: [], layout: empty_layout, error: MachOError.TooManyGlobals() }; }
     moshi (len(spec.words) > (maximum_image_size - entry_offset) / 4 || len(spec.constants) > maximum_image_size) {
         kaesu ImageResult { bytes: [], layout: empty_layout, error: MachOError.ImageTooLarge() };
     }

@@ -30,3 +30,12 @@ waza test_image_address_patch_bounds() -> unit {
     kaku bad: []AddressPatch = [AddressPatch { at_word: 9, add_at_word: -1, target: data_target(), target_offset: 0, register: 8 }];
     testing.expect(executable(ImageSpec { words: words, constants: [], globals: 0, patches: bad }).error != mu, "out-of-bounds patch rejected");
 }
+
+waza test_appended_runtime_data_preserves_global_envelope() -> unit {
+    kaku spec=ImageSpec {words:[arm64.ret().word],constants:[],globals:2052,patches:[]};
+    kaku image=executable_with_runtime_data(spec,8192);
+    testing.expect(image.error==mu && image.layout.linkedit_offset-image.layout.data_offset==98304, "runtime storage follows full source/private globals");
+    testing.expect(executable(spec).error==mu, "legacy maximum still valid");
+    testing.expect(executable_with_runtime_data(spec,8193).error!=mu, "runtime allocation bound is checked independently");
+    testing.expect(executable_with_runtime_data(ImageSpec {words:spec.words,constants:[],globals:2053,patches:[]},1).error!=mu, "runtime extension cannot bypass source/private bound");
+}

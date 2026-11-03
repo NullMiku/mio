@@ -52,7 +52,11 @@ waza emit_process_runtime(code: arm64.Assembler, patches: []macho.AddressPatch, 
     arm64.assembler_label(code, "nativeos_remove_bad"); emit(code, arm64.movn_x(0, 21, 0));
     arm64.assembler_label(code, "nativeos_remove_return"); emit(code, arm64.add_imm_x(31, 31, 32, iie)); leave(code);
 
-    arm64.assembler_label(code, "nativeos_exec"); enter(code); emit(code, arm64.sub_imm_x(31, 31, 96, iie));
+    kaku managed_workers=arm64.assembler_label_word(code,"worker_roots_enabled")>=0;
+    arm64.assembler_label(code, "nativeos_exec");
+    moshi(managed_workers){bits(code,6,0);arm64.assembler_b(code,"nativeos_exec_common");arm64.assembler_label(code,"nativeos_worker_spawn");bits(code,6,1);arm64.assembler_label(code,"nativeos_exec_common");}
+    enter(code); emit(code, arm64.sub_imm_x(31, 31, 96, iie));
+    moshi(managed_workers){emit(code,arm64.str_x(6,31,80));}
     emit(code, arm64.str_x(1, 31, 8)); emit(code, arm64.str_x(31, 31, 48)); emit(code, arm64.str_x(31, 31, 40)); arm64.assembler_bl(code, "nativefs_cpath");
     arm64.assembler_cbz_x(code, 0, "nativeos_exec_badpath"); emit(code, arm64.str_x(0, 31, 16)); emit(code, arm64.str_x(1, 31, 24));
     emit(code, arm64.ldr_x(9, 31, 8)); emit(code, arm64.ldr_x(10, 9, 8)); emit(code, arm64.str_x(10, 31, 32)); bits(code, 11, 65535); emit(code, arm64.cmp_x(10, 11)); arm64.assembler_b_cond(code, 8, "nativeos_exec_too_many");
@@ -63,7 +67,8 @@ waza emit_process_runtime(code: arm64.Assembler, patches: []macho.AddressPatch, 
     arm64.assembler_cbz_x(code, 0, "nativeos_exec_invalid_argument"); emit(code, arm64.ldr_x(9, 31, 48)); emit(code, arm64.ldr_x(10, 31, 40)); emit(code, arm64.lsl_x(11, 10, 3)); emit(code, arm64.add_x(12, 9, 11)); emit(code, arm64.str_x(0, 12, 0));
     emit(code, arm64.ldr_x(12, 31, 32)); emit(code, arm64.add_imm_x(12, 12, 1, iie)); emit(code, arm64.lsl_x(12, 12, 3)); emit(code, arm64.add_x(12, 12, 11)); emit(code, arm64.add_x(12, 9, 12)); emit(code, arm64.str_x(1, 12, 0));
     emit(code, arm64.add_imm_x(10, 10, 1, iie)); emit(code, arm64.str_x(10, 31, 40)); arm64.assembler_b(code, "nativeos_exec_copy_loop");
-    arm64.assembler_label(code, "nativeos_exec_invoke"); emit(code, arm64.ldr_x(0, 31, 16)); emit(code, arm64.ldr_x(1, 31, 48)); os_state_address(code, patches, state); emit(code, arm64.ldr_x(2, 9, 16)); bits(code, 16, 59); emit(code, arm64.svc(128)); emit(code, arm64.sub_x(0, 31, 0)); arm64.assembler_b(code, "nativeos_exec_failure");
+    arm64.assembler_label(code, "nativeos_exec_invoke"); emit(code, arm64.ldr_x(0, 31, 16)); emit(code, arm64.ldr_x(1, 31, 48)); os_state_address(code, patches, state); emit(code, arm64.ldr_x(2, 9, 16)); moshi(managed_workers){emit(code,arm64.ldr_x(9,31,80));arm64.assembler_cbz_x(code,9,"nativeos_exec_replace");emit_worker_spawn_invoke(code);arm64.assembler_label(code,"nativeos_exec_replace");}
+    bits(code, 16, 59); emit(code, arm64.svc(128)); emit(code, arm64.sub_x(0, 31, 0)); arm64.assembler_b(code, "nativeos_exec_failure");
     arm64.assembler_label(code, "nativeos_exec_invalid_argument"); emit(code, arm64.movn_x(0, 21, 0)); arm64.assembler_b(code, "nativeos_exec_failure");
     arm64.assembler_label(code, "nativeos_exec_nomemory"); emit(code, arm64.movn_x(0, 11, 0)); arm64.assembler_b(code, "nativeos_exec_failure");
     arm64.assembler_label(code, "nativeos_exec_too_many"); emit(code, arm64.movn_x(0, 6, 0));
@@ -78,7 +83,7 @@ waza emit_process_runtime(code: arm64.Assembler, patches: []macho.AddressPatch, 
     arm64.assembler_label(code, "nativeos_exec_return"); emit(code, arm64.add_imm_x(31, 31, 96, iie)); leave(code);
 
     arm64.assembler_label(code, "nativeos_spawn_test"); bits(code, 6, 1); arm64.assembler_b(code, "nativeos_spawn_common");
-    arm64.assembler_label(code, "nativeos_spawn"); bits(code, 6, 0);
+    arm64.assembler_label(code, "nativeos_spawn"); moshi(managed_workers){arm64.assembler_b(code,"nativeos_worker_spawn");} bits(code, 6, 0);
     arm64.assembler_label(code, "nativeos_spawn_common"); enter(code); emit(code, arm64.sub_imm_x(31, 31, 96, iie));
     emit(code, arm64.str_x(0, 31, 0)); emit(code, arm64.str_x(1, 31, 8)); emit(code, arm64.str_x(31, 31, 16));
     emit(code, arm64.str_x(2, 31, 32)); emit(code, arm64.str_x(3, 31, 40)); emit(code, arm64.str_x(4, 31, 48)); emit(code, arm64.str_x(5, 31, 56)); emit(code, arm64.str_x(6, 31, 64));

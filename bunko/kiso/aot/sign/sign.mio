@@ -18,12 +18,15 @@ waza align(value: int64, boundary: int64) -> int64 { kaesu ((value + boundary - 
 // Deterministic local ad-hoc signature for our relocation-free ARM64 images.
 // No identity, certificate, entitlement or notarization is claimed. Every code
 // page hash covers the final header and final LC_CODE_SIGNATURE/__LINKEDIT.
-koukai waza adhoc(image: []uint8) -> SignResult {
+koukai waza adhoc(image: []uint8) -> SignResult { kaesu sign_image(image, iie); }
+// Explicit dynamic-image path: preserves an existing dyld binding payload.
+koukai waza adhoc_linked(image: []uint8) -> SignResult { kaesu sign_image(image, hai); }
+waza sign_image(image: []uint8, linked: bool) -> SignResult {
     moshi (len(image) < 768 || len(image) > 67108864 || len(image) != align(len(image), 16)) { kaesu failure("invalid unsigned image length"); }
     moshi (read32(image, 0) != 4277009103 || read32(image, 4) != 16777228 || read32(image, 12) != 2) { kaesu failure("expected ARM64 Mach-O executable"); }
     kaku count = read32(image, 16); kaku command_bytes = read32(image, 20);
     moshi (count < 1 || count > 32 || command_bytes > 720 || 32 + command_bytes + 16 > 768) { kaesu failure("invalid load commands"); }
-    kaku linkedit = -1; kaku text_limit = 0; kaku at = 32; kaku index = 0;
+    kaku linkedit = -1; kaku payload_size = 0; kaku text_limit = 0; kaku at = 32; kaku index = 0;
     aida (index < count) {
         moshi (at + 8 > 32 + command_bytes) { kaesu failure("truncated load command"); }
         kaku command = read32(image, at); kaku size = read32(image, at + 4);
@@ -34,8 +37,10 @@ koukai waza adhoc(image: []uint8) -> SignResult {
             kaku name: []uint8 = [95,95,76,73,78,75,69,68,73,84,0,0,0,0,0,0]; kaku equal = hai; kaku ni = 0;
             aida (ni < 16) { moshi (image[at + 8 + ni] != name[ni]) { equal = iie; } ni = ni + 1; }
             moshi (equal) {
-                moshi (linkedit >= 0 || read32(image, at + 40) != len(image) || read32(image, at + 44) != 0 || read32(image, at + 48) != 0 || read32(image, at + 52) != 0) { kaesu failure("unexpected LINKEDIT layout"); }
-                linkedit = at;
+                kaku offset = read32(image, at + 40); kaku size = read32(image, at + 48);
+                moshi (linkedit >= 0 || read32(image, at + 44) != 0 || read32(image, at + 52) != 0 ||
+                    offset > len(image) || size != len(image) - offset || (!linked && size != 0)) { kaesu failure("unexpected LINKEDIT layout"); }
+                payload_size = size; linkedit = at;
             }
             moshi (image[at + 8] == uint8(95) && image[at + 9] == uint8(95) && image[at + 10] == uint8(84) && image[at + 11] == uint8(69) && image[at + 12] == uint8(88) && image[at + 13] == uint8(84) && image[at + 14] == uint8(0)) {
                 text_limit = read32(image, at + 48);
@@ -53,8 +58,8 @@ koukai waza adhoc(image: []uint8) -> SignResult {
     aida (pad < signature_size) { array.push(output, uint8(0)); pad = pad + 1; }
     write32(output, 16, count + 1, iie); write32(output, 20, command_bytes + 16, iie);
     write32(output, at, 29, iie); write32(output, at + 4, 16, iie); write32(output, at + 8, len(image), iie); write32(output, at + 12, signature_size, iie);
-    write32(output, linkedit + 32, align(signature_size, 16384), iie); write32(output, linkedit + 36, 0, iie);
-    write32(output, linkedit + 48, signature_size, iie); write32(output, linkedit + 52, 0, iie);
+    write32(output, linkedit + 32, align(payload_size + signature_size, 16384), iie); write32(output, linkedit + 36, 0, iie);
+    write32(output, linkedit + 48, payload_size + signature_size, iie); write32(output, linkedit + 52, 0, iie);
     kaku base = len(image);
     write32(output, base, 4208856256, hai); write32(output, base + 4, blob_size, hai); write32(output, base + 8, 1, hai);
     write32(output, base + 12, 0, hai); write32(output, base + 16, 20, hai);
