@@ -1,0 +1,20 @@
+// Frozen M19b/c object ABI v1. No target page size or machine ABI lives here.
+koukai teisu layout_version = 1;
+koukai teisu header_bytes = 16;
+koukai teisu object_alignment = 16;
+koukai teisu metadata_bytes = 3072;
+koukai teisu default_los_threshold = 131072;
+koukai teisu side_entry_bytes = 16;
+koukai teisu young_head = 1048;
+koukai teisu remembered_head = 1056;
+koukai teisu collection_mode = 1064;
+koukai teisu promotion_threshold = 1072;
+koukai teisu minor_count = 1080;
+koukai teisu major_count = 1088;
+koukai teisu los_head = 2560;
+koukai teisu los_bytes = 2568;
+koukai teisu los_reclaimed = 2576;
+koukai teisu los_count = 2584;
+koukai teisu los_threshold = 2592;
+koukai teisu minimum_promotion_age = 2;
+koukai teisu maximum_promotion_age = 8;
