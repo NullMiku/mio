@@ -2,11 +2,11 @@ yobu "kiso/aot/arm64";
 
 // Independent page-rounded mappings. Prefix: next, mapping bytes, young link,
 // remembered link; unchanged object header at +32 and payload at +48.
-teisu los_Head = 2560;
-teisu los_Bytes = 2568;
-teisu los_Reclaimed = 2576;
-teisu los_Count = 2584;
-teisu los_Threshold = 2592;
+teisu los_Head = gc.los_head;
+teisu los_Bytes = gc.los_bytes;
+teisu los_Reclaimed = gc.los_reclaimed;
+teisu los_Count = gc.los_count;
+teisu los_Threshold = gc.los_threshold;
 
 waza emit_los_side(code: arm64.Assembler, dst: int64, header: int64, scratch: int64) -> unit {
  kaku outside = block_label("los_side_", len(code.words));

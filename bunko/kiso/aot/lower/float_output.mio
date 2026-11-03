@@ -121,6 +121,14 @@ waza emit_float_words_6(code: arm64.Assembler) -> unit {
 }
 waza emit_float_output_runtime(code: arm64.Assembler) -> unit {
     arm64.assembler_label(code, "print_float");
+    // The opaque relocation-free formatter touches only scalar stack data.
+    // Keep its whole native interval blocked, without inserting words into
+    // its internal relative branches or interpreting numeric bits as roots.
+    moshi(worker_roots_enabled(code)){
+        emit(code,arm64.sub_imm_x(31,31,16,iie));emit(code,arm64.str_x(30,31,0));
+        arm64.assembler_bl(code,"attached_native_enter");arm64.assembler_bl(code,"print_float_scalar_body");arm64.assembler_bl(code,"attached_native_leave");
+        emit(code,arm64.ldr_x(30,31,0));emit(code,arm64.add_imm_x(31,31,16,iie));emit(code,arm64.ret());arm64.assembler_label(code,"print_float_scalar_body");
+    }
     emit_float_words_0(code);
     emit_float_words_1(code);
     emit_float_words_2(code);

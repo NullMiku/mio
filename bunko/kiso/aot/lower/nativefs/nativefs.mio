@@ -140,7 +140,17 @@ koukai waza entry_label(op: int64) -> string {
     kaesu "nativefs_write";
 }
 
-waza emit(code: arm64.Assembler, value: arm64.Instruction) -> unit { arm64.assembler_emit(code, value); }
+waza emit(code: arm64.Assembler, value: arm64.Instruction) -> unit {
+    kaku managed=arm64.assembler_label_word(code,"worker_roots_enabled")>=0;
+    moshi(managed && value.error==mu && value.word==arm64.svc(128).word){
+        // Pin compiler/native exact frames only for the actual OS boundary,
+        // never for a whole adapter body that may allocate or initialize data.
+        // Leaf syscall wrappers need their original LR preserved as well.
+        arm64.assembler_emit(code,arm64.sub_imm_x(31,31,16,iie));arm64.assembler_emit(code,arm64.str_x(30,31,0));
+        arm64.assembler_bl(code,"attached_native_enter");arm64.assembler_emit(code,value);arm64.assembler_bl(code,"attached_native_leave");
+        arm64.assembler_emit(code,arm64.ldr_x(30,31,0));arm64.assembler_emit(code,arm64.add_imm_x(31,31,16,iie));
+    } sore {arm64.assembler_emit(code,value);}
+}
 waza mov(code: arm64.Assembler, destination: int64, source: int64) -> unit { emit(code, arm64.orr_x(destination, 31, source)); }
 waza bits(code: arm64.Assembler, reg: int64, value: int64) -> unit {
     emit(code, arm64.movz_x(reg, value - (value / 65536) * 65536, 0));

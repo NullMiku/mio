@@ -1,4 +1,5 @@
 yobu "kiso/aot/arm64";
+yobu "kiso/runtime/gc";
 // M19b: same flags and policy as darwinarm64/m19b_generational.go.
 // Side entries {youngNext, rememberedNext} are outside the object capacity.
 // Default/observed metadata reserve 3072 bytes; side(header)=end+header-origin.
@@ -6,12 +7,12 @@ yobu "kiso/aot/arm64";
 // objects exist, and a bounded allocation-failure major/retry.
 teisu gen_MinorMax = 1216;
 teisu gen_MajorMax = 1224;
-teisu gen_YoungHead = 1048;
-teisu gen_RememberedHead = 1056;
-teisu gen_Mode = 1064;
-teisu gen_Threshold = 1072;
-teisu gen_MinorCount = 1080;
-teisu gen_MajorCount = 1088;
+teisu gen_YoungHead = gc.young_head;
+teisu gen_RememberedHead = gc.remembered_head;
+teisu gen_Mode = gc.collection_mode;
+teisu gen_Threshold = gc.promotion_threshold;
+teisu gen_MinorCount = gc.minor_count;
+teisu gen_MajorCount = gc.major_count;
 teisu gen_MinorTicks = 1096;
 teisu gen_MajorTicks = 1104;
 teisu gen_YoungBytes = 1112;
@@ -43,10 +44,13 @@ waza emit_gen_remember(code: arm64.Assembler, owner: int64) -> unit {
     emit(code, arm64.ldr_x(15, 23, 1056));
     emit(code, arm64.str_x(15, 17, 8));
     emit(code, arm64.str_x(14, 23, 1056));
-    emit(code, arm64.ldr_x(15, 14, 0));
-    move_bits(code, 17, uint32(256), uint32(0));
-    emit(code, arm64.orr_x(15, 15, 17));
-    emit(code, arm64.str_x(15, 14, 0));
+    moshi(old_mark_proto_enabled(code)){arm64.assembler_bl(code,"old_remember_header");}
+    sore {
+        emit(code, arm64.ldr_x(15, 14, 0));
+        move_bits(code, 17, uint32(256), uint32(0));
+        emit(code, arm64.orr_x(15, 15, 17));
+        emit(code, arm64.str_x(15, 14, 0));
+    }
     emit(code, arm64.ldr_x(15, 23, 1144));
     emit(code, arm64.add_imm_x(15, 15, 1, iie));
     emit(code, arm64.str_x(15, 23, 1144));
@@ -78,6 +82,7 @@ waza emit_gen_minor(code: arm64.Assembler, observation: bool) -> unit {
     arm64.assembler_label(code, "runtime_collect");
     emit(code,arm64.sub_imm_x(31,31,16,iie));emit(code,arm64.str_x(30,31,0));
     arm64.assembler_bl(code,"gen_minor");
+    moshi(old_mark_proto_enabled(code)){arm64.assembler_bl(code,"old_major_active");arm64.assembler_cbnz_x(code,9,"gen_policy_done");}
     emit(code,arm64.ldr_x(9,23,gen_MinorCount));emit(code,arm64.movz_x(10,7,0));emit(code,arm64.and_x(9,9,10));
     arm64.assembler_cbnz_x(code,9,"gen_policy_done");
     emit(code,arm64.ldr_x(9,23,gen_OldBytes));arm64.assembler_cbz_x(code,9,"gen_policy_done");
@@ -98,6 +103,7 @@ waza emit_gen_minor(code: arm64.Assembler, observation: bool) -> unit {
     emit(code, arm64.str_x(27, 31, 64));
     emit(code, arm64.str_x(28, 31, 72));
     emit(code, arm64.str_x(30, 31, 80));
+    moshi(old_mark_proto_enabled(code)){arm64.assembler_bl(code,"old_pause_heap");arm64.assembler_bl(code,"old_note_minor");}
     move_x(code, 20, 24);
     emit(code, arm64.add_imm_x(21, 23, 3072, iie));
     emit(code, arm64.ldr_x(22, 23, 0));
@@ -216,6 +222,7 @@ waza emit_gen_minor(code: arm64.Assembler, observation: bool) -> unit {
     move_bits(code, 10, uint32(8), uint32(0));
     emit(code, arm64.orr_x(27, 27, 10));
     emit(code, arm64.str_x(27, 25, 0));
+    moshi(old_mark_proto_enabled(code)){emit(code,arm64.add_imm_x(0,25,16,iie));emit_old_promoted_publish(code,0);}
     emit(code, arm64.ldr_x(10, 23, 1120));
     emit(code, arm64.add_x(10, 10, 26));
     emit(code, arm64.str_x(10, 23, 1120));
@@ -285,6 +292,7 @@ waza emit_gen_minor(code: arm64.Assembler, observation: bool) -> unit {
     moshi (observation) { emit_gen_pause(code, 192 * 8, "minor"); }
     emit(code, arm64.str_x(31, 23, 1064));
     arm64.assembler_bl(code,"memory_aftergc");
+    moshi(old_mark_proto_enabled(code)){arm64.assembler_bl(code,"old_resume_heap");}
     emit(code, arm64.ldr_x(30, 31, 80));
     emit(code, arm64.ldr_x(19, 31, 0));
     emit(code, arm64.ldr_x(20, 31, 8));
