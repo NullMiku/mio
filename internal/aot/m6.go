@@ -81,11 +81,17 @@ func (k m6Kind) String() string {
 }
 
 func m14NativeName(name string) (string, bool) {
-	const prefix = "$mma::mio/fs/runtime::"
-	if !strings.HasPrefix(name, prefix) {
+	const fsPrefix = "$mma::mio/fs/runtime::"
+	const socketPrefix = "$mma::mio/sys/socket::"
+	if strings.HasPrefix(name, socketPrefix) {
+		rest := strings.TrimPrefix(name, socketPrefix)
+		operation, _, ok := strings.Cut(rest, "::")
+		return "socket_" + operation, ok
+	}
+	if !strings.HasPrefix(name, fsPrefix) {
 		return "", false
 	}
-	rest := strings.TrimPrefix(name, prefix)
+	rest := strings.TrimPrefix(name, fsPrefix)
 	operation, _, ok := strings.Cut(rest, "::")
 	return operation, ok
 }
@@ -96,6 +102,18 @@ func m14NativeSignature(name string) ([]m6Kind, m6Kind, bool) {
 		return nil, m6Unknown, false
 	}
 	switch op {
+	case "socket_open":
+		return nil, m6Resource, true
+	case "socket_accept":
+		return []m6Kind{m6Resource}, m6Resource, true
+	case "socket_status", "socket_close":
+		return []m6Kind{m6Resource, m6Array}, m6String, true
+	case "socket_bind_ipv4", "socket_connect_ipv4":
+		return []m6Kind{m6Resource, m6Array, m6Int, m6Array}, m6String, true
+	case "socket_listen":
+		return []m6Kind{m6Resource, m6Int, m6Array}, m6String, true
+	case "socket_read", "socket_write":
+		return []m6Kind{m6Resource, m6Array, m6Int, m6Int, m6Array}, m6String, true
 	case "close", "dir_close", "file_status", "dir_status":
 		return []m6Kind{m6Resource, m6Array}, m6String, true
 	case "stat", "mkdir":

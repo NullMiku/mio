@@ -14,6 +14,7 @@ import (
 	"Mio/internal/constant"
 	"Mio/internal/diagnostic"
 	"Mio/internal/nativefs"
+	"Mio/internal/nativesocket"
 	"Mio/internal/resolver"
 	"Mio/internal/typecheck"
 	"Mio/internal/vm"
@@ -83,6 +84,9 @@ func NewRegistry(recorder *Recorder) (*mma.ModuleRegistry, error) {
 	}
 	registry := mma.NewModuleRegistry()
 	if err := nativefs.Register(registry); err != nil {
+		return nil, err
+	}
+	if err := nativesocket.Register(registry); err != nil {
 		return nil, err
 	}
 	err := registry.RegisterModule(mma.ModuleDefinition{

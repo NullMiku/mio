@@ -126,10 +126,14 @@ func (e *StackEmitter) EmitNativeFSFunction(op string, params int) error {
 		roots = []int{0}
 	case "stat", "mkdir":
 		roots = []int{0, 1}
-	case "file_status", "close", "dir_status", "dir_close":
+	case "file_status", "close", "dir_status", "dir_close", "socket_status", "socket_close":
 		roots = []int{1}
-	case "read", "write":
+	case "read", "write", "socket_read", "socket_write":
 		roots = []int{1, 4}
+	case "socket_bind_ipv4", "socket_connect_ipv4":
+		roots = []int{1, 3}
+	case "socket_listen":
+		roots = []int{2}
 	}
 	if err := e.SetGCRoots(roots, nil); err != nil {
 		return err
@@ -1296,6 +1300,13 @@ func (e *StackEmitter) finishWithM11(functions []*StackEmitter, strings []string
 			code[call.at] = word
 		}
 		if len(nativeFSCalls) != 0 {
+			withSockets := false
+			for _, call := range nativeFSCalls {
+				if len(call.op) >= 7 && call.op[:7] == "socket_" {
+					withSockets = true
+					break
+				}
+			}
 			nativeStart := len(code)
 			emptyID := 0
 			for id, value := range strings {
@@ -1304,7 +1315,7 @@ func (e *StackEmitter) finishWithM11(functions []*StackEmitter, strings []string
 					break
 				}
 			}
-			nativeWords, nativeEntries, nativeExternal, err := appendM14NativeFSRuntime(uint64(emptyID<<1 | 1))
+			nativeWords, nativeEntries, nativeExternal, err := appendM14NativeFSRuntime(uint64(emptyID<<1|1), withSockets)
 			if err != nil {
 				return nil, err
 			}

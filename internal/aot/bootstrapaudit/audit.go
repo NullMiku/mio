@@ -79,6 +79,19 @@ type StructuralIssue struct {
 }
 
 func nativeFSSupported(name string) bool {
+	const socketPrefix = "$mma::mio/sys/socket::"
+	if strings.HasPrefix(name, socketPrefix) {
+		rest := strings.TrimPrefix(name, socketPrefix)
+		op, _, ok := strings.Cut(rest, "::")
+		if !ok {
+			return false
+		}
+		switch op {
+		case "open", "status", "bind_ipv4", "connect_ipv4", "listen", "accept", "read", "write", "close":
+			return true
+		}
+		return false
+	}
 	const prefix = "$mma::mio/fs/runtime::"
 	if !strings.HasPrefix(name, prefix) {
 		return false
