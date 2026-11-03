@@ -1,0 +1,20 @@
+yobu "kiso/testing";
+yobu "kiso/os";
+
+waza test_disabled_context() -> unit {
+    kaku work=disabled();begin(work,14);begin(work,0);end(work);finish(work);
+    testing.expect(!enabled(work) && len(work)==3,"disabled timers have no counters or clock reads");
+}
+waza test_nested_accounting_and_idempotent_finish() -> unit {
+    kaku work=create();begin(work,14);begin(work,0);begin(work,0);begin(work,1);end(work);end(work);end(work);finish(work);
+    testing.expect(work[5]==2 && work[10]==1 && work[75]==1,"recursive calls accumulate counts");
+    kaku sum=0;kaku phase=0;aida(phase<14){sum=sum+work[3+phase*5+1];phase=phase+1;}
+    testing.expect(sum==work[73],"exclusive stages plus overhead exactly explain measured total");
+    testing.expect(work[3]>=work[4] && work[8]>=0,"inclusive contains child time");
+    kaku total=work[73];finish(work);testing.expect(work[73]==total && work[75]==1,"report finalization is idempotent");
+}
+waza test_os_clock_resolution_contract() -> unit {
+    kaku first=os.monotonic_ns();kaku second=os.monotonic_ns();kaku resolution=os.monotonic_resolution_ns();
+    testing.expect(second>=first && resolution==1000000,"adapter is monotonic and declares millisecond resolution");
+    testing.expect(first/resolution*resolution==first,"ns units do not fabricate sub-millisecond precision");
+}

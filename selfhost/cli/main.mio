@@ -1,4 +1,5 @@
 yobu "kiso/os";
+yobu "kiso/profiler";
 yobu "kiso/array";
 yobu "kiso/convert";
 yobu "kiso/fs";
@@ -25,10 +26,19 @@ waza analysis_failed(analyzed: frontend.AnalysisResult, entry: string, opts: dia
     moshi(analyzed.error!=""){fs.write_all("/dev/stderr",string.to_bytes(diagnostic.failure(analyzed.error,entry,opts)));kaesu hai;}
     kaesu iie;
 }
-waza source_failure(entry: string, bunko: string, opts: diagnostic.Options, cause: string) -> unit {
-    kaku analyzed=frontend.analyze_source(".",entry,bunko,[],iie);
+waza timing_report(timings: []int64, detail: bool, destination: string) -> unit {
+    moshi(!profiler.enabled(timings)){kaesu;}
+    profiler.finish(timings);
+    fs.write_all("/dev/stderr",string.to_bytes(profiler.render(timings,detail)));
+    moshi(destination!=""){
+        kaku result=fs.write_all(destination,string.to_bytes(profiler.json(timings)));
+        moshi(result.error!=mu){fail("E_IO cannot write timing JSON",1);}
+    }
+}
+waza source_failure(entry: string, bunko: string, opts: diagnostic.Options, cause: string, timings: []int64, detail: bool, destination: string) -> unit {
+    kaku analyzed=frontend.analyze_source_profiled(".",entry,bunko,timings);
     moshi(!analysis_failed(analyzed,entry,opts,cause)){fs.write_all("/dev/stderr",string.to_bytes(diagnostic.failure(cause,entry,opts)));}
-    os.exit(1);
+    timing_report(timings,detail,destination);os.exit(1);
 }
 
 waza help() -> unit {
@@ -41,7 +51,7 @@ waza help() -> unit {
     chant("mio lsp [--stdio]");
     chant("mio check <source> [--bunko-root <directory>]");
     chant("source diagnostics: --color=auto|always|never --format=human|short|json --verbose");
-    chant("mio build <source> [-o <output>] [--emit=mochi] [--bunko-root <directory>]");
+    chant("mio build <source> [-o <output>] [--emit=mochi] [--bunko-root <directory>] [--timings[=detail]] [--timings-output=path]");
 }
 waza run() -> unit {
     kaku args = os.arguments();
@@ -59,7 +69,7 @@ waza run() -> unit {
         help(); kaesu;
     }
     moshi (command != "build" && command != "check" && command != "run" && command != "exec" && command != "disasm") { fail("E_COMMAND native command migration is incomplete", 2); kaesu; }
-    kaku opts=diagnostic.options();
+    kaku opts=diagnostic.options();kaku timing_enabled=iie;kaku timing_detail=iie;kaku timing_output="";
     kaku entry = ""; kaku output = "a.out"; kaku bunko = os.getenv("MIO_BUNKO"); kaku emit_mochi = iie; kaku program_args: []string = []; kaku at = 2;
     aida (at < len(args)) {
         kaku option = args[at];
@@ -68,6 +78,18 @@ waza run() -> unit {
             at = at + 1;
             aida (at < len(args)) { array.push(program_args, args[at]); at = at + 1; }
             tsuzuku;
+        }
+        moshi(option=="--timings" || option=="--timings=detail"){
+            moshi(command!="build"){fail("E_OPTIONS timings requires build",2);kaesu;}
+            timing_enabled=hai;moshi(option=="--timings=detail"){timing_detail=hai;}at=at+1;tsuzuku;
+        }
+        moshi(string.has_prefix(option,"--timings-output=")){
+            moshi(command!="build"){fail("E_OPTIONS timings requires build",2);kaesu;}
+            kaku raw=string.to_bytes(option);kaku suffix: []uint8=[];kaku pos=17;
+            aida(pos<len(raw)){array.push(suffix,raw[pos]);pos=pos+1;}
+            kaku decoded=string.from_utf8(suffix);moshi(decoded!=mu){timing_output=decoded;}
+            moshi(timing_output==""){fail("E_OPTIONS timing output must be nonempty",2);kaesu;}
+            timing_enabled=hai;at=at+1;tsuzuku;
         }
         moshi(option=="--verbose"){opts=diagnostic.Options {format:opts.format,color:opts.color,verbose:hai};at=at+1;tsuzuku;}
         moshi(option=="--format=human" || option=="--format=short" || option=="--format=json"){
@@ -91,14 +113,19 @@ waza run() -> unit {
     }
     moshi ((command == "run" || command == "exec" || command == "disasm" || command == "check") && emit_mochi) { fail("E_OPTIONS run requires native output", 2); kaesu; }
     moshi (entry == "" || output == "") { fail("E_OPTIONS source and output must be nonempty", 2); kaesu; }
+    moshi(timing_output!="" && (frontend.source_file_identity(timing_output)==frontend.source_file_identity(output) || frontend.source_file_identity(timing_output)==frontend.source_file_identity(entry))){fail("E_OPTIONS timing output conflicts with source or artifact",2);kaesu;}
+    kaku timings=profiler.disabled();moshi(timing_enabled){timings=profiler.create();profiler.begin(timings,14);}
     moshi(command=="check"){
-        kaku analyzed=frontend.analyze_source(".",entry,bunko,[],iie);
+        kaku analyzed=frontend.analyze_source_profiled(".",entry,bunko,timings);
         moshi(analysis_failed(analyzed,entry,opts,"source analysis failed")){os.exit(1);}kaesu;
     }
     moshi (emit_mochi) {
-        kaku checked = frontend.compile_source(".", entry, bunko);
-        moshi (checked.error != "") { source_failure(entry,bunko,opts,checked.error); kaesu; }
-        kaku written = fs.write_all(output, checked.bytes);
+        kaku checked=frontend.FrontendResult {bytes:[],error:""};
+        moshi(timing_enabled){checked=frontend.compile_source_profiled(".",entry,bunko,timings);}
+        sore{checked=frontend.compile_source(".",entry,bunko);}
+        moshi (checked.error != "") { source_failure(entry,bunko,opts,checked.error,timings,timing_detail,timing_output); kaesu; }
+        profiler.begin(timings,12);kaku written = fs.write_all(output, checked.bytes);profiler.end(timings);
+        timing_report(timings,timing_detail,timing_output);
         moshi (written.error != mu) { fail("E_IO cannot write Mochi output", 1); }
         kaesu;
     }
@@ -115,8 +142,9 @@ waza run() -> unit {
         }
         compiled = pipeline.build_signed_mochi(input.data);
     }
-    sore { compiled = pipeline.build_signed_source(".", entry, bunko); }
-    moshi (compiled.error != "") {moshi(command=="build" || command=="run"){source_failure(entry,bunko,opts,compiled.error);}sore{fs.write_all("/dev/stderr",string.to_bytes(diagnostic.failure(compiled.error,entry,opts)));os.exit(1);}kaesu;}
+    sore { moshi(timing_enabled){compiled=pipeline.build_signed_source_profiled(".",entry,bunko,timings);}
+        sore{compiled = pipeline.build_signed_source(".", entry, bunko);} }
+    moshi (compiled.error != "") {moshi(command=="build" || command=="run"){source_failure(entry,bunko,opts,compiled.error,timings,timing_detail,timing_output);}sore{fs.write_all("/dev/stderr",string.to_bytes(diagnostic.failure(compiled.error,entry,opts)));os.exit(1);}kaesu;}
     kaku temporary = "";
     moshi (command == "run" || command == "exec") {
         temporary = string.concat("/tmp/mio-run-", convert.format_int(os.pid()));
@@ -125,15 +153,19 @@ waza run() -> unit {
         moshi (os.chmod(temporary, 448) != 0) { os.remove_dir(temporary); fail("E_IO cannot protect run directory", 1); kaesu; }
         output = string.concat(temporary, "/program");
     }
+    profiler.begin(timings,12);
     kaku written = fs.write_all(output, compiled.bytes);
     moshi (written.error != mu) {
         moshi (temporary != "") { os.remove(output); os.remove_dir(temporary); }
+        profiler.end(timings);timing_report(timings,timing_detail,timing_output);
         fail("E_IO cannot write native output", 1); kaesu;
     }
     moshi (os.chmod(output, 493) != 0) {
         moshi (temporary != "") { os.remove(output); os.remove_dir(temporary); }
+        profiler.end(timings);timing_report(timings,timing_detail,timing_output);
         fail("E_IO cannot make native output executable", 1); kaesu;
     }
+    profiler.end(timings);timing_report(timings,timing_detail,timing_output);
     moshi (command == "run" || command == "exec") {
         kaku launch: []string = [output]; array.append_all(launch, program_args);
         kaku status = os.spawn(output, launch);

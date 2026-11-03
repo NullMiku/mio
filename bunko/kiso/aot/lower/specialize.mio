@@ -1,3 +1,4 @@
+yobu "kiso/profiler";
 yobu "kiso/array";
 yobu "kiso/aot/lower/types";
 yobu "kiso/encoding/mochi";
@@ -26,12 +27,14 @@ waza retarget_call(data: []uint8, at: int64, id: int64) -> unit {
 // The complete callee is cloned, retaining its control flow and GC analysis.
 // A call site is split at most once; an actual per-instance type/layout failure
 // stays a failure. Bounds prevent recursive specialization from running away.
-waza specialize(file: mochi.File) -> Specialization {
+waza specialize(file: mochi.File, timings: []int64) -> Specialization {
     kaku work = mochi.File { version: file.version, constants: file.constants,
         global_count: file.global_count, instructions: file.instructions,
         functions: array.clone(file.functions) };
     kaku attempted: []int64 = []; kaku count = 0;
+    profiler.begin(timings,7);
     kaku analysis = types.analyze_types(work);
+    profiler.end(timings);
     aida (analysis.error_detail != 0 && count < 256 && len(work.functions) < 65536) {
         kaku detail = analysis.error_detail;
         moshi (detail - (detail / 100) * 100 != 25) { nukeru; }
@@ -65,7 +68,9 @@ waza specialize(file: mochi.File) -> Specialization {
         }
         sore { work.functions[owner] = instance_function(work.functions[owner], owner, patched); }
         count = count + 1;
+        profiler.begin(timings,7);
         analysis = types.analyze_types(work);
+        profiler.end(timings);
     }
     kaesu Specialization { file: work, analysis: analysis };
 }

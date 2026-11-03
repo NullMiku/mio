@@ -1,3 +1,4 @@
+yobu "kiso/profiler";
 yobu "kiso/aot/arm64";
 yobu "kiso/aot/lower/nativefs";
 yobu "kiso/aot/lower/types";
@@ -2085,13 +2086,19 @@ waza instruction_error(file: mochi.File) -> LowerError? {
     kaesu mu;
 }
 waza compile_memory_impl(input_file: mochi.File, gc_stress: bool, capacity: int64, observation: bool, adaptive: bool) -> LowerResult {
+    kaesu compile_profiled(input_file,gc_stress,capacity,observation,adaptive,profiler.disabled());
+}
+koukai waza compile_profiled(input_file: mochi.File, gc_stress: bool, capacity: int64, observation: bool, adaptive: bool, timings: []int64) -> LowerResult {
+    profiler.begin(timings,8);kaku result=compile_profiled_impl(input_file,gc_stress,capacity,observation,adaptive,timings);profiler.end(timings);kaesu result;
+}
+waza compile_profiled_impl(input_file: mochi.File, gc_stress: bool, capacity: int64, observation: bool, adaptive: bool, timings: []int64) -> LowerResult {
     kaku file = input_file;
     kaku metadata_bytes = runtime_metadata_bytes;
     moshi (observation) { metadata_bytes = observation_metadata_bytes; }
     moshi (capacity < 64 || capacity > runtime_max_heap_bytes || capacity - (capacity / 16) * 16 != 0) { kaesu failed(LowerError.InvalidOperand(1)); }
     moshi (file.version < 1 || file.version > 16 || file.global_count < 0 || file.global_count > 2048) { kaesu failed(LowerError.InvalidOperand(1)); }
     kaku malformed = instruction_error(file); moshi (malformed != mu) { kaesu failed(malformed); }
-    kaku specialized = specialize(file);
+    kaku specialized = specialize(file,timings);
     file = specialized.file;
     kaku type_result = specialized.analysis;
     moshi (type_result.error_detail != 0) { kaesu failed(LowerError.UnsafeType(type_result.error_detail)); }
@@ -2208,7 +2215,9 @@ waza compile_memory_impl(input_file: mochi.File, gc_stress: bool, capacity: int6
         }
         pi = pi + 1;
     }
+    profiler.begin(timings,9);
     kaku assembled = arm64.assembler_assemble(code);
+    profiler.end(timings);
     moshi (assembled.error != mu) {
         // All conditional fixups already own two words. Diagnose the actual
         // remaining transfer (B/BL, or the B in a long conditional sequence).

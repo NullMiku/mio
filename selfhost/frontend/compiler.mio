@@ -1,4 +1,5 @@
 yobu "selfhost/progress";
+yobu "kiso/profiler";
 yobu "kiso/array";
 yobu "kiso/convert";
 yobu "kiso/fs";
@@ -135,6 +136,9 @@ waza import_failure(state: PackageState, files: []resolver.SourceFile, dependenc
 }
 
 waza load_package(state: PackageState, root: string, requested: string) -> unit {
+    profiler.begin(state.work.control,0);load_package_impl(state,root,requested);profiler.end(state.work.control);
+}
+waza load_package_impl(state: PackageState, root: string, requested: string) -> unit {
     kaku package_path=package_identity(root,requested);
     moshi(!progress.checkpoint(state.work)){state.failed[0]=hai;state.diagnostic[0]="E_CANCELLED native service request";kaesu;}
     moshi (state.failed[0] || contains(state.paths, package_path)) { kaesu; }
@@ -270,9 +274,13 @@ waza load_package(state: PackageState, root: string, requested: string) -> unit 
             index = index + 1;
         }
         moshi (!state.failed[0]) {
+            profiler.begin(state.work.control,3);
             kaku resolved = resolver.resolve_package_with_progress(package_path, files, resolved_dependencies,state.work);
+            profiler.end(state.work.control);
             moshi(progress.cancelled(state.work)){state.failed[0]=hai;state.diagnostic[0]="E_CANCELLED native service request";array.truncate(state.visiting,len(state.visiting)-1);kaesu;}
+            profiler.begin(state.work.control,4);
             kaku checked = typecheck.check_package_with_progress(resolved, checked_dependencies,state.work);
+            profiler.end(state.work.control);
             moshi(progress.cancelled(state.work)){state.failed[0]=hai;state.diagnostic[0]="E_CANCELLED native service request";array.truncate(state.visiting,len(state.visiting)-1);kaesu;}
             moshi (state.analysis_mode) {
                 kaku ei = 0; aida (ei < len(resolved.errors)) { kaku problem = resolved.errors[ei];
@@ -321,6 +329,11 @@ waza diagnostic(code: string, file: string, line: int64, column: int64, detail: 
 
 // Real source entry and project/Bunko roots are supplied by the caller. This
 // module has no top-level execution, output files or bootstrap configuration.
+koukai waza compile_source_profiled(root: string, entry: string, bunko_root: string, timings: []int64) -> FrontendResult {
+    kaku work=progress.context();
+    kaku timed=progress.Context {callbacks:work.callbacks,control:timings};
+    kaesu compile_state(source_state_progress(bunko_root,"",[],iie,timed),root,entry);
+}
 koukai waza compile_source(root: string, entry: string, bunko_root: string) -> FrontendResult {
     kaku state = source_state(bunko_root, "");
     kaesu compile_state(state, root, entry);
@@ -348,6 +361,11 @@ waza source_state_progress(bunko_root: string, test_entry: string, overlays: []S
 // LSP analysis shares the source provider, parser, resolver and checker used by
 // normal compilation. Overlays are read-only memory inputs; no disk rewrite.
 koukai waza analyze_source(root: string, entry: string, bunko_root: string, overlays: []SourceOverlay, include_tests: bool) -> AnalysisResult {kaesu analyze_source_with_progress(root,entry,bunko_root,overlays,include_tests,progress.context());}
+koukai waza analyze_source_profiled(root: string, entry: string, bunko_root: string, timings: []int64) -> AnalysisResult {
+    kaku work=progress.context();
+    kaku timed=progress.Context {callbacks:work.callbacks,control:timings};
+    kaesu analyze_source_with_progress(root,entry,bunko_root,[],iie,timed);
+}
 koukai waza analyze_source_with_progress(root: string, entry: string, bunko_root: string, overlays: []SourceOverlay, include_tests: bool, work: progress.Context) -> AnalysisResult {
     kaku test_entry = ""; moshi (include_tests) { test_entry = package_identity(root,entry); }
     kaku state = source_state_progress(bunko_root, test_entry, overlays, hai,work);
@@ -394,7 +412,7 @@ waza compile_state(state: PackageState, root: string, entry: string) -> Frontend
         array.push(natives, codegen.NativeFunctionLayout { package_path: "mio/os/runtime", name: "exit", binding_key: "$mma::mio/os/runtime::exit::ef54322c57791e5008c09839db29d0913e109a8d2c1ed9b499ed05a73016289c", parameter_count: 1, returns_value: hai });
     }
     kaku result = codegen.CompileResult { success: iie, bytes: [], layout: codegen.BytecodeLayout { constants: [], global_count: 0, instructions: [], functions: [] }, errors: [] };
-    result = codegen.compile_native_modules(state.resolved, state.checked, natives, state.test_entry != "");
+    result = codegen.compile_native_modules_profiled(state.resolved, state.checked, natives, state.test_entry != "",state.work.control);
     moshi (!result.success) {
         kaku detail = "E_CODEGEN";
         moshi (len(result.errors) > 0) {

@@ -1,4 +1,5 @@
 yobu "selfhost/progress";
+yobu "kiso/profiler";
 yobu "kiso/array";
 yobu "selfhost/lexer";
 
@@ -140,7 +141,12 @@ koukai waza parse_tokens_with_progress(tokens: []lexer.Token, work: progress.Con
 
 koukai waza parse(source: []uint8) -> ParseResult {kaesu parse_with_progress(source,progress.context());}
 koukai waza parse_with_progress(source: []uint8, work: progress.Context) -> ParseResult {
+    profiler.begin(work.control,2);kaku result=parse_timed_impl(source,work);profiler.end(work.control);kaesu result;
+}
+waza parse_timed_impl(source: []uint8, work: progress.Context) -> ParseResult {
+    profiler.begin(work.control,1);
     kaku lexical = lexer.lex_with_progress(source,work);
+    profiler.end(work.control);
     moshi (len(lexical.errors) != 0) {
         kaku arena = new_arena();
         kaku errors = array.with_capacity[ParseError](1);

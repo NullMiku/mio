@@ -36,8 +36,12 @@ koukai waza spawn_test(path: string, arguments: []string, stdout: string, stderr
     kaesu runtime.spawn_test(path, arguments, stdout, stderr, records, cpu_seconds);
 }
 
-// Milliseconds from the OS-accessible ARM64 virtual counter; not wall time.
+// Monotonic elapsed wall time from the OS adapter (not calendar time or CPU time).
 koukai waza monotonic_ms() -> int64 { kaesu runtime.monotonic_ms(); }
+// Portable ns-unit API. Current adapter returns integer milliseconds, so this
+// conversion does NOT promise nanosecond precision. Consumers must consult resolution.
+koukai waza monotonic_ns() -> int64 { kaesu runtime.monotonic_ms()*1000000; }
+koukai waza monotonic_resolution_ns() -> int64 { kaesu 1000000; }
 
 // Missing, malformed or non-UTF8 environment values return mu; an existing
 // empty value remains an empty string. No ambient compiler/Bunko path fallback.

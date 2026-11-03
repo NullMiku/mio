@@ -1,3 +1,4 @@
+yobu "kiso/profiler";
 yobu "kiso/array";
 yobu "kiso/convert";
 yobu "kiso/string";
@@ -749,6 +750,15 @@ koukai waza compile_native_modules(packages: []resolver.ResolvedPackage, checked
 }
 
 waza compile_modules_mode(packages: []resolver.ResolvedPackage, checked_packages: []typecheck.TypeCheckResult, natives: []NativeFunctionLayout, qualified: bool, typed: bool) -> CompileResult {
+    kaesu compile_modules_profiled(packages,checked_packages,natives,qualified,typed,profiler.disabled());
+}
+koukai waza compile_native_modules_profiled(packages: []resolver.ResolvedPackage, checked_packages: []typecheck.TypeCheckResult, natives: []NativeFunctionLayout, qualified: bool, timings: []int64) -> CompileResult {
+    kaesu compile_modules_profiled(packages,checked_packages,natives,qualified,hai,timings);
+}
+waza compile_modules_profiled(packages: []resolver.ResolvedPackage, checked_packages: []typecheck.TypeCheckResult, natives: []NativeFunctionLayout, qualified: bool, typed: bool, timings: []int64) -> CompileResult {
+    profiler.begin(timings,5);kaku result=compile_modules_impl(packages,checked_packages,natives,qualified,typed,timings);profiler.end(timings);kaesu result;
+}
+waza compile_modules_impl(packages: []resolver.ResolvedPackage, checked_packages: []typecheck.TypeCheckResult, natives: []NativeFunctionLayout, qualified: bool, typed: bool, timings: []int64) -> CompileResult {
     moshi (len(packages) == 0 || len(packages) != len(checked_packages)) { kaesu compile_failure(CompileErrorKind.InvalidInput(), resolver.NodeRef { file_id: -1, node_id: -1 }, empty_span(), "module inputs do not match"); }
     kaku layout = empty_layout(); kaku errors = empty_errors(); kaku registry_packages: []string = []; kaku registry_names: []string = []; kaku registry_ids: []int64 = []; kaku next_global = [0]; kaku main = new_context(iie, -1);
     kaku instances: []GenericInstance=[];kaku states: []CompilerState=[];kaku enum_names: []string=[];kaku ei=0;
@@ -795,7 +805,8 @@ waza compile_modules_mode(packages: []resolver.ResolvedPackage, checked_packages
     kaku result_layout = BytecodeLayout { constants: layout.constants, global_count: next_global[0], instructions: main.emitter.bytes, functions: layout.functions };
     moshi (len(errors) != 0 || main.emitter.failed[0]) { kaesu CompileResult { success: iie, bytes: empty_bytes(), layout: result_layout, errors: errors }; }
     kaku version = 14; moshi (typed) { version = 16; }
-    kaesu CompileResult { success: hai, bytes: encode_layout_version(result_layout, version), layout: result_layout, errors: errors };
+    profiler.begin(timings,6);kaku encoded=encode_layout_version(result_layout,version);profiler.end(timings);
+    kaesu CompileResult { success: hai, bytes: encoded, layout: result_layout, errors: errors };
 }
 
 koukai waza compile_modules(packages: []resolver.ResolvedPackage, checked_packages: []typecheck.TypeCheckResult) -> CompileResult {

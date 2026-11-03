@@ -1,4 +1,5 @@
 yobu "selfhost/frontend";
+yobu "kiso/profiler";
 yobu "kiso/encoding/mochi";
 yobu "kiso/aot/lower";
 yobu "kiso/aot/macho";
@@ -90,4 +91,28 @@ koukai waza build_signed_test(data: []uint8) -> NativeBuildResult {
     kaku signed = sign.adhoc(compiled.bytes);
     moshi (signed.error != "") { kaesu NativeBuildResult { bytes: [], error: string.concat("E_SIGN ", signed.error) }; }
     kaesu NativeBuildResult { bytes: signed.bytes, error: "" };
+}
+
+// Profiled entry is invocation-local; existing unsigned/test APIs retain their
+// behavior. End every measured operation before testing its error result.
+koukai waza build_signed_source_profiled(root: string, entry: string, bunko_root: string, timings: []int64) -> NativeBuildResult {
+    kaku compiled=frontend.compile_source_profiled(root,entry,bunko_root,timings);
+    moshi(compiled.error!=""){kaesu NativeBuildResult {bytes:[],error:compiled.error};}
+    profiler.begin(timings,6);kaku decoded=mochi.decode(compiled.bytes);profiler.end(timings);
+    kaku file=decoded.value;
+    moshi(decoded.error!=mu){kaesu NativeBuildResult {bytes:[],error:"E_IR frontend produced invalid Mochi"};}
+    moshi(file==mu){kaesu NativeBuildResult {bytes:[],error:"E_IR frontend returned no module"};}
+    kaku lowered=lower.compile_profiled(file,iie,1073741824,iie,iie,timings);
+    kaku problem=lowered.error;
+    moshi(problem!=mu){
+        kaku detail=string.concat(convert.format_int(lower.error_code(problem)),string.concat(" / ",convert.format_int(lower.error_detail(problem))));
+        kaesu NativeBuildResult {bytes:[],error:string.concat("E_LOWER ",detail)};
+    }
+    profiler.begin(timings,10);
+    kaku image=macho.executable(macho.ImageSpec {words:lowered.words,constants:lowered.constants,globals:lowered.globals,patches:lowered.patches});
+    profiler.end(timings);
+    moshi(image.error!=mu){kaesu NativeBuildResult {bytes:[],error:"E_MACHO cannot encode native image"};}
+    profiler.begin(timings,11);kaku signed=sign.adhoc(image.bytes);profiler.end(timings);
+    moshi(signed.error!=""){kaesu NativeBuildResult {bytes:[],error:string.concat("E_SIGN ",signed.error)};}
+    kaesu NativeBuildResult {bytes:signed.bytes,error:""};
 }

@@ -1,0 +1,74 @@
+yobu "kiso/array";
+yobu "kiso/os";
+yobu "kiso/convert";
+yobu "kiso/string";
+
+// One invocation owns its counters and stack. No global state or timer reads
+// on the disabled path. Times are ns units, with the adapter's declared resolution.
+// Slots 0..2 preserve progress control; 3..77 hold 15 stage counters;
+// 78 is finalized, 79 reserved. Active frames append triples after slot 79.
+koukai waza disabled() -> []int64 { kaesu [0,0,0]; }
+koukai waza create() -> []int64 { kaesu array.make[int64](80,0); }
+koukai waza enabled(work: []int64) -> bool { kaesu len(work)>=80; }
+koukai waza begin(work: []int64, phase: int64) -> unit {
+    moshi(!enabled(work)){kaesu;}
+    array.push(work,phase);array.push(work,os.monotonic_ns());array.push(work,0);
+}
+koukai waza end(work: []int64) -> unit {
+    moshi(!enabled(work) || len(work)==80){kaesu;}
+    kaku now=os.monotonic_ns();kaku at=len(work)-3;
+    kaku phase=work[at];kaku elapsed=now-work[at+1];kaku own=elapsed-work[at+2];
+    kaku base=3+phase*5;
+    work[base]=work[base]+elapsed;work[base+1]=work[base+1]+own;
+    work[base+2]=work[base+2]+1;
+    moshi(work[base+2]==1 || elapsed<work[base+3]){work[base+3]=elapsed;}
+    moshi(elapsed>work[base+4]){work[base+4]=elapsed;}
+    array.truncate(work,at);
+    moshi(at>80){work[at-1]=work[at-1]+elapsed;}
+}
+koukai waza finish(work: []int64) -> unit {
+    moshi(!enabled(work) || work[78]!=0){kaesu;}
+    // Wrappers close every ordinary failure return. Root is Total; any work
+    // outside an instrumented boundary belongs to Other / overhead.
+    aida(len(work)>80){end(work);}
+    work[68]=work[74];work[69]=work[74];work[70]=1;work[71]=work[68];work[72]=work[68];work[74]=work[73];work[78]=1;
+}
+koukai waza name(phase: int64) -> string {
+    kaku names: []string=["Module loading","Lexing","Parsing","Name resolution","Type checking","Mochi IR generation","IR encoding / decoding","Native type analysis","Native lowering","Machine code emission","Executable generation","Code signing","Output writing","Other / overhead","Total"];
+    kaesu names[phase];
+}
+waza fraction(value: int64, scale: int64) -> string {
+    kaku whole=value/scale;kaku part=(value-whole*scale)*1000/scale;kaku digits=convert.format_int(part);
+    moshi(part<100){digits=string.concat("0",digits);}moshi(part<10){digits=string.concat("0",digits);}
+    kaesu string.concat(convert.format_int(whole),string.concat(".",digits));
+}
+waza percent(value: int64,total: int64) -> string {moshi(total==0){kaesu "0.000";}kaesu fraction(value*100,total);}
+koukai waza render(work: []int64, detail: bool) -> string {
+    kaku total=work[73];kaku out=string.concat("Compilation timings (monotonic wall time; resolution ",string.concat(fraction(os.monotonic_resolution_ns(),1000000)," ms)\nCumulative inclusive ms | exclusive ms | exclusive % Total | calls | stage\n"));
+    kaku phase=0;kaku slow=0;
+    aida(phase<15){kaku base=3+phase*5;
+        kaku row=string.concat(fraction(work[base],1000000)," | ");
+        row=string.concat(row,string.concat(fraction(work[base+1],1000000)," | "));
+        row=string.concat(row,string.concat(percent(work[base+1],total),"% | "));
+        row=string.concat(row,string.concat(convert.format_int(work[base+2])," | "));
+        row=string.concat(row,name(phase));
+        moshi(detail){row=string.concat(row,string.concat(" | min/max inclusive ms: ",string.concat(fraction(work[base+3],1000000),string.concat(" / ",fraction(work[base+4],1000000)))));}
+        out=string.concat(out,string.concat(row,"\n"));
+        moshi(phase<14 && work[base+1]>work[3+slow*5+1]){slow=phase;}phase=phase+1;
+    }
+    out=string.concat(out,string.concat("Slowest (exclusive): ",string.concat(name(slow),"\n")));
+    kaesu string.concat(out,"Inclusive includes nested calls; add exclusive stages + Other to explain Total. Sub-ms intervals may read zero; timer bookkeeping is charged to its enclosing stage.\n");
+}
+koukai waza json(work: []int64) -> string {
+    kaku total=work[73];kaku out="{\"schema_version\":1,\"clock\":\"monotonic\",\"resolution_ns\":";
+    out=string.concat(out,string.concat(convert.format_int(os.monotonic_resolution_ns()),",\"total_ns\":"));
+    out=string.concat(out,string.concat(convert.format_int(total),",\"stages\":["));kaku phase=0;
+    aida(phase<15){moshi(phase>0){out=string.concat(out,",");}kaku base=3+phase*5;
+        out=string.concat(out,string.concat("{\"name\":\"",string.concat(name(phase),"\",\"inclusive_ns\":")));
+        out=string.concat(out,string.concat(convert.format_int(work[base]),",\"exclusive_ns\":"));
+        out=string.concat(out,string.concat(convert.format_int(work[base+1]),",\"calls\":"));
+        out=string.concat(out,string.concat(convert.format_int(work[base+2]),",\"exclusive_percent\":"));
+        out=string.concat(out,string.concat(percent(work[base+1],total),"}"));phase=phase+1;
+    }
+    kaesu string.concat(out,"]}\n");
+}
