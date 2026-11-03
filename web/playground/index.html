@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mio · Browser Playground</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./style.css">
+<main>
+  <header><p class="eyebrow">MIO / WEBASSEMBLY V1</p><h1>A small language.<br>A browser-sized playground.</h1><p>Write Mio, then compile and run locally with the real Go compiler and Mochi VM.</p></header>
+  <div class="toolbar"><label>Example <select id="examples" aria-label="Example"></select></label><span id="loading" role="status">Loading Wasm…</span></div>
+  <label for="source" class="eyebrow">SOURCE · MAIN.MIO</label>
+  <textarea id="source" spellcheck="false" aria-label="Mio source"></textarea>
+  <div class="actions"><button id="run" disabled>Run</button><button id="check" disabled>Check</button><button id="stop">Stop / Reload</button><span id="status" role="status">Initializing</span></div>
+  <div class="results"><section><h2>Output</h2><pre id="stdout" aria-live="polite"></pre></section><section><h2>Diagnostics & errors</h2><pre id="diagnostics" aria-live="polite"></pre></section></div>
+  <p id="timing"></p>
+  <footer>5 million VM instructions · 5 second timeout · 64 KiB source / output limits.<br>Bundled: kiso/math, array, string, bytes, utf8. Filesystem, network and native MMA are unavailable. Worker memory is released after each request; allocation peaks remain browser-limited.</footer>
+</main>
+<script type="module" src="./app.js"></script>
+</html>

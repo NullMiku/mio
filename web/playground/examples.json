@@ -1,0 +1,9 @@
+[
+ {"name":"Hello World","source":"chant(\"Hello, Mio!\");","stdout":"Hello, Mio!\n"},
+ {"name":"Math","source":"yobu \"kiso/math\";\nchant(math.gcd(42, 30));\nchant(math.sqrt(81.0));","stdout":"6\n9\n"},
+ {"name":"Array","source":"yobu \"kiso/array\";\nkaku values = array.make(2, 7);\narray.push(values, 9);\nchant(len(values));\nchant(values[2]);","stdout":"3\n9\n"},
+ {"name":"String","source":"yobu \"kiso/string\";\nchant(string.concat(\"Hello, \", \"世界\"));\nchant(string.rune_count(\"世界\"));","stdout":"Hello, 世界\n2\n"},
+ {"name":"Bytes","source":"yobu \"kiso/bytes\";\nkaku data: []uint8 = [1, 2, 3];\nchant(bytes.contains(data, uint8(2)));","stdout":"hai\n"},
+ {"name":"Type error","source":"kaku answer: int64 = \"hello\";\nchant(answer);","diagnostic":true},
+ {"name":"Infinite loop","source":"aida (hai) {}","limited":true}
+]
