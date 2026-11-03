@@ -1,0 +1,6 @@
+yobu "kiso/os";
+waza rt_start(callback:() -> unit) -> int64 {kaesu 0;}
+waza rt_join(handle:int64) -> int64 {kaesu 0;}
+waza rt_wait(ns:int64) -> int64 {kaesu 0;}
+waza rt_collect(major:int64) -> int64 {kaesu 0;}
+chant(os.spawn_test("/usr/bin/true",["/usr/bin/true"],"unused-out","unused-err","unused-records",1));

@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""Real full-queue deferred-task recovery and repeated epochs; E4 still incomplete."""
+import hashlib,json,os,pathlib,platform,shutil,signal,struct,subprocess,sys,time
+root=pathlib.Path.cwd().resolve();out=(root/sys.argv[1]).resolve();assert out.is_relative_to(root/'build/m19ef-evidence');out.mkdir();snap=out/'source-snapshot';snap.mkdir();sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest();manifest={}
+for folder in ['bunko','selfhost','tests/m19ef']:
+ for p in sorted((root/folder).rglob('*.mio')):
+  rel=p.relative_to(root);d=snap/rel;d.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,d);manifest[str(rel)]=sha(p)
+(out/'source-manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2)+'\n');digest=sha(out/'source-manifest.json');shutil.copyfile(pathlib.Path(__file__),out/'controller.py');seed=pathlib.Path('/Volumes/Sector0/AppData/Mio/mio/build/gofree-native/mio');assert sha(seed)=='4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da'
+(out/'provenance.json').write_text(json.dumps(dict(source_manifest_sha256=digest,seed_sha256=sha(seed),head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),branch=subprocess.check_output(['git','branch','--show-current'],text=True).strip(),host=platform.platform(),target='darwin-arm64',scope='real ordinary allocation/Minor/LOS cooperation and SATB; bulk/epoch/overflow/Sweep still incomplete'),indent=2)+'\n');rows=[]
+def run(label,args,expected=0,timeout=600):
+ start=time.monotonic()
+ with (out/(label+'.stdout')).open('xb') as so,(out/(label+'.stderr')).open('xb') as se:
+  p=subprocess.Popen(list(map(str,args)),cwd=snap,stdout=so,stderr=se,start_new_session=True);timed=False
+  while True:
+   got,status,u=os.wait4(p.pid,os.WNOHANG)
+   if got:break
+   if time.monotonic()-start>timeout:
+    timed=True
+    with (out/(label+'.processes')).open('xb') as diag:subprocess.run(['ps','-Ao','pid,ppid,%cpu,rss,etime,command'],stdout=diag)
+    os.killpg(p.pid,signal.SIGKILL);got,status,u=os.wait4(p.pid,0);break
+   time.sleep(.03)
+ row=dict(label=label,argv=list(map(str,args)),cwd=str(snap),exit=os.waitstatus_to_exitcode(status),expected_exit=expected,timed_out=timed,timeout_seconds=timeout,wall_seconds=time.monotonic()-start,cpu_seconds=u.ru_utime+u.ru_stime,peak_rss_bytes_darwin=u.ru_maxrss,source_manifest_sha256=digest,stdout_sha256=sha(out/(label+'.stdout')),stderr_sha256=sha(out/(label+'.stderr')));rows.append(row);(out/'commands.json').write_text(json.dumps(rows,indent=2)+'\n');print(label,row['exit'],flush=True);assert row['exit']==expected and not timed
+ return (out/(label+'.stdout')).read_bytes()
+baseline=(root/sys.argv[2]).resolve();baseline_manifest=json.loads((baseline/'source-manifest.json').read_text());assert manifest==baseline_manifest,'counterexample must start from exact accepted scoped inputs'
+path=snap/'bunko/kiso/runtime/gc/old_satb.mio';original=path.read_text();a=original.index('waza old_satb_program()');b=original.index('// Caller supplies',a);path.write_text(original[:a]+'waza old_satb_program() -> ir.Function {kaku f=ir.function("gc_old_prewrite");treturn(f,0);kaesu f;}\n'+original[b:]);shutil.copyfile(out/'source-manifest.json',out/'baseline-source-manifest.json');manifest['bunko/kiso/runtime/gc/old_satb.mio']=sha(path);(out/'mutant-source-manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2)+'\n');mutant_digest=sha(out/'mutant-source-manifest.json');shutil.copyfile(out/'mutant-source-manifest.json',out/'source-manifest.json');provenance=json.loads((out/'provenance.json').read_text());provenance.update(source_manifest_sha256=mutant_digest,baseline_source_manifest_sha256=digest,scope='CONTROLLED SATB-disabled negative mutant only; NOT_PRODUCTION_NOT_GC_ACCEPTANCE');(out/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n');(out/'fault-mutation.json').write_text(json.dumps(dict(kind='CONTROLLED_SATB_DISABLED_COUNTEREXAMPLE_NOT_PRODUCTION',baseline_source_manifest_sha256=digest,mutant_source_manifest_sha256=mutant_digest,changed_file='bunko/kiso/runtime/gc/old_satb.mio',original_sha256=baseline_manifest['bunko/kiso/runtime/gc/old_satb.mio'],mutated_sha256=sha(path),post_barrier='UNCHANGED',threads_roots_gc_scanner_allocator='UNCHANGED',assertions='negative experiment must lose at least one snapshot Old object; not a GC gate PASS'),indent=2)+'\n');digest=mutant_digest
+run('seed-signature',['codesign','--verify','--strict',seed]);builder=out/'satb-disabled-builder';run('build-mutant',[seed,'build','tests/m19ef/old-mark-proto/builder.mio','-o',builder,'--bunko-root',snap/'bunko']);run('builder-signature',['codesign','--verify','--strict',builder]);image=out/'satb-disabled-native';run('generate-mutant',[builder,snap,'tests/m19ef/old-mark-satb/array/main.mio',snap/'bunko',image,'16777216']);run('image-signature',['codesign','--verify','--strict',image]);run('mutant-image-repro',[builder,snap,'tests/m19ef/old-mark-satb/array/main.mio',snap/'bunko',out/'satb-disabled-repro-native','16777216']);assert image.read_bytes()==(out/'satb-disabled-repro-native').read_bytes();observations=[]
+for repeat in range(8):
+ label='satb-disabled-'+str(repeat);stdout=run(label,[image],timeout=60);nums=list(map(int,stdout.splitlines()));assert len(nums)==40,nums;cycles=[nums[i:i+10] for i in range(0,40,10)]
+ for v in cycles:assert v[:5]==[0,2,0,0,0] and v[5]<=12021 and v[6]>=1 and v[5]+v[6]==12022 and v[7]==4 and v[9]==0,v
+ assert any(v[5]<12021 and v[6]>1 for v in cycles),'negative control did not expose loss in its four fixed epochs'
+ data=(out/(label+'.stderr')).read_bytes();assert len(data)==552;old=struct.unpack('<24Q',data[:192]);mut=struct.unpack('<45Q',data[192:]);assert old[1]==4 and old[2]==0 and old[3]==old[4]==cycles[-1][5] and old[5]==cycles[-1][6] and old[12:17]==(4,4,0,1,1);assert len(set([old[6],mut[42],mut[43],mut[44]]))==4 and mut[26]==0
+ observations.append(dict(repeat=repeat,stdout=stdout.decode(),epochs=cycles,old_words=list(old),mutator_words=list(mut),lost_snapshot_objects=max(12021-v[5] for v in cycles),source_manifest_sha256=mutant_digest))
+(out/'negative-observations.json').write_text(json.dumps(observations,indent=2)+'\n');assert all(sha(root/p)==h for p,h in baseline_manifest.items());(out/'summary.json').write_text(json.dumps(dict(status='COUNTEREXAMPLE_EXPOSED_NOT_GC_ACCEPTANCE',runs=8,minimum_lost_snapshot_objects=min(r['lost_snapshot_objects'] for r in observations),baseline_source_manifest_sha256=sha(baseline/'source-manifest.json'),mutant_source_manifest_sha256=mutant_digest,production_tree_unchanged=True,M19e='NOT_ACCEPTED'),indent=2)+'\n')
