@@ -1,0 +1,205 @@
+yobu "kiso/array";
+yobu "kiso/io";
+yobu "mio/sys/socket";
+
+// Blocking IPv4 TCP. Socket operations are primitive system calls; connection
+// policy, error translation, buffering and I/O adapters are written in Mio.
+koukai sentaku TcpError {
+    InvalidArgument;
+    Closed;
+    TimedOut;
+    ConnectionRefused;
+    ConnectionReset;
+    AddressInUse;
+    PermissionDenied;
+    WouldBlock;
+    Other(string);
+}
+
+koukai kata IPv4Address { octets: []uint8; port: int64; }
+koukai kata Connection { handle: resource; }
+koukai kata Listener { handle: resource; }
+koukai kata ConnectionResult { connection: Connection?; error: TcpError?; }
+koukai kata ListenerResult { listener: Listener?; error: TcpError?; }
+koukai kata ReadResult { count: int64; eof: bool; error: TcpError?; }
+koukai kata WriteResult { count: int64; error: TcpError?; }
+koukai kata UnitResult { error: TcpError?; }
+
+koukai waza ipv4(a: uint8, b: uint8, c: uint8, d: uint8, port: int64) -> IPv4Address {
+    kaesu IPv4Address { octets: [a, b, c, d], port: port };
+}
+
+waza valid_address(address: IPv4Address) -> bool {
+    kaesu len(address.octets) == 4 && address.port >= 0 && address.port <= 65535;
+}
+
+waza valid_range(values: []uint8, offset: int64, length: int64) -> bool {
+    kaesu offset >= 0 && length >= 0 && offset <= len(values) && length <= len(values) - offset;
+}
+
+waza error_from(code: uint8, message: string) -> TcpError? {
+    moshi (code == uint8(0)) { kaesu mu; }
+    moshi (code == uint8(1)) { kaesu TcpError.InvalidArgument(); }
+    moshi (code == uint8(2)) { kaesu TcpError.Closed(); }
+    moshi (code == uint8(3)) { kaesu TcpError.TimedOut(); }
+    moshi (code == uint8(4)) { kaesu TcpError.ConnectionRefused(); }
+    moshi (code == uint8(5)) { kaesu TcpError.ConnectionReset(); }
+    moshi (code == uint8(6)) { kaesu TcpError.AddressInUse(); }
+    moshi (code == uint8(7)) { kaesu TcpError.PermissionDenied(); }
+    moshi (code == uint8(8)) { kaesu TcpError.WouldBlock(); }
+    kaesu TcpError.Other(message);
+}
+
+waza decode_count(status: []uint8) -> int64 {
+    kaku result = 0;
+    kaku factor = 1;
+    kaku index = 0;
+    aida (index < 8) {
+        result = result + int64(status[index]) * factor;
+        index = index + 1;
+        moshi (index < 8) { factor = factor * 256; }
+    }
+    kaesu result;
+}
+
+// connect deliberately accepts only a literal IPv4 address; DNS and IPv6
+// will be separate pure-Mio layers, rather than hidden OS-dependent behavior.
+koukai waza connect(address: IPv4Address) -> ConnectionResult {
+    moshi (!valid_address(address)) {
+        kaesu ConnectionResult { connection: mu, error: TcpError.InvalidArgument() };
+    }
+    kaku handle = socket.open();
+    kaku status: []uint8 = [0];
+    kaku message = socket.status(handle, status);
+    kaku failure = error_from(status[0], message);
+    moshi (failure == mu) {
+        message = socket.connect_ipv4(handle, address.octets, address.port, status);
+        failure = error_from(status[0], message);
+    }
+    moshi (failure != mu) {
+        socket.close(handle, status);
+        kaesu ConnectionResult { connection: mu, error: failure };
+    }
+    kaesu ConnectionResult { connection: Connection { handle: handle }, error: mu };
+}
+
+koukai waza listen(address: IPv4Address) -> ListenerResult {
+    kaesu listen_with_backlog(address, 128);
+}
+
+koukai waza listen_with_backlog(address: IPv4Address, backlog: int64) -> ListenerResult {
+    moshi (!valid_address(address) || backlog < 0 || backlog > 65535) {
+        kaesu ListenerResult { listener: mu, error: TcpError.InvalidArgument() };
+    }
+    kaku handle = socket.open();
+    kaku status: []uint8 = [0];
+    kaku message = socket.status(handle, status);
+    kaku failure = error_from(status[0], message);
+    moshi (failure == mu) {
+        message = socket.bind_ipv4(handle, address.octets, address.port, status);
+        failure = error_from(status[0], message);
+    }
+    moshi (failure == mu) {
+        message = socket.listen(handle, backlog, status);
+        failure = error_from(status[0], message);
+    }
+    moshi (failure != mu) {
+        socket.close(handle, status);
+        kaesu ListenerResult { listener: mu, error: failure };
+    }
+    kaesu ListenerResult { listener: Listener { handle: handle }, error: mu };
+}
+
+koukai waza accept(listener: Listener) -> ConnectionResult {
+    kaku handle = socket.accept(listener.handle);
+    kaku status: []uint8 = [0];
+    kaku message = socket.status(handle, status);
+    kaku failure = error_from(status[0], message);
+    moshi (failure != mu) {
+        socket.close(handle, status);
+        kaesu ConnectionResult { connection: mu, error: failure };
+    }
+    kaesu ConnectionResult { connection: Connection { handle: handle }, error: mu };
+}
+
+koukai waza read(connection: Connection, destination: []uint8, offset: int64, length: int64) -> ReadResult {
+    moshi (!valid_range(destination, offset, length)) {
+        kaesu ReadResult { count: 0, eof: iie, error: TcpError.InvalidArgument() };
+    }
+    kaku status = array.make[uint8](10, uint8(0));
+    kaku message = socket.read(connection.handle, destination, offset, length, status);
+    kaesu ReadResult { count: decode_count(status), eof: status[8] != uint8(0), error: error_from(status[9], message) };
+}
+
+koukai waza write(connection: Connection, source: []uint8, offset: int64, length: int64) -> WriteResult {
+    moshi (!valid_range(source, offset, length)) {
+        kaesu WriteResult { count: 0, error: TcpError.InvalidArgument() };
+    }
+    kaku status = array.make[uint8](10, uint8(0));
+    kaku message = socket.write(connection.handle, source, offset, length, status);
+    kaesu WriteResult { count: decode_count(status), error: error_from(status[9], message) };
+}
+
+// TCP writes may be partial. This helper retains progress when a later call
+// fails, and never loops forever after a zero-byte write.
+koukai waza write_all(connection: Connection, source: []uint8, offset: int64, length: int64) -> WriteResult {
+    moshi (!valid_range(source, offset, length)) {
+        kaesu WriteResult { count: 0, error: TcpError.InvalidArgument() };
+    }
+    kaku total = 0;
+    aida (total < length) {
+        kaku result = write(connection, source, offset + total, length - total);
+        moshi (result.count < 0 || result.count > length - total) {
+            kaesu WriteResult { count: total, error: TcpError.InvalidArgument() };
+        }
+        total = total + result.count;
+        kaku failure = result.error;
+        moshi (failure != mu) { kaesu WriteResult { count: total, error: failure }; }
+        moshi (result.count == 0) {
+            kaesu WriteResult { count: total, error: TcpError.Other("write made no progress") };
+        }
+    }
+    kaesu WriteResult { count: total, error: mu };
+}
+
+koukai waza close(connection: Connection) -> UnitResult {
+    kaku status: []uint8 = [0];
+    kaku message = socket.close(connection.handle, status);
+    kaesu UnitResult { error: error_from(status[0], message) };
+}
+
+koukai waza close_listener(listener: Listener) -> UnitResult {
+    kaku status: []uint8 = [0];
+    kaku message = socket.close(listener.handle, status);
+    kaesu UnitResult { error: error_from(status[0], message) };
+}
+
+waza io_error(failure: TcpError?) -> io.IoError? {
+    moshi (failure == mu) { kaesu mu; }
+    awase (failure) {
+        baai InvalidArgument { kaesu io.IoError.InvalidArgument(); }
+        baai Closed { kaesu io.IoError.Closed(); }
+        baai TimedOut { kaesu io.IoError.Other("TCP timed out"); }
+        baai ConnectionRefused { kaesu io.IoError.Other("TCP connection refused"); }
+        baai ConnectionReset { kaesu io.IoError.Other("TCP connection reset"); }
+        baai AddressInUse { kaesu io.IoError.Other("TCP address in use"); }
+        baai PermissionDenied { kaesu io.IoError.Other("TCP permission denied"); }
+        baai WouldBlock { kaesu io.IoError.Other("TCP would block"); }
+        baai Other(message) { kaesu io.IoError.Other(message); }
+    }
+    kaesu io.IoError.Other("unknown TCP error");
+}
+
+koukai waza reader(connection: Connection) -> io.Reader {
+    kaesu io.Reader { read: waza (destination: []uint8, offset: int64, length: int64) -> io.ReadResult {
+        kaku result = read(connection, destination, offset, length);
+        kaesu io.ReadResult { count: result.count, eof: result.eof, error: io_error(result.error) };
+    } };
+}
+
+koukai waza writer(connection: Connection) -> io.Writer {
+    kaesu io.Writer { write: waza (source: []uint8, offset: int64, length: int64) -> io.WriteResult {
+        kaku result = write(connection, source, offset, length);
+        kaesu io.WriteResult { count: result.count, error: io_error(result.error) };
+    } };
+}

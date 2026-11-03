@@ -3,6 +3,7 @@ package stdlib
 
 import (
 	"Mio/internal/nativefs"
+	"Mio/internal/nativesocket"
 	"Mio/mma"
 )
 
@@ -10,6 +11,9 @@ import (
 func NewRegistry() (*mma.ModuleRegistry, error) {
 	registry := mma.NewModuleRegistry()
 	if err := nativefs.Register(registry); err != nil {
+		return nil, err
+	}
+	if err := nativesocket.Register(registry); err != nil {
 		return nil, err
 	}
 	return registry, nil

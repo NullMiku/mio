@@ -99,6 +99,25 @@ waza source_directory(state: PackageState, root: string, package_path: string) -
     moshi(path.is_abs(package_path)){kaesu path.clean(package_path);}kaesu path.join(root,package_path);
 }
 
+waza add_socket_layouts(result: []codegen.NativeFunctionLayout, packages: []resolver.ResolvedPackage) -> unit {
+    kaku found = iie; kaku at = 0;
+    aida (at < len(packages)) {
+        kaku aliases = packages[at].aliases; kaku ai = 0;
+        aida (ai < len(aliases)) { moshi (aliases[ai].package_path == "mio/sys/socket") { found = hai; } ai = ai + 1; }
+        at = at + 1;
+    }
+    moshi (!found) { kaesu; }
+    array.push(result, codegen.NativeFunctionLayout {package_path:"mio/sys/socket",name:"open",binding_key:"$mma::mio/sys/socket::open::2bd390f6a00486b5badde861e398d7014c8e331b8946668924bd7048c8bd76d7",parameter_count:0,returns_value:hai});
+    array.push(result, codegen.NativeFunctionLayout {package_path:"mio/sys/socket",name:"status",binding_key:"$mma::mio/sys/socket::status::513a084e5a0291e2893cce23d944461f99797716df1ab69f0acf49b3f195be93",parameter_count:2,returns_value:hai});
+    array.push(result, codegen.NativeFunctionLayout {package_path:"mio/sys/socket",name:"bind_ipv4",binding_key:"$mma::mio/sys/socket::bind_ipv4::f5e8d492393d1d5f642e3573af501663920a9be9788fbeda8b1f38deb28ffecd",parameter_count:4,returns_value:hai});
+    array.push(result, codegen.NativeFunctionLayout {package_path:"mio/sys/socket",name:"connect_ipv4",binding_key:"$mma::mio/sys/socket::connect_ipv4::f5e8d492393d1d5f642e3573af501663920a9be9788fbeda8b1f38deb28ffecd",parameter_count:4,returns_value:hai});
+    array.push(result, codegen.NativeFunctionLayout {package_path:"mio/sys/socket",name:"listen",binding_key:"$mma::mio/sys/socket::listen::0a2af19668a171e5f7f873b1d1a23a4d3ebe7ca1f73a074d7b75234419859515",parameter_count:3,returns_value:hai});
+    array.push(result, codegen.NativeFunctionLayout {package_path:"mio/sys/socket",name:"accept",binding_key:"$mma::mio/sys/socket::accept::3a6d99e54aef1b988c4bc8780939e06e8558ca5116f17980850557fbe5abc4d4",parameter_count:1,returns_value:hai});
+    array.push(result, codegen.NativeFunctionLayout {package_path:"mio/sys/socket",name:"read",binding_key:"$mma::mio/sys/socket::read::e8706d18fa932e83ff56c940a8552084a64d75a1d0629364439b5e079ca29430",parameter_count:5,returns_value:hai});
+    array.push(result, codegen.NativeFunctionLayout {package_path:"mio/sys/socket",name:"write",binding_key:"$mma::mio/sys/socket::write::e8706d18fa932e83ff56c940a8552084a64d75a1d0629364439b5e079ca29430",parameter_count:5,returns_value:hai});
+    array.push(result, codegen.NativeFunctionLayout {package_path:"mio/sys/socket",name:"close",binding_key:"$mma::mio/sys/socket::close::513a084e5a0291e2893cce23d944461f99797716df1ab69f0acf49b3f195be93",parameter_count:2,returns_value:hai});
+}
+
 waza native_layouts() -> []codegen.NativeFunctionLayout {
     kaku result: []codegen.NativeFunctionLayout = [];
     array.push(result, codegen.NativeFunctionLayout { package_path: "mio/fs/runtime", name: "close", binding_key: "$mma::mio/fs/runtime::close::513a084e5a0291e2893cce23d944461f99797716df1ab69f0acf49b3f195be93", parameter_count: 2, returns_value: hai });
@@ -358,7 +377,7 @@ koukai waza analyze_source_with_progress(root: string, entry: string, bunko_root
 waza compile_state(state: PackageState, root: string, entry: string) -> FrontendResult {
     load_package(state, root, entry);
     moshi (state.failed[0]) { kaesu FrontendResult { bytes: [], error: state.diagnostic[0] }; }
-    kaku natives = native_layouts(); kaku testing_runtime = iie; kaku os_runtime = iie; kaku package_index = 0;
+    kaku natives = native_layouts(); add_socket_layouts(natives, state.resolved); kaku testing_runtime = iie; kaku os_runtime = iie; kaku package_index = 0;
     aida (package_index < len(state.resolved)) {
         kaku symbols = state.resolved[package_index].symbols; kaku symbol_index = 0;
         aida (symbol_index < len(symbols)) {

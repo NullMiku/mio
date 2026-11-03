@@ -12,10 +12,17 @@ const (
 	m14SYSMkdir         = 136
 	m14SYSStat64        = 338
 	m14SYSGetdirentries = 344
+	m14SYSSocket        = 97
+	m14SYSBind          = 104
+	m14SYSConnect       = 98
+	m14SYSListen        = 106
+	m14SYSAccept        = 30
+	m14SYSSetsockopt    = 105
 	m14HandleSlots      = 32
 	m14SlotShift        = 7
 	m14FileKind         = 1
 	m14DirectoryKind    = 2
+	m14SocketKind       = 3
 	m14DirBufferSize    = 16 << 10
 )
 
@@ -34,7 +41,7 @@ func m14ReturnTagged(b *m8Assembler, tagged uint64) {
 // appendM14NativeFSRuntime returns position-independent Darwin/ARM64 code.
 // The external call offsets target M12 ArrayWithCapacity and are patched by
 // the final linker after both runtimes have their final positions.
-func appendM14NativeFSRuntime(emptyTagged uint64) ([]uint32, map[string]int, []int, error) {
+func appendM14NativeFSRuntime(emptyTagged uint64, withSockets bool) ([]uint32, map[string]int, []int, error) {
 	b := newM8Assembler()
 	external := make([]int, 0, 1)
 
@@ -161,11 +168,19 @@ func appendM14NativeFSRuntime(emptyTagged uint64) ([]uint32, map[string]int, []i
 	appendM14FileEntries(b, emptyTagged)
 	appendM14PathEntries(b, emptyTagged)
 	appendM14DirectoryEntries(b, emptyTagged, &external)
+	if withSockets {
+		appendM14SocketEntries(b, emptyTagged)
+	}
 	appendM14Cleanup(b)
 
 	entries := make(map[string]int)
 	for _, name := range []string{"open", "file_status", "read", "write", "close", "stat", "mkdir", "open_dir", "dir_status", "dir_next", "dir_name", "dir_is_dir", "dir_is_file", "dir_close", "cleanup"} {
 		entries[name] = b.labels["m14."+name]
+	}
+	if withSockets {
+		for _, name := range []string{"socket_open", "socket_status", "socket_bind_ipv4", "socket_connect_ipv4", "socket_listen", "socket_accept", "socket_read", "socket_write", "socket_close"} {
+			entries[name] = b.labels["m14."+name]
+		}
 	}
 	words, err := b.assemble()
 	return words, entries, external, err
@@ -299,8 +314,8 @@ func appendM14FileEntries(b *m8Assembler, emptyTagged uint64) {
 	b.emit(addImmX(31, 31, 32))
 	m14ReturnTagged(b, emptyTagged)
 
-	appendM14IOEntry(b, "read", true, emptyTagged)
-	appendM14IOEntry(b, "write", false, emptyTagged)
+	appendM14IOEntry(b, "read", true, emptyTagged, m14FileKind)
+	appendM14IOEntry(b, "write", false, emptyTagged, m14FileKind)
 
 	b.label("m14.close")
 	m14Enter(b)
@@ -332,11 +347,11 @@ func appendM14FileEntries(b *m8Assembler, emptyTagged uint64) {
 	m14ReturnTagged(b, emptyTagged)
 }
 
-func appendM14IOEntry(b *m8Assembler, name string, read bool, emptyTagged uint64) {
+func appendM14IOEntry(b *m8Assembler, name string, read bool, emptyTagged uint64, handleKind uint16) {
 	b.label("m14." + name)
 	m14Enter(b)
 	// saved: array, offset, length, status
-	b.emit(subImmX(31, 31, 64), strX(1, 31, 0), strX(2, 31, 1), strX(3, 31, 2), strX(4, 31, 3), movzX(1, m14FileKind))
+	b.emit(subImmX(31, 31, 64), strX(1, 31, 0), strX(2, 31, 1), strX(3, 31, 2), strX(4, 31, 3), movzX(1, handleKind))
 	b.bl("m14.handle.lookup")
 	b.cbz(0, "m14."+name+".closed")
 	b.emit(ldrX(9, 0, 0), cmpZeroX(9))
@@ -353,6 +368,10 @@ func appendM14IOEntry(b *m8Assembler, name string, read bool, emptyTagged uint64
 	b.bc(8, "m14."+name+".invalid")
 	b.emit(subX(12, 1, 10), m8Cmp(11, 12))
 	b.bc(8, "m14."+name+".invalid")
+	if handleKind == m14SocketKind {
+		b.emit(cmpZeroX(11))
+		b.bc(0, "m14."+name+".empty")
+	}
 	b.emit(ldrX(0, 31, 4), ldrX(1, 31, 5), addX(1, 1, 10), movX(2, 11), movzX(16, func() uint16 {
 		if read {
 			return m14SYSRead
@@ -368,6 +387,11 @@ func appendM14IOEntry(b *m8Assembler, name string, read bool, emptyTagged uint64
 	b.label("m14." + name + ".syserr")
 	b.emit(movzX(9, 0), movzX(10, 0), movX(11, 0))
 	b.b("m14." + name + ".status")
+	if handleKind == m14SocketKind {
+		b.label("m14." + name + ".empty")
+		b.emit(movzX(9, 0), movzX(10, 0), movzX(11, 0))
+		b.b("m14." + name + ".status")
+	}
 	b.label("m14." + name + ".closed")
 	b.emit(movzX(9, 0), movzX(10, 0), movzX(11, 9))
 	b.b("m14." + name + ".status")
@@ -378,7 +402,11 @@ func appendM14IOEntry(b *m8Assembler, name string, read bool, emptyTagged uint64
 	b.emit(ldrX(12, 31, 3), ldrX(13, 12, 1), cmpImmX(13, 10))
 	b.bc(3, "m14."+name+".return")
 	b.emit(ldrX(12, 12, 5), addImmX(12, 12, m12PayloadBase), strX(9, 12, 0), addImmX(13, 12, 8), m8StrB(10, 13), movX(0, 11), movzX(1, 0))
-	b.bl("m14.status.classify")
+	if handleKind == m14SocketKind {
+		b.bl("m14.socket.classify")
+	} else {
+		b.bl("m14.status.classify")
+	}
 	b.emit(addImmX(13, 12, 9), m8StrB(0, 13))
 	b.label("m14." + name + ".return")
 	b.emit(addImmX(31, 31, 64))

@@ -1,0 +1,20 @@
+yobu "kiso/testing";
+
+waza test_address_validation_and_listener_lifecycle() -> unit {
+    kaku bad = IPv4Address { octets: [uint8(127)], port: 1234 };
+    kaku invalid = connect(bad);
+    testing.expect(invalid.connection == mu && invalid.error != mu, "IPv4 must contain exactly four octets");
+
+    kaku invalid_port = connect(ipv4(uint8(127), uint8(0), uint8(0), uint8(1), -1));
+    testing.expect(invalid_port.error != mu, "invalid port must fail without opening a socket");
+
+    kaku server = listen(ipv4(uint8(127), uint8(0), uint8(0), uint8(1), 0));
+    testing.expect(server.error == mu, "loopback listener should bind to an ephemeral port");
+    kaku listener = server.listener;
+    moshi (listener != mu) {
+        kaku first = close_listener(listener);
+        testing.expect(first.error == mu, "listener must close successfully");
+        kaku second = close_listener(listener);
+        testing.expect(second.error != mu, "closing a stale handle must fail safely");
+    }
+}
