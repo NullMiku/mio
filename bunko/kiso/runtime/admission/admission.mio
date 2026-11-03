@@ -1,0 +1,245 @@
+yobu "kiso/array";
+
+// Single event-loop owner only. All times are injected monotonic milliseconds.
+// Classes are assigned by trusted application policy, never by request headers.
+koukai teisu Interactive = 0;
+koukai teisu IO = 1;
+koukai teisu Compute = 2;
+koukai teisu Background = 3;
+koukai teisu Normal = 0;
+koukai teisu Elevated = 1;
+koukai teisu High = 2;
+koukai teisu Critical = 3;
+koukai teisu Granted = 1;
+koukai teisu Queued = 2;
+koukai teisu CancelPending = 3;
+koukai teisu TimeoutPending = 4;
+koukai teisu Completed = 5;
+koukai teisu Cancelled = 6;
+koukai teisu TimedOut = 7;
+koukai teisu Rejected = 8;
+koukai teisu Invalid = 1;
+koukai teisu Capacity = 2;
+koukai teisu QueueFull = 3;
+koukai teisu Deadline = 4;
+koukai teisu Pressure = 5;
+koukai teisu Collecting = 6;
+koukai teisu Memory = 7;
+
+koukai kata Result { id: int64; state: int64; reason: int64; }
+// Copied M19c eight-word snapshot, ordinary same-thread reads only.
+koukai kata Snapshot {
+ level: int64; reason: int64; used: int64; committed: int64;
+ limit: int64; rate: int64; gc_active: int64; sequence: int64;
+}
+koukai kata Feedback { latency_ms: int64; target_ms: int64; queue_wait_ms: int64; }
+
+// Private data layout: scalar cells allow mutation without field assignment.
+teisu d_hard = 0;
+teisu d_allowed = 1;
+teisu d_latency = 2;
+teisu d_memory = 3;
+teisu d_recovery = 4;
+teisu d_level = 5;
+teisu d_headroom = 6;
+teisu d_reserve = 7;
+teisu d_estimate = 8;
+teisu d_last = 9;
+teisu d_stable = 10;
+teisu d_step = 11;
+teisu d_next_id = 12;
+teisu d_cursor = 13;
+teisu d_active = 14;
+teisu d_waiting = 15;
+teisu d_queue_cap = 16;
+teisu f_safe = 0;
+teisu f_gc_active = 1;
+teisu f_recovering = 2;
+
+koukai kata Controller { data: []int64; flags: []bool; classes: []int64; slots: []int64; weights: []int64; }
+
+waza minimum(a: int64,b: int64) -> int64 { moshi(a<b){kaesu a;} kaesu b; }
+waza maximum(a: int64,b: int64) -> int64 { moshi(a>b){kaesu a;} kaesu b; }
+waza result(id: int64,state: int64,reason: int64) -> Result {kaesu Result{id:id,state:state,reason:reason};}
+// Invalid configuration is rejected before allocation. Upper bound also bounds scans.
+koukai waza create(hard: int64, estimate: int64, reserve: int64, now: int64) -> Controller? {
+ moshi(hard<1 || hard>4096 || estimate<1 || reserve<0 || now<0){kaesu mu;}
+ kaku cap=minimum(32,(hard+3)/4);
+ kaku c=Controller{data:[hard,0,hard,0,hard,Critical,0,reserve,estimate,now,now,now,0,0,0,0,cap],flags:[iie,iie,iie],
+ classes:array.make[int64](48,0),slots:array.make[int64]((hard+cap)*7,0),weights:[0,0,0,0,0,1,1,1,2,3]};
+ kaku i=0; aida(i<4){c.classes[i*12]=hard;c.classes[i*12+1]=cap;c.classes[i*12+2]=60000;i=i+1;}
+ kaesu c;
+}
+// Trusted setup; cannot reconfigure live accounting. Defaults permit borrowing.
+koukai waza configure(c: Controller, class: int64, concurrency: int64, queue: int64, deadline_ms: int64) -> bool {
+ moshi(class<0 || class>3 || concurrency<1 || concurrency>c.data[d_hard] || queue<0 || queue>c.data[d_queue_cap] || deadline_ms<1 || deadline_ms>60000 || c.data[d_active]+c.data[d_waiting]!=0){kaesu iie;}
+ c.classes[class*12]=concurrency;c.classes[class*12+1]=queue;c.classes[class*12+2]=deadline_ms;kaesu hai;
+}
+waza recompute(c: Controller) -> unit {
+ c.data[d_allowed]=minimum(c.data[d_hard],minimum(c.data[d_latency],minimum(c.data[d_memory],c.data[d_recovery])));
+ moshi(c.data[d_level]==Critical || c.flags[f_gc_active]){c.data[d_allowed]=0;}
+}
+// Injected feedback is measured by a future scheduler/adapter, never a fabricated p99.
+// Snapshots carry M19c's already-hysteretic level; no independent level downgrading.
+koukai waza observe(c: Controller, s: Snapshot, f: Feedback, now: int64) -> bool {
+ moshi(now<c.data[d_last] || s.level<0 || s.level>3 || s.sequence<=0 || (s.sequence-s.sequence/2*2)!=0 || s.used<0 || s.committed<0 || s.limit<1 || s.rate<0){kaesu iie;}
+ c.data[d_last]=now;
+ kaku was_safe=c.flags[f_safe];kaku previous=c.data[d_level];c.data[d_level]=s.level;c.flags[f_gc_active]=s.gc_active!=0;
+ c.data[d_headroom]=maximum(0,s.limit-maximum(s.used,s.committed));
+ c.flags[f_safe]=c.data[d_headroom]>c.data[d_reserve] && c.data[d_headroom]-c.data[d_reserve]>=c.data[d_estimate];
+ c.data[d_memory]=minimum(c.data[d_hard],maximum(0,c.data[d_headroom]-c.data[d_reserve])/c.data[d_estimate]);
+ moshi(f.target_ms>0 && (f.latency_ms>f.target_ms || f.queue_wait_ms>10)){
+ c.data[d_latency]=maximum(1,c.data[d_latency]-maximum(1,c.data[d_latency]/10));
+ } sore { moshi(s.level==Normal && !c.flags[f_recovering] && f.target_ms>0 && f.latency_ms>=0 && f.queue_wait_ms==0){c.data[d_latency]=minimum(c.data[d_hard],c.data[d_latency]+1);}}
+ moshi(s.level==Critical){c.data[d_recovery]=0;c.flags[f_recovering]=hai;c.data[d_stable]=now;c.data[d_step]=now;}
+ sore { moshi(s.level==High){
+  c.flags[f_recovering]=hai;c.data[d_stable]=now;
+  moshi(previous!=High || now-c.data[d_step]>=1000){c.data[d_recovery]=maximum(1,c.data[d_recovery]-maximum(1,c.data[d_recovery]/10));c.data[d_step]=now;}
+ } sore { moshi(c.flags[f_recovering]){
+  moshi(!c.flags[f_safe] || c.flags[f_gc_active] || s.level!=Normal){c.data[d_stable]=now;c.data[d_step]=now;}
+  sore {
+   moshi(previous!=Normal || !was_safe){c.data[d_stable]=now;c.data[d_step]=now;}
+   moshi(c.data[d_recovery]==0){c.data[d_recovery]=1;c.data[d_step]=now;}
+   // No catch-up burst: at most one 5% step per observation after 3s stable.
+   moshi(now-c.data[d_stable]>=3000 && now-c.data[d_step]>=1000){c.data[d_recovery]=minimum(c.data[d_hard],c.data[d_recovery]+maximum(1,c.data[d_hard]/20));c.data[d_step]=now;}
+   moshi(c.data[d_recovery]==c.data[d_hard]){c.flags[f_recovering]=iie;}
+  }
+ }}}
+ recompute(c);kaesu hai;
+}
+waza find(c: Controller,id: int64) -> int64 {
+ kaku i=0;aida(i<len(c.slots)){moshi(c.slots[i]==id && id>0){kaesu i;}i=i+7;}kaesu -1;
+}
+koukai waza state(c: Controller,id: int64) -> int64 {kaku i=find(c,id);moshi(i<0){kaesu 0;}kaesu c.slots[i+1];}
+waza reject(c: Controller,class: int64,reason: int64) -> Result {
+ moshi(class>=0 && class<4){c.classes[class*12+10]=c.classes[class*12+10]+1;c.classes[class*12+11]=reason;}
+ kaesu result(0,Rejected,reason);
+}
+waza reserved_bytes(c: Controller) -> int64 {
+ kaku total=0;kaku i=0;
+ aida(i<len(c.slots)){kaku s=c.slots[i+1];moshi(s==Granted || s==CancelPending || s==TimeoutPending){total=total+c.slots[i+6];}i=i+7;}
+ kaesu total;
+}
+waza can_grant(c: Controller,class: int64,estimate: int64) -> bool {
+ moshi(c.data[d_active]>=c.data[d_allowed] || c.classes[class*12+3]>=c.classes[class*12]){kaesu iie;}
+ // Conservative: releasing a token does not modify snapshot usage. Remaining
+ // in-flight estimates are additional reservations against the observed margin.
+ kaesu estimate<=maximum(0,maximum(0,c.data[d_headroom]-c.data[d_reserve])-reserved_bytes(c));
+}
+koukai waza try_acquire(c: Controller,class: int64,estimate: int64,deadline: int64,now: int64) -> Result {
+ kaesu submit(c,class,estimate,deadline,now,iie);
+}
+koukai waza enqueue(c: Controller,class: int64,estimate: int64,deadline: int64,now: int64) -> Result {
+ kaesu submit(c,class,estimate,deadline,now,hai);
+}
+waza submit(c: Controller,class: int64,estimate: int64,deadline: int64,now: int64,queue: bool) -> Result {
+ moshi(class<0 || class>3 || estimate<c.data[d_estimate] || now<c.data[d_last] || now>9223372036854715807 || c.data[d_next_id]==9223372036854775807){kaesu reject(c,class,Invalid);}
+ c.data[d_last]=now;
+ moshi(deadline<=now){kaesu reject(c,class,Deadline);}
+ kaku expires=minimum(deadline,now+c.classes[class*12+2]);
+ kaku grant=c.data[d_waiting]==0 && can_grant(c,class,estimate);
+ moshi(!grant && !queue){
+  moshi(c.flags[f_gc_active]){kaesu reject(c,class,Collecting);}
+  moshi(c.data[d_level]==Critical){kaesu reject(c,class,Pressure);}
+  moshi(estimate>maximum(0,maximum(0,c.data[d_headroom]-c.data[d_reserve])-reserved_bytes(c))){kaesu reject(c,class,Memory);}
+  kaesu reject(c,class,Capacity);
+ }
+ moshi(!grant && (c.data[d_waiting]>=c.data[d_queue_cap] || c.classes[class*12+4]>=c.classes[class*12+1])){kaesu reject(c,class,QueueFull);}
+ kaku i=0;aida(i<len(c.slots)){
+  kaku old=c.slots[i+1];
+  moshi(old==0 || old>=Completed){
+   c.data[d_next_id]=c.data[d_next_id]+1;c.slots[i]=c.data[d_next_id];c.slots[i+2]=class;c.slots[i+3]=now;
+   c.slots[i+4]=minimum(expires,now+20);c.slots[i+5]=expires;c.slots[i+6]=estimate;
+   moshi(grant){c.slots[i+1]=Granted;c.data[d_active]=c.data[d_active]+1;c.classes[class*12+3]=c.classes[class*12+3]+1;c.classes[class*12+5]=c.classes[class*12+5]+1;kaesu result(c.data[d_next_id],Granted,0);}
+   c.slots[i+1]=Queued;c.data[d_waiting]=c.data[d_waiting]+1;c.classes[class*12+4]=c.classes[class*12+4]+1;c.classes[class*12+6]=c.classes[class*12+6]+1;kaesu result(c.data[d_next_id],Queued,0);
+  }i=i+7;
+ }kaesu reject(c,class,Capacity);
+}
+waza unqueue(c: Controller,i: int64) -> unit {c.data[d_waiting]=c.data[d_waiting]-1;kaku at=c.slots[i+2]*12+4;c.classes[at]=c.classes[at]-1;}
+koukai waza cancel(c: Controller,id: int64) -> bool {
+ kaku i=find(c,id);moshi(i<0){kaesu iie;}kaku s=c.slots[i+1];kaku cl=c.slots[i+2]*12;
+ moshi(s==Queued){unqueue(c,i);c.slots[i+1]=Cancelled;c.classes[cl+8]=c.classes[cl+8]+1;kaesu hai;}
+ moshi(s==Granted){c.slots[i+1]=CancelPending;kaesu hai;}kaesu iie;
+}
+// Only executor acknowledgement releases running tokens, including cancellation
+// and deadline expiry. Running task roots stay the executor's responsibility.
+koukai waza release(c: Controller,id: int64,now: int64) -> bool {
+ moshi(now<c.data[d_last]){kaesu iie;}c.data[d_last]=now;
+ kaku i=find(c,id);moshi(i<0){kaesu iie;}kaku s=c.slots[i+1];
+ moshi(s!=Granted && s!=CancelPending && s!=TimeoutPending){kaesu iie;}
+ moshi(s==Granted && now>=c.slots[i+5]){s=TimeoutPending;}
+ kaku cl=c.slots[i+2]*12;c.data[d_active]=c.data[d_active]-1;c.classes[cl+3]=c.classes[cl+3]-1;
+ kaku terminal=Completed;kaku stat=7;
+ moshi(s==CancelPending){terminal=Cancelled;stat=8;}sore { moshi(s==TimeoutPending){terminal=TimedOut;stat=9;}}
+ c.slots[i+1]=terminal;c.classes[cl+stat]=c.classes[cl+stat]+1;kaesu hai;
+}
+// Bounded scan, no sleeps or callbacks. Returns expiry notifications followed
+// by at most ONE grant. Caller calls Tick on events/timers, never spins.
+// Up to hard+queue_cap notifications: running deadlines remain charged.
+koukai waza tick(c: Controller,now: int64) -> []Result {
+ kaku events=array.with_capacity[Result](c.data[d_hard]+c.data[d_queue_cap]+1);
+ moshi(now<c.data[d_last]){kaesu events;}c.data[d_last]=now;kaku i=0;
+ aida(i<len(c.slots)){
+  kaku s=c.slots[i+1];
+  moshi(s==Queued && now>=c.slots[i+4]){unqueue(c,i);c.slots[i+1]=TimedOut;kaku cl=c.slots[i+2]*12;c.classes[cl+9]=c.classes[cl+9]+1;array.push(events,result(c.slots[i],TimedOut,Deadline));}
+  sore { moshi(s==Granted && now>=c.slots[i+5]){c.slots[i+1]=TimeoutPending;array.push(events,result(c.slots[i],TimeoutPending,Deadline));}}
+  i=i+7;
+ }
+ // Weighted round robin (5:3:1:1). Per-class FIFO; blocked heads cannot
+ // prevent other classes progressing. Borrowing ends as completions free slots.
+ kaku tries=0;aida(tries<10){
+  kaku cl=c.weights[c.data[d_cursor]];c.data[d_cursor]=(c.data[d_cursor]+1)-(c.data[d_cursor]+1)/10*10;tries=tries+1;
+  kaku best=-1;i=0;
+  aida(i<len(c.slots)){moshi(c.slots[i+1]==Queued && c.slots[i+2]==cl){moshi(best<0){best=i;}sore { moshi(c.slots[i]<c.slots[best]){best=i;}}}i=i+7;}
+  moshi(best>=0){moshi(can_grant(c,cl,c.slots[best+6])){unqueue(c,best);c.slots[best+1]=Granted;c.data[d_active]=c.data[d_active]+1;c.classes[cl*12+3]=c.classes[cl*12+3]+1;c.classes[cl*12+5]=c.classes[cl*12+5]+1;array.push(events,result(c.slots[best],Granted,0));kaesu events;}}
+ }
+ kaesu events;
+}
+
+// Stable inspection API. Controller internals must only be mutated by this module.
+koukai waza allowed(c: Controller) -> int64 {kaesu c.data[d_allowed];}
+koukai waza active(c: Controller) -> int64 {kaesu c.data[d_active];}
+koukai waza waiting(c: Controller) -> int64 {kaesu c.data[d_waiting];}
+koukai waza queue_capacity(c: Controller) -> int64 {kaesu c.data[d_queue_cap];}
+koukai waza stat(c: Controller,class: int64,field: int64) -> int64 {
+ moshi(class<0 || class>3 || field<0 || field>11){kaesu -1;}kaesu c.classes[class*12+field];
+}
+// Adapter boundary: pass the eight words copied by memory.snapshot on the SAME
+// runtime thread, outside collection. This is NOT atomic publication.
+koukai waza observe_words(c: Controller,words: []int64,f: Feedback,now: int64) -> bool {
+ moshi(len(words)!=8){kaesu iie;}
+ kaesu observe(c,Snapshot{level:words[0],reason:words[1],used:words[2],committed:words[3],limit:words[4],rate:words[5],gc_active:words[6],sequence:words[7]},f,now);
+}
+
+// Sum of per-class statistics; no separate unbounded task history is retained.
+koukai waza total_stat(c: Controller,field: int64) -> int64 {
+ moshi(field<0 || field>10){kaesu -1;}kaku n=0;kaku i=0;
+ aida(i<4){n=n+c.classes[i*12+field];i=i+1;}kaesu n;
+}
+
+koukai waza class_of(c: Controller,id: int64) -> int64 {
+ kaku i=find(c,id);moshi(i<0){kaesu -1;}kaesu c.slots[i+2];
+}
+
+koukai teisu StatActive = 3;
+koukai teisu StatWaiting = 4;
+koukai teisu StatGranted = 5;
+koukai teisu StatQueued = 6;
+koukai teisu StatCompleted = 7;
+koukai teisu StatCancelled = 8;
+koukai teisu StatTimedOut = 9;
+koukai teisu StatRejected = 10;
+koukai teisu StatLastReason = 11;
+// Absolute next timer deadline; -1 means no timer is needed for task expiry.
+// Recovery also requires periodic fresh observe_words calls from the adapter.
+koukai waza next_deadline(c: Controller) -> int64 {
+ kaku next=-1;kaku i=0;
+ aida(i<len(c.slots)){
+  kaku s=c.slots[i+1];kaku deadline=-1;
+  moshi(s==Queued){deadline=c.slots[i+4];}
+  moshi(s==Granted){deadline=c.slots[i+5];}
+  moshi(deadline>=0){moshi(next<0 || deadline<next){next=deadline;}}
+  i=i+7;
+ }
+ kaesu next;
+}
