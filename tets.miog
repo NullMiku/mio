@@ -1,0 +1,110 @@
+{
+  "formatVersion": 1,
+  "id": "tets",
+  "version": 1,
+  "kind": "program",
+  "metadata": {
+    "name": "tets",
+    "variables": [],
+    "imports": [],
+    "functions": []
+  },
+  "nodes": [
+    {
+      "id": "entry",
+      "type": "Entry",
+      "position": {
+        "x": 113.91360489668193,
+        "y": -56.21746629225806
+      },
+      "params": {
+        "name": "mio_graph_main"
+      },
+      "pins": [
+        {
+          "id": "entry.exec_out",
+          "name": "exec_out",
+          "direction": "output",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "constant",
+      "type": "Constant",
+      "position": {
+        "x": 97.75086494313393,
+        "y": 93.91211908253852
+      },
+      "params": {
+        "type": "int64",
+        "value": 128
+      },
+      "pins": [
+        {
+          "id": "constant.value",
+          "name": "value",
+          "direction": "output",
+          "kind": "data",
+          "dataType": "int64"
+        }
+      ]
+    },
+    {
+      "id": "function_call",
+      "type": "FunctionCall",
+      "position": {
+        "x": 523.1371662460238,
+        "y": -71.64876423435108
+      },
+      "params": {
+        "function": "chant"
+      },
+      "pins": [
+        {
+          "id": "function_call.exec_in",
+          "name": "exec_in",
+          "direction": "input",
+          "kind": "exec"
+        },
+        {
+          "id": "function_call.exec_out",
+          "name": "exec_out",
+          "direction": "output",
+          "kind": "exec"
+        },
+        {
+          "id": "function_call.arg_0",
+          "name": "arg_0",
+          "direction": "input",
+          "kind": "data",
+          "required": true
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn_1",
+      "from": {
+        "nodeId": "entry",
+        "pinId": "entry.exec_out"
+      },
+      "to": {
+        "nodeId": "function_call",
+        "pinId": "function_call.exec_in"
+      }
+    },
+    {
+      "id": "conn_2",
+      "from": {
+        "nodeId": "constant",
+        "pinId": "constant.value"
+      },
+      "to": {
+        "nodeId": "function_call",
+        "pinId": "function_call.arg_0"
+      }
+    }
+  ]
+}
