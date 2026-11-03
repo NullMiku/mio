@@ -3,6 +3,8 @@ package codegen_test
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -411,7 +413,33 @@ func TestCodegenSelfAndBunkoSources(t *testing.T) {
 	}
 	started := time.Now()
 	var output bytes.Buffer
-	if err := environment.RunWithOptions(program, &output, miolang.ExecutionOptions{InstructionLimit: 500_000_000_000}); err != nil {
+	options := miolang.ExecutionOptions{InstructionLimit: 500_000_000_000}
+	var instructions uint64
+	if budget := os.Getenv("MIO_CODEGEN_PROFILE_INSTRUCTIONS"); budget != "" {
+		count, err := strconv.ParseUint(budget, 10, 64)
+		if err != nil || count == 0 {
+			t.Fatalf("invalid MIO_CODEGEN_PROFILE_INSTRUCTIONS %q", budget)
+		}
+		options.InstructionLimit = count
+	}
+	if duration := os.Getenv("MIO_CODEGEN_PROFILE_DURATION"); duration != "" {
+		timeout, err := time.ParseDuration(duration)
+		if err != nil || timeout <= 0 {
+			t.Fatalf("invalid MIO_CODEGEN_PROFILE_DURATION %q", duration)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		options.Context = ctx
+	}
+	if os.Getenv("MIO_CODEGEN_PROGRESS") != "" {
+		options.InstructionCount = &instructions
+		options.ProgressInterval = 10_000_000
+		options.Progress = func(p miolang.ExecutionProgress) {
+			t.Logf("vm_progress elapsed=%s instructions=%d function=%s offset=%d", time.Since(started), p.Instructions, p.Function, p.Offset)
+		}
+		defer func() { t.Logf("vm_total elapsed=%s instructions=%d", time.Since(started), instructions) }()
+	}
+	if err := environment.RunWithOptions(program, &output, options); err != nil {
 		t.Fatal(err)
 	}
 	fields := strings.Fields(output.String())
@@ -447,6 +475,9 @@ func TestCodegenSelfAndBunkoSources(t *testing.T) {
 	const expectedOutput = "6\n3\nhai\nhai\nMio\n-42\n2\nhai\na/c\n4660\n"
 	if executionOutput.String() != expectedOutput {
 		t.Fatalf("真实 Bunko 程序输出=%q，期望=%q", executionOutput.String(), expectedOutput)
+	}
+	if os.Getenv("MIO_CODEGEN_PROGRESS") != "" {
+		t.Logf("artifact_sha256=%x", sha256.Sum256(data))
 	}
 	t.Logf("packages=%d bytes=%s constants=%s functions=%s globals=%s duration=%s", len(packages)+1, fields[2], fields[3], fields[4], fields[5], time.Since(started))
 }
