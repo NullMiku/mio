@@ -1,0 +1,74 @@
+// Semantic runtime IR. Operands are virtual values, never CPU registers.
+// Operations return status explicitly; failure may not be silently discarded.
+koukai teisu relaxed = 0;
+koukai teisu acquire = 1;
+koukai teisu release = 2;
+koukai teisu acq_rel = 3;
+koukai teisu seq_cst = 4;
+koukai teisu atomic_load = 1;
+koukai teisu atomic_store = 2;
+koukai teisu atomic_cas = 3;
+koukai teisu atomic_add = 4;
+koukai teisu fence = 5;
+koukai teisu thread_start = 6;
+koukai teisu thread_join = 7;
+koukai teisu thread_identity = 8;
+koukai teisu tls_get = 9;
+koukai teisu tls_set = 10;
+koukai teisu park = 11;
+koukai teisu wake = 12;
+koukai teisu reserve = 13;
+koukai teisu commit = 14;
+koukai teisu decommit = 15;
+koukai teisu memory_release = 16;
+koukai teisu clock = 17;
+koukai teisu pressure = 18;
+koukai teisu roots = 19;
+koukai teisu safepoint = 20;
+koukai teisu write_barrier = 21;
+koukai teisu protect = 22;
+koukai teisu tls_create = ir.tls_create;
+koukai teisu tls_destroy = ir.tls_destroy;
+koukai teisu mutex_create = ir.mutex_create;
+koukai teisu mutex_destroy = ir.mutex_destroy;
+koukai teisu mutex_lock = ir.mutex_lock;
+koukai teisu mutex_unlock = ir.mutex_unlock;
+koukai teisu condition_create = ir.condition_create;
+koukai teisu condition_destroy = ir.condition_destroy;
+koukai teisu abort_runtime = ir.abort_runtime;
+
+// CAS returns the observed old value. On failure no store occurs. Failure
+// order cannot release or exceed success order. Strong CAS retries spurious
+// failure. RMW arithmetic wraps at 64 bits. Addresses must be 8-byte aligned.
+// Park compares the wait word with expected while holding the wait protocol's
+// lock, atomically releases it while sleeping and rechecks after every wake.
+// Deadlines use monotonic nanoseconds; timeout/failure is distinct from wake.
+// Roots requires a completed handshake for this epoch, never a running frame.
+// Barrier preserves overwritten references BEFORE publishing the new edge and
+// records Old->Young AFTER it. Its operands must carry precise layout identity.
+koukai kata RuntimeOp {
+    kind: int64; address: int64; value: int64; expected: int64;
+    result: int64; status: int64; order: int64; failure_order: int64;
+    alignment: int64; epoch: int64;
+}
+koukai waza operation(kind: int64) -> RuntimeOp {
+    kaesu RuntimeOp { kind: kind, address: 0, value: 1, expected: 2,
+        result: 3, status: 4, order: relaxed, failure_order: relaxed,
+        alignment: 8, epoch: 0 };
+}
+koukai waza valid_operation(op: RuntimeOp) -> bool {
+    moshi (op.kind < atomic_load || op.kind > abort_runtime || op.address < 0 ||
+        op.value < 0 || op.expected < 0 || op.result < 0 || op.status < 0 ||
+        op.epoch < 0 || op.order < relaxed || op.order > seq_cst ||
+        op.failure_order < relaxed || op.failure_order > seq_cst) { kaesu iie; }
+    moshi (op.kind <= atomic_add && (op.alignment < 8 || op.alignment - (op.alignment / 8) * 8 != 0)) { kaesu iie; }
+    moshi (op.kind == atomic_load && op.order != relaxed && op.order != acquire && op.order != seq_cst) { kaesu iie; }
+    moshi (op.kind == atomic_store && op.order != relaxed && op.order != release && op.order != seq_cst) { kaesu iie; }
+    moshi (op.kind == atomic_cas) {
+        moshi (op.failure_order != relaxed && op.failure_order != acquire && op.failure_order != seq_cst) { kaesu iie; }
+        moshi (op.failure_order == acquire && op.order != acquire && op.order != acq_rel && op.order != seq_cst) { kaesu iie; }
+        moshi (op.failure_order == seq_cst && op.order != seq_cst) { kaesu iie; }
+    }
+    moshi (op.kind == fence && op.order == relaxed) { kaesu iie; }
+    kaesu hai;
+}

@@ -1,0 +1,20 @@
+yobu "kiso/runtime/target";
+// Stable import table for the first public Darwin thread bridge. Native code
+// calls the documented ABI; pthread opaque sizes belong only to this adapter.
+koukai teisu thread_symbol_count = 21;
+koukai teisu mutex_bytes = 64;
+koukai teisu condition_bytes = 48;
+koukai waza thread_symbols() -> []string {
+    kaesu ["_pthread_create","_pthread_join","_pthread_self","_pthread_key_create",
+        "_pthread_setspecific","_pthread_getspecific","_pthread_key_delete","_exit","_write",
+        "_pthread_mutex_init","_pthread_mutex_lock","_pthread_mutex_unlock",
+        "_pthread_cond_init","_pthread_cond_timedwait_relative_np","_pthread_cond_signal",
+        "_pthread_cond_destroy","_pthread_mutex_destroy","_clock_gettime","_getpagesize","_pthread_mutex_trylock","_pthread_cond_broadcast"];
+}
+koukai waza capabilities() -> target.TargetInfo {
+    // Thread primitive witnesses do NOT establish multi-mutator root safety.
+    kaesu target.TargetInfo {os:"darwin",arch:"arm64",abi:"aapcs64-darwin",pointer_bits:64,
+        little_endian:hai,page_size_query:hai,atomic64:hai,threads:hai,tls:hai,park_wake:hai,
+        monotonic_clock:hai,virtual_memory:iie,precise_roots:iie,stack_alignment:16,
+        concurrent_collector:iie,executable:hai};
+}
