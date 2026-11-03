@@ -578,14 +578,19 @@ waza type_nonnil_entries(file: mochi.File, data: []uint8, count: int64) -> [][]b
     kaku shared = type_captured_locals(file, data, count);
     kaku facts: [][]bool = []; kaku visited = array.make[bool](len(data) + 1, iie);
     kaku at = 0; aida (at <= len(data)) { array.push(facts, array.make[bool](count, iie)); at = at + 1; }
+    // Lambda bindings have an implicit nil placeholder for recursive scope.
+    // A literal closure stored on its sole fallthrough path is definitely
+    // non-nil. Do not infer this at a branch target with another predecessor.
+    kaku jump_target=array.make[bool](len(data)+1,iie);kaku scan=0;
+    aida(scan<len(data)){kaku op=int64(data[scan]);kaku size=type_instruction_width(op);moshi(size<=0 || size>len(data)-scan){kaesu facts;}moshi(op==17 || op==18){kaku dest=type_u16(data,scan);moshi(dest>=0 && dest<=len(data)){jump_target[dest]=hai;}}scan=scan+size;}
     visited[0] = hai; kaku changed = hai;
     aida (changed) {
-        changed = iie; at = 0;
+        changed = iie; at = 0;kaku previous=-1;
         aida (at < len(data)) {
             kaku op = int64(data[at]); kaku width = type_instruction_width(op);
             moshi (visited[at]) {
                 kaku out = array.clone(facts[at]);
-                moshi (op == 23 || op == 49) { kaku slot = type_u16(data, at); moshi (slot < count) { out[slot] = iie; } }
+                moshi (op == 23 || op == 49) { kaku slot = type_u16(data, at); moshi (slot < count) { out[slot] = iie;moshi(op==23 && !jump_target[at] && previous>=0 && (data[previous]==uint8(44) || data[previous]==uint8(46))){out[slot]=hai;} } }
                 moshi (op == 25 || op == 45 || op == 67 || op == 48) { kaku i = 0; aida (i < count) { moshi (shared[i]) { out[i] = iie; } i = i + 1; } }
                 kaku successors: []int64 = []; kaku guard = -1; kaku inverted = iie;
                 moshi (op == 17 || op == 18) { array.push(successors, type_u16(data, at)); }
@@ -610,7 +615,7 @@ waza type_nonnil_entries(file: mochi.File, data: []uint8, count: int64) -> [][]b
                     si = si + 1;
                 }
             }
-            at = at + width;
+            previous=at;at = at + width;
         }
     }
     kaesu facts;
@@ -1190,9 +1195,13 @@ koukai waza analyze_types_traced(file: mochi.File, trace: bool) -> TypeAnalysis 
             // Keep their complete shape/target/variant edges in the existing
             // union; only scalar boxes need a distinct non-nil value view.
             kaku kind = arena.kind[source];
-            moshi (kind == type_array_ref || kind == type_struct_ref || kind == type_enum_ref || kind == type_function_ref || kind == type_map_ref || kind == type_string_id) {
+            moshi(kind==type_function_ref){
+                // A non-nil function value retains all callable targets without
+                // rejoining its nullable placeholder's value representation.
+                kaku vr=type_root(arena,view);moshi(merge_targets(arena.targets[vr],arena.targets[source])){arena.revision[0]=arena.revision[0]+1;}
+            } sore {moshi (kind == type_array_ref || kind == type_struct_ref || kind == type_enum_ref || kind == type_map_ref || kind == type_string_id) {
                 moshi (!type_join(arena, view, source)) { failed_detail = link[2]; }
-            }
+            }}
             ki = ki + 1;
         }
         kaku di = 0;

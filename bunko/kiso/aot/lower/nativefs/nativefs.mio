@@ -24,6 +24,15 @@ koukai teisu op_stat = 13;
 koukai teisu op_write = 14;
 
 koukai waza operation(name: string) -> int64 {
+    moshi (name == "$mma::mio/sys/socket::open::2bd390f6a00486b5badde861e398d7014c8e331b8946668924bd7048c8bd76d7") { kaesu 32; }
+    moshi (name == "$mma::mio/sys/socket::status::513a084e5a0291e2893cce23d944461f99797716df1ab69f0acf49b3f195be93") { kaesu 33; }
+    moshi (name == "$mma::mio/sys/socket::bind_ipv4::f5e8d492393d1d5f642e3573af501663920a9be9788fbeda8b1f38deb28ffecd") { kaesu 34; }
+    moshi (name == "$mma::mio/sys/socket::connect_ipv4::f5e8d492393d1d5f642e3573af501663920a9be9788fbeda8b1f38deb28ffecd") { kaesu 35; }
+    moshi (name == "$mma::mio/sys/socket::listen::0a2af19668a171e5f7f873b1d1a23a4d3ebe7ca1f73a074d7b75234419859515") { kaesu 36; }
+    moshi (name == "$mma::mio/sys/socket::accept::3a6d99e54aef1b988c4bc8780939e06e8558ca5116f17980850557fbe5abc4d4") { kaesu 37; }
+    moshi (name == "$mma::mio/sys/socket::read::e8706d18fa932e83ff56c940a8552084a64d75a1d0629364439b5e079ca29430") { kaesu 38; }
+    moshi (name == "$mma::mio/sys/socket::write::e8706d18fa932e83ff56c940a8552084a64d75a1d0629364439b5e079ca29430") { kaesu 39; }
+    moshi (name == "$mma::mio/sys/socket::close::513a084e5a0291e2893cce23d944461f99797716df1ab69f0acf49b3f195be93") { kaesu 40; }
     moshi (name == "$mma::mio/fs/runtime::close::513a084e5a0291e2893cce23d944461f99797716df1ab69f0acf49b3f195be93") { kaesu op_close; }
     moshi (name == "$mma::mio/fs/runtime::dir_close::513a084e5a0291e2893cce23d944461f99797716df1ab69f0acf49b3f195be93") { kaesu op_dir_close; }
     moshi (name == "$mma::mio/fs/runtime::dir_is_dir::c9ff387755a05bfa435b60b204111ffc83a5f199b21f569f6673482e3a103ca6") { kaesu op_dir_is_dir; }
@@ -59,6 +68,16 @@ koukai waza operation(name: string) -> int64 {
 }
 
 koukai waza parameter_count(op: int64) -> int64 {
+    moshi (op == 32) { kaesu 0; }
+    moshi (op == 33) { kaesu 2; }
+    moshi (op == 34) { kaesu 4; }
+    moshi (op == 35) { kaesu 4; }
+    moshi (op == 36) { kaesu 3; }
+    moshi (op == 37) { kaesu 1; }
+    moshi (op == 38) { kaesu 5; }
+    moshi (op == 39) { kaesu 5; }
+    moshi (op == 40) { kaesu 2; }
+
     moshi(op==31){kaesu 2;}
     moshi (op == 30) { kaesu 1; }
     moshi (op == 29) { kaesu 0; }
@@ -87,6 +106,14 @@ koukai waza parameter_count(op: int64) -> int64 {
 // Exact managed-reference arguments for the NativeFS ABI. Resource tokens and
 // integer offsets are deliberately excluded from the Shadow Frame.
 koukai waza parameter_is_root(op: int64, index: int64) -> bool {
+    moshi (op >= 32 && op <= 40) {
+        moshi (op == 33 || op == 40) { kaesu index == 1; }
+        moshi (op == 34 || op == 35) { kaesu index == 1 || index == 3; }
+        moshi (op == 36) { kaesu index == 2; }
+        moshi (op == 38 || op == 39) { kaesu index == 1 || index == 4; }
+        kaesu iie;
+    }
+
     moshi (op == 27 || op == 28 || op == 31) { kaesu hai; }
     moshi (op == 25) { kaesu index < 5; }
     moshi (op == 20 || op == 21 || op == 23 || op == 24) { kaesu hai; }
@@ -100,11 +127,22 @@ koukai waza parameter_is_root(op: int64, index: int64) -> bool {
 }
 
 koukai waza returns_reference(op: int64) -> bool {
+    moshi (op >= 32 && op <= 40) { kaesu op != 32 && op != 37; }
     kaesu op == op_close || op == op_dir_close || op == op_dir_name || op == op_dir_status ||
         op == op_file_status || op == op_mkdir || op == op_read || op == op_stat || op == op_write;
 }
 
 koukai waza entry_label(op: int64) -> string {
+    moshi (op == 32) { kaesu "native_socket_open"; }
+    moshi (op == 33) { kaesu "native_socket_status"; }
+    moshi (op == 34) { kaesu "native_socket_bind_ipv4"; }
+    moshi (op == 35) { kaesu "native_socket_connect_ipv4"; }
+    moshi (op == 36) { kaesu "native_socket_listen"; }
+    moshi (op == 37) { kaesu "native_socket_accept"; }
+    moshi (op == 38) { kaesu "native_socket_read"; }
+    moshi (op == 39) { kaesu "native_socket_write"; }
+    moshi (op == 40) { kaesu "native_socket_close"; }
+
     moshi(op==31){kaesu "nativeos_real_path";}
     moshi (op == 30) { kaesu "nativeos_stdin_wait"; }
     moshi (op == 29) { kaesu "nativeos_stdin_ready"; }
@@ -140,7 +178,17 @@ koukai waza entry_label(op: int64) -> string {
     kaesu "nativefs_write";
 }
 
-waza emit(code: arm64.Assembler, value: arm64.Instruction) -> unit { arm64.assembler_emit(code, value); }
+waza emit(code: arm64.Assembler, value: arm64.Instruction) -> unit {
+    kaku managed=arm64.assembler_label_word(code,"worker_roots_enabled")>=0;
+    moshi(managed && value.error==mu && value.word==arm64.svc(128).word){
+        // Pin compiler/native exact frames only for the actual OS boundary,
+        // never for a whole adapter body that may allocate or initialize data.
+        // Leaf syscall wrappers need their original LR preserved as well.
+        arm64.assembler_emit(code,arm64.sub_imm_x(31,31,16,iie));arm64.assembler_emit(code,arm64.str_x(30,31,0));
+        arm64.assembler_bl(code,"attached_native_enter");arm64.assembler_emit(code,value);arm64.assembler_bl(code,"attached_native_leave");
+        arm64.assembler_emit(code,arm64.ldr_x(30,31,0));arm64.assembler_emit(code,arm64.add_imm_x(31,31,16,iie));
+    } sore {arm64.assembler_emit(code,value);}
+}
 waza mov(code: arm64.Assembler, destination: int64, source: int64) -> unit { emit(code, arm64.orr_x(destination, 31, source)); }
 waza bits(code: arm64.Assembler, reg: int64, value: int64) -> unit {
     emit(code, arm64.movz_x(reg, value - (value / 65536) * 65536, 0));
@@ -237,11 +285,14 @@ waza emit_status_entry(code: arm64.Assembler, label: string, kind: int64, empty_
 }
 
 waza emit_io_entry(code: arm64.Assembler, label: string, reading: bool, empty_tagged: int64) -> unit {
-    arm64.assembler_label(code, label); enter(code); emit(code, arm64.sub_imm_x(31, 31, 64, iie)); emit(code, arm64.str_x(1, 31, 0)); emit(code, arm64.str_x(2, 31, 8)); emit(code, arm64.str_x(3, 31, 16)); emit(code, arm64.str_x(4, 31, 24)); emit(code, arm64.movz_x(1, 1, 0)); arm64.assembler_bl(code, "nativefs_handle_lookup"); arm64.assembler_cbz_x(code, 0, string.concat(label, "_closed")); emit(code, arm64.ldr_x(9, 0, 0)); emit(code, arm64.cmp_imm_x(9, 0, iie)); arm64.assembler_b_cond(code, 11, string.concat(label, "_closed")); emit(code, arm64.str_x(9, 31, 32)); emit(code, arm64.ldr_x(0, 31, 0)); arm64.assembler_bl(code, "nativefs_array_ptr"); emit(code, arm64.str_x(0, 31, 40)); emit(code, arm64.ldr_x(10, 31, 8)); emit(code, arm64.ldr_x(11, 31, 16)); emit(code, arm64.cmp_imm_x(10, 0, iie)); arm64.assembler_b_cond(code, 11, string.concat(label, "_invalid")); emit(code, arm64.cmp_imm_x(11, 0, iie)); arm64.assembler_b_cond(code, 11, string.concat(label, "_invalid")); emit(code, arm64.cmp_x(10, 1)); arm64.assembler_b_cond(code, 8, string.concat(label, "_invalid")); emit(code, arm64.sub_x(12, 1, 10)); emit(code, arm64.cmp_x(11, 12)); arm64.assembler_b_cond(code, 8, string.concat(label, "_invalid")); emit(code, arm64.ldr_x(0, 31, 32)); emit(code, arm64.ldr_x(1, 31, 40)); emit(code, arm64.add_x(1, 1, 10)); mov(code, 2, 11); emit(code, arm64.movz_x(16, 4, 0)); moshi (reading) { emit(code, arm64.movz_x(16, 3, 0)); } emit(code, arm64.svc(128)); arm64.assembler_b_cond(code, 2, string.concat(label, "_syserr")); mov(code, 9, 0); emit(code, arm64.movz_x(10, 0, 0)); emit(code, arm64.movz_x(11, 0, 0)); moshi (reading) { emit(code, arm64.cmp_imm_x(9, 0, iie)); emit(code, arm64.cset_w(10, 0)); } arm64.assembler_b(code, string.concat(label, "_status"));
+    emit_resource_io_entry(code,label,reading,empty_tagged,1);
+}
+waza emit_resource_io_entry(code: arm64.Assembler, label: string, reading: bool, empty_tagged: int64, kind: int64) -> unit {
+    arm64.assembler_label(code, label); enter(code); emit(code, arm64.sub_imm_x(31, 31, 64, iie)); emit(code, arm64.str_x(1, 31, 0)); emit(code, arm64.str_x(2, 31, 8)); emit(code, arm64.str_x(3, 31, 16)); emit(code, arm64.str_x(4, 31, 24)); emit(code, arm64.movz_x(1, kind, 0)); arm64.assembler_bl(code, "nativefs_handle_lookup"); arm64.assembler_cbz_x(code, 0, string.concat(label, "_closed")); emit(code, arm64.ldr_x(9, 0, 0)); emit(code, arm64.cmp_imm_x(9, 0, iie)); arm64.assembler_b_cond(code, 11, string.concat(label, "_closed")); emit(code, arm64.str_x(9, 31, 32)); emit(code, arm64.ldr_x(0, 31, 0)); arm64.assembler_bl(code, "nativefs_array_ptr"); emit(code, arm64.str_x(0, 31, 40)); emit(code, arm64.ldr_x(10, 31, 8)); emit(code, arm64.ldr_x(11, 31, 16)); emit(code, arm64.cmp_imm_x(10, 0, iie)); arm64.assembler_b_cond(code, 11, string.concat(label, "_invalid")); emit(code, arm64.cmp_imm_x(11, 0, iie)); arm64.assembler_b_cond(code, 11, string.concat(label, "_invalid")); emit(code, arm64.cmp_x(10, 1)); arm64.assembler_b_cond(code, 8, string.concat(label, "_invalid")); emit(code, arm64.sub_x(12, 1, 10)); emit(code, arm64.cmp_x(11, 12)); arm64.assembler_b_cond(code, 8, string.concat(label, "_invalid")); emit(code, arm64.ldr_x(0, 31, 32)); emit(code, arm64.ldr_x(1, 31, 40)); emit(code, arm64.add_x(1, 1, 10)); mov(code, 2, 11); emit(code, arm64.movz_x(16, 4, 0)); moshi (reading) { emit(code, arm64.movz_x(16, 3, 0)); } emit(code, arm64.svc(128)); arm64.assembler_b_cond(code, 2, string.concat(label, "_syserr")); mov(code, 9, 0); emit(code, arm64.movz_x(10, 0, 0)); emit(code, arm64.movz_x(11, 0, 0)); moshi (reading) { emit(code, arm64.cmp_imm_x(9, 0, iie)); emit(code, arm64.cset_w(10, 0)); moshi (kind == 3) { emit(code,arm64.ldr_x(12,31,16)); arm64.assembler_cbnz_x(code,12,string.concat(label,"_nonzero_request")); emit(code,arm64.movz_x(10,0,0)); arm64.assembler_label(code,string.concat(label,"_nonzero_request")); } } arm64.assembler_b(code, string.concat(label, "_status"));
     arm64.assembler_label(code, string.concat(label, "_syserr")); emit(code, arm64.movz_x(9, 0, 0)); emit(code, arm64.movz_x(10, 0, 0)); mov(code, 11, 0); arm64.assembler_b(code, string.concat(label, "_status"));
     arm64.assembler_label(code, string.concat(label, "_closed")); emit(code, arm64.movz_x(9, 0, 0)); emit(code, arm64.movz_x(10, 0, 0)); emit(code, arm64.movz_x(11, 9, 0)); arm64.assembler_b(code, string.concat(label, "_status"));
     arm64.assembler_label(code, string.concat(label, "_invalid")); emit(code, arm64.movz_x(9, 0, 0)); emit(code, arm64.movz_x(10, 0, 0)); emit(code, arm64.movz_x(11, 22, 0));
-    arm64.assembler_label(code, string.concat(label, "_status")); emit(code, arm64.ldr_x(12, 31, 24)); emit(code, arm64.ldr_x(13, 12, 8)); emit(code, arm64.cmp_imm_x(13, 10, iie)); arm64.assembler_b_cond(code, 3, string.concat(label, "_return")); emit(code, arm64.ldr_x(12, 12, 40)); emit(code, arm64.add_imm_x(12, 12, 32, iie)); emit(code, arm64.str_x(9, 12, 0)); emit(code, arm64.add_imm_x(13, 12, 8, iie)); emit(code, arm64.strb_w(10, 13, 0)); mov(code, 0, 11); emit(code, arm64.movz_x(1, 0, 0)); arm64.assembler_bl(code, "nativefs_status_classify"); emit(code, arm64.add_imm_x(13, 12, 9, iie)); emit(code, arm64.strb_w(0, 13, 0));
+    arm64.assembler_label(code, string.concat(label, "_status")); emit(code, arm64.ldr_x(12, 31, 24)); emit(code, arm64.ldr_x(13, 12, 8)); emit(code, arm64.cmp_imm_x(13, 10, iie)); arm64.assembler_b_cond(code, 3, string.concat(label, "_return")); emit(code, arm64.ldr_x(12, 12, 40)); emit(code, arm64.add_imm_x(12, 12, 32, iie)); emit(code, arm64.str_x(9, 12, 0)); emit(code, arm64.add_imm_x(13, 12, 8, iie)); emit(code, arm64.strb_w(10, 13, 0)); mov(code, 0, 11); emit(code, arm64.movz_x(1, 0, 0)); moshi (kind == 3) { arm64.assembler_bl(code,"native_socket_classify"); } sore { arm64.assembler_bl(code, "nativefs_status_classify"); } emit(code, arm64.add_imm_x(13, 12, 9, iie)); emit(code, arm64.strb_w(0, 13, 0));
     arm64.assembler_label(code, string.concat(label, "_return")); emit(code, arm64.add_imm_x(31, 31, 64, iie)); empty_return(code, empty_tagged);
 }
 
