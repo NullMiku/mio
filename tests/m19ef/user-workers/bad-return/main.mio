@@ -1,0 +1,6 @@
+waza rt_start(callback:() -> unit) -> int64 {kaesu 0;}
+waza rt_join(handle:int64) -> int64 {kaesu 0;}
+waza rt_wait(ns:int64) -> int64 {kaesu 0;}
+kata Node {value:int64;}
+waza rt_collect(major:int64) -> Node {kaesu Node {value:1};}
+chant(rt_collect(1).value);
