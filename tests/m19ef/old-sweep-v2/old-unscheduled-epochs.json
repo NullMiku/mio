@@ -1,0 +1,10 @@
+{
+  "native_exit": 0,
+  "old_contract": "FAIL_CANCEL_COVERAGE; actual Sweep complete before intended abort",
+  "record_immutable": true,
+  "sha256": {
+    "stderr": "7b854c2c425c02630ee5877eb5aed113ce2fd9f19ab2aa8957debd19f2255251",
+    "stdout": "90ffa9a15a37403c9f6ecf2dda73237cfaf07403fc586802c9c2c2ba76572d27"
+  },
+  "source": "/Volumes/Sector0/AppData/Mio/mio/build/m19ef-evidence/E6-registry-epochs-directed-20261103-01/epochs-3"
+}
