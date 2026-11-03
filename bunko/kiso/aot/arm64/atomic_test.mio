@@ -1,0 +1,14 @@
+yobu "kiso/testing";
+waza test_base_atomic_encodings_and_constraints() -> unit {
+    testing.expect(read_nzcv(9).word==uint32(3577430537) && write_nzcv(9).word==uint32(3575333385),"NZCV MRS/MSR preserves native syscall condition flags");
+    testing.expect(read_nzcv(32).error!=mu && write_nzcv(-1).error!=mu,"invalid NZCV operands fail closed");
+    testing.expect(ldar_x(0,1).word == uint32(3370122272), "LDAR x0,[x1] = c8dffc20");
+    testing.expect(stlr_x(0,1).word == uint32(3365927968), "STLR x0,[x1] = c89ffc20");
+    testing.expect(ldxr_x(0,1,iie).word == uint32(3361700896), "LDXR x0,[x1] = c85f7c20");
+    testing.expect(ldxr_x(0,1,hai).word == uint32(3361733664), "LDAXR x0,[x1] = c85ffc20");
+    testing.expect(stxr_x(2,0,1,iie).word == uint32(3355606048), "STXR w2,x0,[x1] = c8027c20");
+    testing.expect(stxr_x(2,0,1,hai).word == uint32(3355638816), "STLXR w2,x0,[x1] = c802fc20");
+    testing.expect(dmb_ish().word == uint32(3573758911) && clrex().word == uint32(3573759839), "DMB ISH / CLREX");
+    testing.expect(ldar_x(-1,0).error != mu && stlr_x(0,32).error != mu, "invalid registers rejected");
+    testing.expect(stxr_x(0,0,1,hai).error != mu && stxr_x(1,0,1,hai).error != mu, "exclusive status cannot alias operands");
+}
