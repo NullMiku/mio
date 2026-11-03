@@ -14,6 +14,11 @@ kata TypeEnvironment {
     work: progress.Context;
     resolved: resolver.ResolvedPackage;
     result: TypeCheckResult;
+    // Dense parser node IDs allow bounded, allocation-free lookups.
+    // Entries store binding positions, not symbol IDs: first binding wins even
+    // when its symbol_id is -1.
+    binding_indices: [][]int64;
+    node_type_indices: [][]int64;
     current_file: []int64;
     return_types: []int64;
     constraints: []TypeParameter;
@@ -58,10 +63,33 @@ waza new_environment_with_progress(resolved: resolver.ResolvedPackage, work: pro
     scalar_type(result, TypeKind.Unit(), "unit");
     scalar_type(result, TypeKind.Resource(), "resource");
     kaku versions = array.make[int64](len(resolved.symbols), 0);
+    kaku binding_indices = array.with_capacity[[]int64](len(resolved.files));
+    kaku node_type_indices = array.with_capacity[[]int64](len(resolved.files));
+    kaku file_index = 0;
+    aida (file_index < len(resolved.files)) {
+        kaku count = len(resolved.files[file_index].ast.nodes);
+        array.push(binding_indices, array.make[int64](count, -1));
+        array.push(node_type_indices, array.make[int64](count, -1));
+        file_index = file_index + 1;
+    }
+    kaku binding_index = 0;
+    aida (binding_index < len(resolved.bindings)) {
+        kaku ref = resolved.bindings[binding_index].reference;
+        moshi (ref.file_id >= 0 && ref.file_id < len(binding_indices)) {
+            moshi (ref.node_id >= 0 && ref.node_id < len(binding_indices[ref.file_id])) {
+                moshi (binding_indices[ref.file_id][ref.node_id] < 0) {
+                    binding_indices[ref.file_id][ref.node_id] = binding_index;
+                }
+            }
+        }
+        binding_index = binding_index + 1;
+    }
     kaesu TypeEnvironment {
         work:work,
         resolved: resolved,
         result: result,
+        binding_indices: binding_indices,
+        node_type_indices: node_type_indices,
         current_file: [0],
         return_types: array.with_capacity[int64](8),
         constraints: array.with_capacity[TypeParameter](8),
@@ -90,6 +118,14 @@ waza node_at(env: TypeEnvironment, file_id: int64, node_id: int64) -> parser.Nod
 }
 
 waza binding_of(env: TypeEnvironment, file_id: int64, node_id: int64) -> int64 {
+    moshi (file_id >= 0 && file_id < len(env.binding_indices)) {
+        moshi (node_id >= 0 && node_id < len(env.binding_indices[file_id])) {
+            kaku index = env.binding_indices[file_id][node_id];
+            moshi (index >= 0) { kaesu env.resolved.bindings[index].symbol_id; }
+            kaesu -1;
+        }
+    }
+    // Preserve the old behavior for references outside parser-owned nodes.
     kaku index = 0;
     aida (index < len(env.resolved.bindings)) {
         kaku binding = env.resolved.bindings[index];
@@ -140,6 +176,20 @@ waza set_symbol_type(env: TypeEnvironment, symbol_id: int64, type_id: int64) -> 
 }
 
 waza set_node_type(env: TypeEnvironment, file_id: int64, node_id: int64, type_id: int64) -> int64 {
+    moshi (file_id >= 0 && file_id < len(env.node_type_indices)) {
+        moshi (node_id >= 0 && node_id < len(env.node_type_indices[file_id])) {
+            kaku index = env.node_type_indices[file_id][node_id];
+            moshi (index >= 0) {
+                kaku item = env.result.node_types[index];
+                env.result.node_types[index] = NodeType { node: item.node, type_id: type_id };
+            } sore {
+                env.node_type_indices[file_id][node_id] = len(env.result.node_types);
+                array.push(env.result.node_types, NodeType { node: resolver.NodeRef { file_id: file_id, node_id: node_id }, type_id: type_id });
+            }
+            kaesu type_id;
+        }
+    }
+    // Unusual synthetic references retain the original append/update behavior.
     kaku index = 0;
     aida (index < len(env.result.node_types)) {
         kaku item = env.result.node_types[index];

@@ -1,0 +1,43 @@
+yobu "kiso/array";
+yobu "kiso/string";
+yobu "kiso/testing";
+yobu "selfhost/parser";
+yobu "selfhost/resolver";
+
+waza test_environment_binding_index_first_match() -> unit {
+    kaku resolved = resolver.resolve_program("index", parser.parse(string.to_bytes("chant(1);")));
+    kaku ref = resolver.NodeRef { file_id: 0, node_id: 0 };
+    // Start without resolver-generated bindings so the duplicate fixture is exact.
+    kaku bindings: []resolver.Binding = [];
+    kaku fixture = resolver.ResolvedPackage { package_path: resolved.package_path, files: resolved.files,
+        symbols: resolved.symbols, scopes: resolved.scopes, bindings: bindings,
+        captures: resolved.captures, members: resolved.members, aliases: resolved.aliases,
+        dependencies: resolved.dependencies, errors: resolved.errors };
+    array.push(fixture.bindings, resolver.Binding { reference: ref, symbol_id: -1, capture: iie });
+    array.push(fixture.bindings, resolver.Binding { reference: ref, symbol_id: 42, capture: iie });
+    array.push(fixture.bindings, resolver.Binding { reference: resolver.NodeRef {file_id: -1, node_id: 99}, symbol_id: 7, capture: iie });
+    kaku env = new_environment(fixture);
+    testing.expect(binding_of(env, 0, 0) == -1, "first duplicate wins even if symbol is -1");
+    testing.expect(binding_of(env, 0, 1) == -1, "missing valid node returns -1");
+    testing.expect(binding_of(env, -1, 99) == 7, "synthetic reference preserves linear semantics");
+    testing.expect(binding_of(env, 99, 99) == -1, "missing file returns -1");
+}
+
+waza test_environment_node_type_index_order_and_isolation() -> unit {
+    kaku parsed = parser.parse(string.to_bytes("chant(1);"));
+    kaku files: []resolver.SourceFile = [];
+    array.push(files, resolver.SourceFile {file_id: 0, path: "a.mio", ast: parsed.ast, root: parsed.root});
+    array.push(files, resolver.SourceFile {file_id: 1, path: "b.mio", ast: parsed.ast, root: parsed.root});
+    kaku dependencies: []resolver.ResolvedPackage = [];
+    kaku resolved = resolver.resolve_package("index", files, dependencies);
+    kaku env = new_environment(resolved);
+    set_node_type(env, 1, 0, 4); set_node_type(env, 0, 0, 5);
+    set_node_type(env, 1, 0, 6); set_node_type(env, -1, 99, 7); set_node_type(env, -1, 99, 8);
+    testing.expect(len(env.result.node_types) == 3, "updates do not append");
+    testing.expect(env.result.node_types[0].node.file_id == 1 && env.result.node_types[0].type_id == 6, "first slot updated in place");
+    testing.expect(env.result.node_types[1].node.file_id == 0 && env.result.node_types[1].type_id == 5, "same node ID in another file stays distinct");
+    testing.expect(env.result.node_types[2].type_id == 8, "synthetic update remains in original slot");
+    kaku other = new_environment(resolved);
+    set_node_type(other, 1, 0, 9);
+    testing.expect(len(other.result.node_types) == 1 && env.result.node_types[0].type_id == 6, "environment indexes are invocation local");
+}
