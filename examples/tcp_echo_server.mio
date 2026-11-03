@@ -1,0 +1,28 @@
+yobu "kiso/array";
+yobu "kiso/net/tcp";
+
+// Minimal single-client echo server. Run before tcp_echo_client.mio.
+waza serve_client(connection: tcp.Connection?) -> unit {
+    moshi (connection == mu) { kaesu; }
+    kaku data = array.make[uint8](1024, uint8(0));
+    kaku received = tcp.read(connection, data, 0, len(data));
+    kaku failure = received.error;
+    moshi (failure == mu && received.count > 0) {
+        kaku sent = tcp.write_all(connection, data, 0, received.count);
+        chant(sent.count);
+    }
+    kaku closed = tcp.close(connection);
+}
+
+waza serve(listener: tcp.Listener?) -> unit {
+    moshi (listener == mu) { kaesu; }
+    chant("Mio TCP server waiting on 127.0.0.1:18080");
+    kaku accepted = tcp.accept(listener);
+    serve_client(accepted.connection);
+    kaku stopped = tcp.close_listener(listener);
+}
+
+kaku address = tcp.ipv4(uint8(127), uint8(0), uint8(0), uint8(1), 18080);
+kaku started = tcp.listen(address);
+chant(started.error == mu);
+serve(started.listener);

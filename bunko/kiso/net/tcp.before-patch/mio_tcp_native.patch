@@ -1,0 +1,1598 @@
+diff --git a/bunko/kiso/net/tcp/README.md b/bunko/kiso/net/tcp/README.md
+new file mode 100644
+index 0000000..cb06135
+--- /dev/null
++++ b/bunko/kiso/net/tcp/README.md
+@@ -0,0 +1,49 @@
++# `kiso/net/tcp`
++
++Blocking, IPv4-only TCP for Mio. The public connection management, error
++translation, short-write handling, and `kiso/io` adapters are implemented in
++`tcp.mio`. The low-level `mio/sys/socket` functions are native system-call
++primitives: the VM uses a host syscall adapter, and Darwin/ARM64 Native AOT
++lowers the same signatures to direct BSD syscalls.
++
++```mio
++yobu "kiso/net/tcp";
++
++waza send_greeting(connection: tcp.Connection?) -> unit {
++    moshi (connection == mu) { kaesu; }
++    kaku sent = tcp.write_all(connection, [uint8(72), uint8(105)], 0, 2);
++    kaku closed = tcp.close(connection);
++}
++
++kaku address = tcp.ipv4(uint8(127), uint8(0), uint8(0), uint8(1), 8080);
++kaku result = tcp.connect(address);
++send_greeting(result.connection);
++```
++
++Server-side functions: `listen`, `listen_with_backlog`, `accept`, and
++`close_listener`. Connections expose `read`, `write`, `write_all`, `close`,
++`reader`, and `writer`.
++
++`read` and `write` are byte-stream operations and can return partial counts.
++`read.eof` signals a graceful remote close. Use `kiso/io.read_full` to read an
++exact byte count, or `tcp.write_all` to retry short writes. Resources should
++be explicitly closed; the runtime also closes remaining handles at shutdown.
++
++Current scope: IPv4 literals, blocking sockets, macOS ARM64 Native AOT and
++Unix-like VM backends. DNS, IPv6, timeouts, TLS, and a Windows socket backend
++are not implemented in this first iteration.
++
++Two runnable examples live in `examples/tcp_echo_server.mio` and
++`examples/tcp_echo_client.mio`. Start the server first, then the client.
++They use loopback port 18080; the server serves one connection and exits.
++
++Native AOT on macOS ARM64 uses the existing two-stage toolchain:
++
++```sh
++go run ./cmd/mio build examples/tcp_echo_client.mio
++go run ./cmd/mochi-aot -o tcp-client examples/tcp_echo_client.mochi
++codesign --force --sign - tcp-client
++./tcp-client
++```
++
++For a VM run, use `go run ./cmd/mio run examples/tcp_echo_client.mio`.
+diff --git a/bunko/kiso/net/tcp/tcp.mio b/bunko/kiso/net/tcp/tcp.mio
+new file mode 100644
+index 0000000..b17ef8c
+--- /dev/null
++++ b/bunko/kiso/net/tcp/tcp.mio
+@@ -0,0 +1,205 @@
++yobu "kiso/array";
++yobu "kiso/io";
++yobu "mio/sys/socket";
++
++// Blocking IPv4 TCP. Socket operations are primitive system calls; connection
++// policy, error translation, buffering and I/O adapters are written in Mio.
++koukai sentaku TcpError {
++    InvalidArgument;
++    Closed;
++    TimedOut;
++    ConnectionRefused;
++    ConnectionReset;
++    AddressInUse;
++    PermissionDenied;
++    WouldBlock;
++    Other(string);
++}
++
++koukai kata IPv4Address { octets: []uint8; port: int64; }
++koukai kata Connection { handle: resource; }
++koukai kata Listener { handle: resource; }
++koukai kata ConnectionResult { connection: Connection?; error: TcpError?; }
++koukai kata ListenerResult { listener: Listener?; error: TcpError?; }
++koukai kata ReadResult { count: int64; eof: bool; error: TcpError?; }
++koukai kata WriteResult { count: int64; error: TcpError?; }
++koukai kata UnitResult { error: TcpError?; }
++
++koukai waza ipv4(a: uint8, b: uint8, c: uint8, d: uint8, port: int64) -> IPv4Address {
++    kaesu IPv4Address { octets: [a, b, c, d], port: port };
++}
++
++waza valid_address(address: IPv4Address) -> bool {
++    kaesu len(address.octets) == 4 && address.port >= 0 && address.port <= 65535;
++}
++
++waza valid_range(values: []uint8, offset: int64, length: int64) -> bool {
++    kaesu offset >= 0 && length >= 0 && offset <= len(values) && length <= len(values) - offset;
++}
++
++waza error_from(code: uint8, message: string) -> TcpError? {
++    moshi (code == uint8(0)) { kaesu mu; }
++    moshi (code == uint8(1)) { kaesu TcpError.InvalidArgument(); }
++    moshi (code == uint8(2)) { kaesu TcpError.Closed(); }
++    moshi (code == uint8(3)) { kaesu TcpError.TimedOut(); }
++    moshi (code == uint8(4)) { kaesu TcpError.ConnectionRefused(); }
++    moshi (code == uint8(5)) { kaesu TcpError.ConnectionReset(); }
++    moshi (code == uint8(6)) { kaesu TcpError.AddressInUse(); }
++    moshi (code == uint8(7)) { kaesu TcpError.PermissionDenied(); }
++    moshi (code == uint8(8)) { kaesu TcpError.WouldBlock(); }
++    kaesu TcpError.Other(message);
++}
++
++waza decode_count(status: []uint8) -> int64 {
++    kaku result = 0;
++    kaku factor = 1;
++    kaku index = 0;
++    aida (index < 8) {
++        result = result + int64(status[index]) * factor;
++        index = index + 1;
++        moshi (index < 8) { factor = factor * 256; }
++    }
++    kaesu result;
++}
++
++// connect deliberately accepts only a literal IPv4 address; DNS and IPv6
++// will be separate pure-Mio layers, rather than hidden OS-dependent behavior.
++koukai waza connect(address: IPv4Address) -> ConnectionResult {
++    moshi (!valid_address(address)) {
++        kaesu ConnectionResult { connection: mu, error: TcpError.InvalidArgument() };
++    }
++    kaku handle = socket.open();
++    kaku status: []uint8 = [0];
++    kaku message = socket.status(handle, status);
++    kaku failure = error_from(status[0], message);
++    moshi (failure == mu) {
++        message = socket.connect_ipv4(handle, address.octets, address.port, status);
++        failure = error_from(status[0], message);
++    }
++    moshi (failure != mu) {
++        socket.close(handle, status);
++        kaesu ConnectionResult { connection: mu, error: failure };
++    }
++    kaesu ConnectionResult { connection: Connection { handle: handle }, error: mu };
++}
++
++koukai waza listen(address: IPv4Address) -> ListenerResult {
++    kaesu listen_with_backlog(address, 128);
++}
++
++koukai waza listen_with_backlog(address: IPv4Address, backlog: int64) -> ListenerResult {
++    moshi (!valid_address(address) || backlog < 0 || backlog > 65535) {
++        kaesu ListenerResult { listener: mu, error: TcpError.InvalidArgument() };
++    }
++    kaku handle = socket.open();
++    kaku status: []uint8 = [0];
++    kaku message = socket.status(handle, status);
++    kaku failure = error_from(status[0], message);
++    moshi (failure == mu) {
++        message = socket.bind_ipv4(handle, address.octets, address.port, status);
++        failure = error_from(status[0], message);
++    }
++    moshi (failure == mu) {
++        message = socket.listen(handle, backlog, status);
++        failure = error_from(status[0], message);
++    }
++    moshi (failure != mu) {
++        socket.close(handle, status);
++        kaesu ListenerResult { listener: mu, error: failure };
++    }
++    kaesu ListenerResult { listener: Listener { handle: handle }, error: mu };
++}
++
++koukai waza accept(listener: Listener) -> ConnectionResult {
++    kaku handle = socket.accept(listener.handle);
++    kaku status: []uint8 = [0];
++    kaku message = socket.status(handle, status);
++    kaku failure = error_from(status[0], message);
++    moshi (failure != mu) {
++        socket.close(handle, status);
++        kaesu ConnectionResult { connection: mu, error: failure };
++    }
++    kaesu ConnectionResult { connection: Connection { handle: handle }, error: mu };
++}
++
++koukai waza read(connection: Connection, destination: []uint8, offset: int64, length: int64) -> ReadResult {
++    moshi (!valid_range(destination, offset, length)) {
++        kaesu ReadResult { count: 0, eof: iie, error: TcpError.InvalidArgument() };
++    }
++    kaku status = array.make[uint8](10, uint8(0));
++    kaku message = socket.read(connection.handle, destination, offset, length, status);
++    kaesu ReadResult { count: decode_count(status), eof: status[8] != uint8(0), error: error_from(status[9], message) };
++}
++
++koukai waza write(connection: Connection, source: []uint8, offset: int64, length: int64) -> WriteResult {
++    moshi (!valid_range(source, offset, length)) {
++        kaesu WriteResult { count: 0, error: TcpError.InvalidArgument() };
++    }
++    kaku status = array.make[uint8](10, uint8(0));
++    kaku message = socket.write(connection.handle, source, offset, length, status);
++    kaesu WriteResult { count: decode_count(status), error: error_from(status[9], message) };
++}
++
++// TCP writes may be partial. This helper retains progress when a later call
++// fails, and never loops forever after a zero-byte write.
++koukai waza write_all(connection: Connection, source: []uint8, offset: int64, length: int64) -> WriteResult {
++    moshi (!valid_range(source, offset, length)) {
++        kaesu WriteResult { count: 0, error: TcpError.InvalidArgument() };
++    }
++    kaku total = 0;
++    aida (total < length) {
++        kaku result = write(connection, source, offset + total, length - total);
++        moshi (result.count < 0 || result.count > length - total) {
++            kaesu WriteResult { count: total, error: TcpError.InvalidArgument() };
++        }
++        total = total + result.count;
++        kaku failure = result.error;
++        moshi (failure != mu) { kaesu WriteResult { count: total, error: failure }; }
++        moshi (result.count == 0) {
++            kaesu WriteResult { count: total, error: TcpError.Other("write made no progress") };
++        }
++    }
++    kaesu WriteResult { count: total, error: mu };
++}
++
++koukai waza close(connection: Connection) -> UnitResult {
++    kaku status: []uint8 = [0];
++    kaku message = socket.close(connection.handle, status);
++    kaesu UnitResult { error: error_from(status[0], message) };
++}
++
++koukai waza close_listener(listener: Listener) -> UnitResult {
++    kaku status: []uint8 = [0];
++    kaku message = socket.close(listener.handle, status);
++    kaesu UnitResult { error: error_from(status[0], message) };
++}
++
++waza io_error(failure: TcpError?) -> io.IoError? {
++    moshi (failure == mu) { kaesu mu; }
++    awase (failure) {
++        baai InvalidArgument { kaesu io.IoError.InvalidArgument(); }
++        baai Closed { kaesu io.IoError.Closed(); }
++        baai TimedOut { kaesu io.IoError.Other("TCP timed out"); }
++        baai ConnectionRefused { kaesu io.IoError.Other("TCP connection refused"); }
++        baai ConnectionReset { kaesu io.IoError.Other("TCP connection reset"); }
++        baai AddressInUse { kaesu io.IoError.Other("TCP address in use"); }
++        baai PermissionDenied { kaesu io.IoError.Other("TCP permission denied"); }
++        baai WouldBlock { kaesu io.IoError.Other("TCP would block"); }
++        baai Other(message) { kaesu io.IoError.Other(message); }
++    }
++    kaesu io.IoError.Other("unknown TCP error");
++}
++
++koukai waza reader(connection: Connection) -> io.Reader {
++    kaesu io.Reader { read: waza (destination: []uint8, offset: int64, length: int64) -> io.ReadResult {
++        kaku result = read(connection, destination, offset, length);
++        kaesu io.ReadResult { count: result.count, eof: result.eof, error: io_error(result.error) };
++    } };
++}
++
++koukai waza writer(connection: Connection) -> io.Writer {
++    kaesu io.Writer { write: waza (source: []uint8, offset: int64, length: int64) -> io.WriteResult {
++        kaku result = write(connection, source, offset, length);
++        kaesu io.WriteResult { count: result.count, error: io_error(result.error) };
++    } };
++}
+diff --git a/bunko/kiso/net/tcp/tcp_test.mio b/bunko/kiso/net/tcp/tcp_test.mio
+new file mode 100644
+index 0000000..46bc0b9
+--- /dev/null
++++ b/bunko/kiso/net/tcp/tcp_test.mio
+@@ -0,0 +1,20 @@
++yobu "kiso/testing";
++
++waza test_address_validation_and_listener_lifecycle() -> unit {
++    kaku bad = IPv4Address { octets: [uint8(127)], port: 1234 };
++    kaku invalid = connect(bad);
++    testing.expect(invalid.connection == mu && invalid.error != mu, "IPv4 must contain exactly four octets");
++
++    kaku invalid_port = connect(ipv4(uint8(127), uint8(0), uint8(0), uint8(1), -1));
++    testing.expect(invalid_port.error != mu, "invalid port must fail without opening a socket");
++
++    kaku server = listen(ipv4(uint8(127), uint8(0), uint8(0), uint8(1), 0));
++    testing.expect(server.error == mu, "loopback listener should bind to an ephemeral port");
++    kaku listener = server.listener;
++    moshi (listener != mu) {
++        kaku first = close_listener(listener);
++        testing.expect(first.error == mu, "listener must close successfully");
++        kaku second = close_listener(listener);
++        testing.expect(second.error != mu, "closing a stale handle must fail safely");
++    }
++}
+diff --git a/cmd/mio/tcp_library_test.go b/cmd/mio/tcp_library_test.go
+new file mode 100644
+index 0000000..8bc88f5
+--- /dev/null
++++ b/cmd/mio/tcp_library_test.go
+@@ -0,0 +1,175 @@
++package main
++
++import (
++	"bytes"
++	"fmt"
++	"io"
++	"net"
++	"os"
++	"path/filepath"
++	"runtime"
++	"testing"
++	"time"
++)
++
++func runTCPSource(t *testing.T, source string) (string, string, int) {
++	t.Helper()
++	path := filepath.Join(t.TempDir(), "main.mio")
++	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	var stdout, stderr bytes.Buffer
++	exit := runCLI([]string{"run", path}, &stdout, &stderr)
++	return stdout.String(), stderr.String(), exit
++}
++
++func TestKisoTCPClientRoundTrip(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("Windows socket primitive backend has not been implemented")
++	}
++	t.Setenv("MIO_BUNKO", mathBunkoRoot(t))
++	listener, err := net.Listen("tcp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer listener.Close()
++	serverError := make(chan error, 1)
++	go func() {
++		conn, err := listener.Accept()
++		if err != nil {
++			serverError <- err
++			return
++		}
++		defer conn.Close()
++		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
++			serverError <- err
++			return
++		}
++		payload := make([]byte, 3)
++		if _, err := io.ReadFull(conn, payload); err != nil {
++			serverError <- err
++			return
++		}
++		if !bytes.Equal(payload, []byte{2, 3, 4}) {
++			serverError <- fmt.Errorf("unexpected request bytes: %v", payload)
++			return
++		}
++		if _, err := conn.Write([]byte{9, 8, 7}); err != nil {
++			serverError <- err
++			return
++		}
++		if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
++			serverError <- err
++			return
++		}
++		serverError <- nil
++	}()
++	address := listener.Addr().(*net.TCPAddr)
++	source := fmt.Sprintf(`yobu "kiso/net/tcp";
++yobu "kiso/io";
++waza exercise(connection: tcp.Connection?) -> unit {
++    moshi (connection == mu) { kaesu; }
++    kaku invalid = tcp.write(connection, [1], 1, 1);
++    chant(invalid.error != mu);
++    kaku written = tcp.write_all(connection, [1, 2, 3, 4, 5], 1, 3);
++    chant(written.count); chant(written.error == mu);
++    kaku data: []uint8 = [0, 0, 0, 0, 0];
++    kaku read_result = io.read_full(tcp.reader(connection), data, 1, 3);
++    chant(read_result.count); chant(read_result.error == mu);
++    chant(data[1]); chant(data[2]); chant(data[3]);
++    kaku eof = tcp.read(connection, data, 0, 1);
++    chant(eof.eof); chant(eof.error == mu);
++    kaku closed = tcp.close(connection); chant(closed.error == mu);
++    kaku after_close = tcp.read(connection, data, 0, 1);
++    chant(after_close.error != mu);
++}
++kaku opened = tcp.connect(tcp.ipv4(uint8(127), uint8(0), uint8(0), uint8(1), %d));
++chant(opened.error == mu);
++exercise(opened.connection);
++`, address.Port)
++	stdout, stderr, exit := runTCPSource(t, source)
++	if exit != 0 || stdout != "hai\nhai\n3\nhai\n3\nhai\n9\n8\n7\nhai\nhai\nhai\nhai\n" {
++		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
++	}
++	if err := <-serverError; err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestKisoTCPServerAccept(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("Windows socket primitive backend has not been implemented")
++	}
++	t.Setenv("MIO_BUNKO", mathBunkoRoot(t))
++	reserved, err := net.Listen("tcp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	port := reserved.Addr().(*net.TCPAddr).Port
++	reserved.Close()
++
++	source := fmt.Sprintf(`yobu "kiso/net/tcp";
++yobu "kiso/io";
++waza exercise_client(client: tcp.Connection?) -> unit {
++    moshi (client == mu) { kaesu; }
++    kaku data: []uint8 = [0, 0];
++    kaku received = io.read_full(tcp.reader(client), data, 0, 2);
++    chant(received.count); chant(received.error == mu);
++    chant(data[0]); chant(data[1]);
++    kaku sent = tcp.write_all(client, [3, 4], 0, 2);
++    chant(sent.error == mu);
++    kaku closed = tcp.close(client); chant(closed.error == mu);
++}
++waza exercise_listener(listener: tcp.Listener?) -> unit {
++    moshi (listener == mu) { kaesu; }
++    kaku accepted = tcp.accept(listener);
++    chant(accepted.error == mu);
++    exercise_client(accepted.connection);
++    kaku stopped = tcp.close_listener(listener); chant(stopped.error == mu);
++}
++kaku server = tcp.listen(tcp.ipv4(uint8(127), uint8(0), uint8(0), uint8(1), %d));
++chant(server.error == mu);
++exercise_listener(server.listener);
++`, port)
++	output := make(chan struct {
++		stdout string
++		stderr string
++		exit   int
++	}, 1)
++	go func() {
++		stdout, stderr, exit := runTCPSource(t, source)
++		output <- struct {
++			stdout string
++			stderr string
++			exit   int
++		}{stdout, stderr, exit}
++	}()
++	var conn net.Conn
++	deadline := time.Now().Add(5 * time.Second)
++	for time.Now().Before(deadline) {
++		conn, err = net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", port), 150*time.Millisecond)
++		if err == nil {
++			break
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++	if conn == nil {
++		t.Fatalf("could not reach Mio listener: %v", err)
++	}
++	defer conn.Close()
++	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
++	if _, err := conn.Write([]byte{1, 2}); err != nil {
++		t.Fatal(err)
++	}
++	response := make([]byte, 2)
++	if _, err := io.ReadFull(conn, response); err != nil {
++		t.Fatal(err)
++	}
++	if !bytes.Equal(response, []byte{3, 4}) {
++		t.Fatalf("unexpected Mio response %v", response)
++	}
++	result := <-output
++	if result.exit != 0 || result.stdout != "hai\nhai\n2\nhai\n1\n2\nhai\nhai\nhai\n" {
++		t.Fatalf("exit=%d stdout=%q stderr=%q", result.exit, result.stdout, result.stderr)
++	}
++}
+diff --git a/examples/tcp_echo_client.mio b/examples/tcp_echo_client.mio
+new file mode 100644
+index 0000000..c0e52f6
+--- /dev/null
++++ b/examples/tcp_echo_client.mio
+@@ -0,0 +1,27 @@
++yobu "kiso/net/tcp";
++yobu "kiso/io";
++
++waza send_and_receive(connection: tcp.Connection?) -> unit {
++    moshi (connection == mu) { kaesu; }
++    kaku data: []uint8 = [uint8(77), uint8(105), uint8(111)];
++    kaku sent = tcp.write_all(connection, data, 0, len(data));
++    kaku sent_error = sent.error;
++    chant(sent.count);
++    chant(sent_error == mu);
++
++    kaku echo: []uint8 = [0, 0, 0];
++    kaku received = io.read_full(tcp.reader(connection), echo, 0, len(echo));
++    kaku read_error = received.error;
++    chant(received.count);
++    chant(read_error == mu);
++    chant(echo[0]);
++    chant(echo[1]);
++    chant(echo[2]);
++
++    kaku closed = tcp.close(connection);
++}
++
++kaku address = tcp.ipv4(uint8(127), uint8(0), uint8(0), uint8(1), 18080);
++kaku connected = tcp.connect(address);
++chant(connected.error == mu);
++send_and_receive(connected.connection);
+diff --git a/examples/tcp_echo_server.mio b/examples/tcp_echo_server.mio
+new file mode 100644
+index 0000000..ee1cdf0
+--- /dev/null
++++ b/examples/tcp_echo_server.mio
+@@ -0,0 +1,28 @@
++yobu "kiso/array";
++yobu "kiso/net/tcp";
++
++// Minimal single-client echo server. Run before tcp_echo_client.mio.
++waza serve_client(connection: tcp.Connection?) -> unit {
++    moshi (connection == mu) { kaesu; }
++    kaku data = array.make[uint8](1024, uint8(0));
++    kaku received = tcp.read(connection, data, 0, len(data));
++    kaku failure = received.error;
++    moshi (failure == mu && received.count > 0) {
++        kaku sent = tcp.write_all(connection, data, 0, received.count);
++        chant(sent.count);
++    }
++    kaku closed = tcp.close(connection);
++}
++
++waza serve(listener: tcp.Listener?) -> unit {
++    moshi (listener == mu) { kaesu; }
++    chant("Mio TCP server waiting on 127.0.0.1:18080");
++    kaku accepted = tcp.accept(listener);
++    serve_client(accepted.connection);
++    kaku stopped = tcp.close_listener(listener);
++}
++
++kaku address = tcp.ipv4(uint8(127), uint8(0), uint8(0), uint8(1), 18080);
++kaku started = tcp.listen(address);
++chant(started.error == mu);
++serve(started.listener);
+diff --git a/internal/aot/bootstrapaudit/audit.go b/internal/aot/bootstrapaudit/audit.go
+index 78adb75..1721858 100644
+--- a/internal/aot/bootstrapaudit/audit.go
++++ b/internal/aot/bootstrapaudit/audit.go
+@@ -79,6 +79,19 @@ type StructuralIssue struct {
+ }
+ 
+ func nativeFSSupported(name string) bool {
++	const socketPrefix = "$mma::mio/sys/socket::"
++	if strings.HasPrefix(name, socketPrefix) {
++		rest := strings.TrimPrefix(name, socketPrefix)
++		op, _, ok := strings.Cut(rest, "::")
++		if !ok {
++			return false
++		}
++		switch op {
++		case "open", "status", "bind_ipv4", "connect_ipv4", "listen", "accept", "read", "write", "close":
++			return true
++		}
++		return false
++	}
+ 	const prefix = "$mma::mio/fs/runtime::"
+ 	if !strings.HasPrefix(name, prefix) {
+ 		return false
+diff --git a/internal/aot/darwinarm64/m14_nativefs.go b/internal/aot/darwinarm64/m14_nativefs.go
+index 66d7db3..d49e783 100644
+--- a/internal/aot/darwinarm64/m14_nativefs.go
++++ b/internal/aot/darwinarm64/m14_nativefs.go
+@@ -12,10 +12,17 @@ const (
+ 	m14SYSMkdir         = 136
+ 	m14SYSStat64        = 338
+ 	m14SYSGetdirentries = 344
++	m14SYSSocket        = 97
++	m14SYSBind          = 104
++	m14SYSConnect       = 98
++	m14SYSListen        = 106
++	m14SYSAccept        = 30
++	m14SYSSetsockopt    = 105
+ 	m14HandleSlots      = 32
+ 	m14SlotShift        = 7
+ 	m14FileKind         = 1
+ 	m14DirectoryKind    = 2
++	m14SocketKind       = 3
+ 	m14DirBufferSize    = 16 << 10
+ )
+ 
+@@ -34,7 +41,7 @@ func m14ReturnTagged(b *m8Assembler, tagged uint64) {
+ // appendM14NativeFSRuntime returns position-independent Darwin/ARM64 code.
+ // The external call offsets target M12 ArrayWithCapacity and are patched by
+ // the final linker after both runtimes have their final positions.
+-func appendM14NativeFSRuntime(emptyTagged uint64) ([]uint32, map[string]int, []int, error) {
++func appendM14NativeFSRuntime(emptyTagged uint64, withSockets bool) ([]uint32, map[string]int, []int, error) {
+ 	b := newM8Assembler()
+ 	external := make([]int, 0, 1)
+ 
+@@ -161,12 +168,20 @@ func appendM14NativeFSRuntime(emptyTagged uint64) ([]uint32, map[string]int, []i
+ 	appendM14FileEntries(b, emptyTagged)
+ 	appendM14PathEntries(b, emptyTagged)
+ 	appendM14DirectoryEntries(b, emptyTagged, &external)
++	if withSockets {
++		appendM14SocketEntries(b, emptyTagged)
++	}
+ 	appendM14Cleanup(b)
+ 
+ 	entries := make(map[string]int)
+ 	for _, name := range []string{"open", "file_status", "read", "write", "close", "stat", "mkdir", "open_dir", "dir_status", "dir_next", "dir_name", "dir_is_dir", "dir_is_file", "dir_close", "cleanup"} {
+ 		entries[name] = b.labels["m14."+name]
+ 	}
++	if withSockets {
++		for _, name := range []string{"socket_open", "socket_status", "socket_bind_ipv4", "socket_connect_ipv4", "socket_listen", "socket_accept", "socket_read", "socket_write", "socket_close"} {
++			entries[name] = b.labels["m14."+name]
++		}
++	}
+ 	words, err := b.assemble()
+ 	return words, entries, external, err
+ }
+@@ -299,8 +314,8 @@ func appendM14FileEntries(b *m8Assembler, emptyTagged uint64) {
+ 	b.emit(addImmX(31, 31, 32))
+ 	m14ReturnTagged(b, emptyTagged)
+ 
+-	appendM14IOEntry(b, "read", true, emptyTagged)
+-	appendM14IOEntry(b, "write", false, emptyTagged)
++	appendM14IOEntry(b, "read", true, emptyTagged, m14FileKind)
++	appendM14IOEntry(b, "write", false, emptyTagged, m14FileKind)
+ 
+ 	b.label("m14.close")
+ 	m14Enter(b)
+@@ -332,11 +347,11 @@ func appendM14FileEntries(b *m8Assembler, emptyTagged uint64) {
+ 	m14ReturnTagged(b, emptyTagged)
+ }
+ 
+-func appendM14IOEntry(b *m8Assembler, name string, read bool, emptyTagged uint64) {
++func appendM14IOEntry(b *m8Assembler, name string, read bool, emptyTagged uint64, handleKind uint16) {
+ 	b.label("m14." + name)
+ 	m14Enter(b)
+ 	// saved: array, offset, length, status
+-	b.emit(subImmX(31, 31, 64), strX(1, 31, 0), strX(2, 31, 1), strX(3, 31, 2), strX(4, 31, 3), movzX(1, m14FileKind))
++	b.emit(subImmX(31, 31, 64), strX(1, 31, 0), strX(2, 31, 1), strX(3, 31, 2), strX(4, 31, 3), movzX(1, handleKind))
+ 	b.bl("m14.handle.lookup")
+ 	b.cbz(0, "m14."+name+".closed")
+ 	b.emit(ldrX(9, 0, 0), cmpZeroX(9))
+@@ -353,6 +368,10 @@ func appendM14IOEntry(b *m8Assembler, name string, read bool, emptyTagged uint64
+ 	b.bc(8, "m14."+name+".invalid")
+ 	b.emit(subX(12, 1, 10), m8Cmp(11, 12))
+ 	b.bc(8, "m14."+name+".invalid")
++	if handleKind == m14SocketKind {
++		b.emit(cmpZeroX(11))
++		b.bc(0, "m14."+name+".empty")
++	}
+ 	b.emit(ldrX(0, 31, 4), ldrX(1, 31, 5), addX(1, 1, 10), movX(2, 11), movzX(16, func() uint16 {
+ 		if read {
+ 			return m14SYSRead
+@@ -368,6 +387,11 @@ func appendM14IOEntry(b *m8Assembler, name string, read bool, emptyTagged uint64
+ 	b.label("m14." + name + ".syserr")
+ 	b.emit(movzX(9, 0), movzX(10, 0), movX(11, 0))
+ 	b.b("m14." + name + ".status")
++	if handleKind == m14SocketKind {
++		b.label("m14." + name + ".empty")
++		b.emit(movzX(9, 0), movzX(10, 0), movzX(11, 0))
++		b.b("m14." + name + ".status")
++	}
+ 	b.label("m14." + name + ".closed")
+ 	b.emit(movzX(9, 0), movzX(10, 0), movzX(11, 9))
+ 	b.b("m14." + name + ".status")
+@@ -378,7 +402,11 @@ func appendM14IOEntry(b *m8Assembler, name string, read bool, emptyTagged uint64
+ 	b.emit(ldrX(12, 31, 3), ldrX(13, 12, 1), cmpImmX(13, 10))
+ 	b.bc(3, "m14."+name+".return")
+ 	b.emit(ldrX(12, 12, 5), addImmX(12, 12, m12PayloadBase), strX(9, 12, 0), addImmX(13, 12, 8), m8StrB(10, 13), movX(0, 11), movzX(1, 0))
+-	b.bl("m14.status.classify")
++	if handleKind == m14SocketKind {
++		b.bl("m14.socket.classify")
++	} else {
++		b.bl("m14.status.classify")
++	}
+ 	b.emit(addImmX(13, 12, 9), m8StrB(0, 13))
+ 	b.label("m14." + name + ".return")
+ 	b.emit(addImmX(31, 31, 64))
+diff --git a/internal/aot/darwinarm64/m14_nativesocket.go b/internal/aot/darwinarm64/m14_nativesocket.go
+new file mode 100644
+index 0000000..50e5a5e
+--- /dev/null
++++ b/internal/aot/darwinarm64/m14_nativesocket.go
+@@ -0,0 +1,247 @@
++package darwinarm64
++
++// Mio's low-level socket module uses the same opaque, generation-checked
++// resource table as native FS. Only IPv4 stream sockets are exposed in M14.
++// TCP connection management remains in the pure-Mio kiso/net/tcp package.
++func appendM14SocketEntries(b *m8Assembler, emptyTagged uint64) {
++	// Convert Darwin errno to the stable one-byte socket status protocol.
++	// Darwin: EBADF=9, EINVAL=22, EAFNOSUPPORT=47, ENOTSOCK=38,
++	// ETIMEDOUT=60, ECONNREFUSED=61, ECONNRESET=54, EPIPE=32,
++	// EADDRINUSE=48, EACCES=13, EPERM=1, EWOULDBLOCK=35.
++	b.label("m14.socket.classify")
++	b.cbz(0, "m14.socket.classify.ok")
++	for _, item := range []struct{ errno, code uint16 }{
++		{22, 1}, {47, 1}, {9, 2}, {38, 2}, {60, 3}, {61, 4},
++		{54, 5}, {32, 5}, {48, 6}, {13, 7}, {1, 7}, {35, 8},
++	} {
++		b.emit(cmpImmX(0, uint32(item.errno)))
++		b.bc(0, "m14.socket.classify.errno."+socketDecimal(item.errno))
++	}
++	b.emit(movzX(0, 9), m8Ret())
++	b.label("m14.socket.classify.ok")
++	b.emit(movzX(0, 0), m8Ret())
++	for _, item := range []struct{ errno, code uint16 }{
++		{22, 1}, {47, 1}, {9, 2}, {38, 2}, {60, 3}, {61, 4},
++		{54, 5}, {32, 5}, {48, 6}, {13, 7}, {1, 7}, {35, 8},
++	} {
++		b.label("m14.socket.classify.errno." + socketDecimal(item.errno))
++		b.emit(movzX(0, item.code), m8Ret())
++	}
++
++	// alloc(fd, errno) -> resource. If the handle table is exhausted, close
++	// the newly created descriptor rather than leaking a live TCP socket.
++	b.label("m14.socket.alloc")
++	m14Enter(b)
++	b.emit(subImmX(31, 31, 32), strX(0, 31, 0), strX(1, 31, 1))
++	b.emit(movX(2, 1), movX(1, 0), movzX(0, m14SocketKind))
++	b.bl("m14.handle.alloc")
++	b.emit(strX(0, 31, 2))
++	b.cbnz(0, "m14.socket.alloc.done")
++	b.emit(ldrX(0, 31, 0), cmpZeroX(0))
++	b.bc(11, "m14.socket.alloc.done")
++	b.emit(movzX(16, m14SYSClose), svc(0x80))
++	b.label("m14.socket.alloc.done")
++	b.emit(ldrX(0, 31, 2), addImmX(31, 31, 32))
++	m14Leave(b)
++
++	// Configure every new socket to suppress SIGPIPE on writes and allow
++	// immediate server restarts. Darwin's SO_NOSIGPIPE is 0x1022;
++	// SOL_SOCKET=0xffff, SO_REUSEADDR=4, option value is native int(1).
++	b.label("m14.socket.configure")
++	m14Enter(b)
++	b.emit(subImmX(31, 31, 32), strX(0, 31, 0), movzX(9, 1), strX(9, 31, 1))
++	for _, option := range []uint16{0x1022, 4} {
++		b.emit(ldrX(0, 31, 0), movzX(1, 0xffff), movzX(2, option), addImmX(3, 31, 8), movzX(4, 4), movzX(16, m14SYSSetsockopt), svc(0x80))
++		b.bc(2, "m14.socket.configure.return")
++	}
++	b.emit(movzX(0, 0))
++	b.label("m14.socket.configure.return")
++	b.emit(addImmX(31, 31, 32))
++	m14Leave(b)
++
++	// prepare(fd, errno) -> resource. A failed setsockopt closes the raw fd
++	// before creating an inspectable error handle.
++	b.label("m14.socket.prepare")
++	m14Enter(b)
++	b.emit(subImmX(31, 31, 32), strX(0, 31, 0), cmpZeroX(1))
++	b.bc(1, "m14.socket.prepare.alloc")
++	b.bl("m14.socket.configure")
++	b.cbz(0, "m14.socket.prepare.ready")
++	b.emit(strX(0, 31, 1), ldrX(0, 31, 0), movzX(16, m14SYSClose), svc(0x80))
++	b.emit(m8Movn(0, 0), ldrX(1, 31, 1))
++	b.b("m14.socket.prepare.alloc")
++	b.label("m14.socket.prepare.ready")
++	b.emit(ldrX(0, 31, 0), movzX(1, 0))
++	b.label("m14.socket.prepare.alloc")
++	b.bl("m14.socket.alloc")
++	b.emit(addImmX(31, 31, 32))
++	m14Leave(b)
++
++	// open() -> resource; native errors remain queryable via status().
++	b.label("m14.socket_open")
++	m14Enter(b)
++	b.emit(movzX(0, 2), movzX(1, 1), movzX(2, 6), movzX(16, m14SYSSocket), svc(0x80))
++	b.bc(2, "m14.socket_open.error")
++	b.emit(movzX(1, 0))
++	b.b("m14.socket_open.alloc")
++	b.label("m14.socket_open.error")
++	b.emit(movX(1, 0), m8Movn(0, 0))
++	b.label("m14.socket_open.alloc")
++	b.bl("m14.socket.prepare")
++	m14Leave(b)
++
++	b.label("m14.socket_status")
++	m14Enter(b)
++	b.emit(subImmX(31, 31, 32), strX(1, 31, 0), movzX(1, m14SocketKind))
++	b.bl("m14.handle.lookup")
++	b.cbz(0, "m14.socket_status.invalid")
++	b.emit(ldrX(0, 0, 3))
++	b.bl("m14.socket.classify")
++	b.b("m14.socket_status.write")
++	b.label("m14.socket_status.invalid")
++	b.emit(movzX(0, 2))
++	b.label("m14.socket_status.write")
++	b.emit(movX(1, 0), ldrX(0, 31, 0))
++	b.bl("m14.status.byte")
++	b.emit(addImmX(31, 31, 32))
++	m14ReturnTagged(b, emptyTagged)
++
++	appendM14SocketAddressOperation(b, "socket_bind_ipv4", m14SYSBind, emptyTagged)
++	appendM14SocketAddressOperation(b, "socket_connect_ipv4", m14SYSConnect, emptyTagged)
++
++	// listen(resource, backlog, status) -> empty string.
++	b.label("m14.socket_listen")
++	m14Enter(b)
++	b.emit(subImmX(31, 31, 48), strX(1, 31, 1), strX(2, 31, 0), movzX(1, m14SocketKind))
++	b.bl("m14.handle.lookup")
++	b.cbz(0, "m14.socket_listen.closed")
++	b.emit(ldrX(9, 0, 0), cmpZeroX(9))
++	b.bc(11, "m14.socket_listen.closed")
++	b.emit(strX(9, 31, 2), ldrX(10, 31, 1), cmpZeroX(10))
++	b.bc(11, "m14.socket_listen.invalid")
++	b.emit(movzX(11, 65535), m8Cmp(10, 11))
++	b.bc(8, "m14.socket_listen.invalid")
++	b.emit(ldrX(0, 31, 2), movX(1, 10), movzX(16, m14SYSListen), svc(0x80))
++	b.bc(2, "m14.socket_listen.status")
++	b.emit(movzX(0, 0))
++	b.b("m14.socket_listen.status")
++	b.label("m14.socket_listen.closed")
++	b.emit(movzX(0, 9))
++	b.b("m14.socket_listen.status")
++	b.label("m14.socket_listen.invalid")
++	b.emit(movzX(0, 22))
++	b.label("m14.socket_listen.status")
++	b.bl("m14.socket.classify")
++	b.emit(movX(1, 0), ldrX(0, 31, 0))
++	b.bl("m14.status.byte")
++	b.emit(addImmX(31, 31, 48))
++	m14ReturnTagged(b, emptyTagged)
++
++	// accept(resource) -> resource. NULL address pointers mean no peer address
++	// is copied into Mio-owned memory.
++	b.label("m14.socket_accept")
++	m14Enter(b)
++	b.emit(movzX(1, m14SocketKind))
++	b.bl("m14.handle.lookup")
++	b.cbz(0, "m14.socket_accept.closed")
++	b.emit(ldrX(0, 0, 0), cmpZeroX(0))
++	b.bc(11, "m14.socket_accept.closed")
++	b.emit(movzX(1, 0), movzX(2, 0), movzX(16, m14SYSAccept), svc(0x80))
++	b.bc(2, "m14.socket_accept.error")
++	b.emit(movzX(1, 0))
++	b.b("m14.socket_accept.alloc")
++	b.label("m14.socket_accept.error")
++	b.emit(movX(1, 0), m8Movn(0, 0))
++	b.b("m14.socket_accept.alloc")
++	b.label("m14.socket_accept.closed")
++	b.emit(m8Movn(0, 0), movzX(1, 9))
++	b.label("m14.socket_accept.alloc")
++	b.bl("m14.socket.prepare")
++	m14Leave(b)
++
++	appendM14IOEntry(b, "socket_read", true, emptyTagged, m14SocketKind)
++	appendM14IOEntry(b, "socket_write", false, emptyTagged, m14SocketKind)
++
++	b.label("m14.socket_close")
++	m14Enter(b)
++	b.emit(subImmX(31, 31, 48), strX(1, 31, 0), movzX(1, m14SocketKind))
++	b.bl("m14.handle.lookup")
++	b.cbz(0, "m14.socket_close.closed")
++	b.emit(strX(0, 31, 1), ldrX(0, 0, 0), cmpZeroX(0))
++	b.bc(11, "m14.socket_close.done")
++	b.emit(movzX(16, m14SYSClose), svc(0x80))
++	b.bc(2, "m14.socket_close.save")
++	b.emit(movzX(0, 0))
++	b.b("m14.socket_close.save")
++	b.label("m14.socket_close.done")
++	b.emit(movzX(0, 0))
++	b.label("m14.socket_close.save")
++	b.emit(strX(0, 31, 2), ldrX(10, 31, 1), movzX(11, 0), strX(11, 10, 2), ldrX(0, 31, 2))
++	b.bl("m14.socket.classify")
++	b.b("m14.socket_close.write")
++	b.label("m14.socket_close.closed")
++	b.emit(movzX(0, 2))
++	b.label("m14.socket_close.write")
++	b.emit(movX(1, 0), ldrX(0, 31, 0))
++	b.bl("m14.status.byte")
++	b.emit(addImmX(31, 31, 48))
++	m14ReturnTagged(b, emptyTagged)
++}
++
++// bind/connect(resource, IPv4 octets, port, status) -> empty string. The
++// sockaddr_in is assembled in a private 16-byte stack buffer. Validate length
++// and numeric range before any pointer arithmetic or Darwin syscall.
++func appendM14SocketAddressOperation(b *m8Assembler, name string, sysno uint16, emptyTagged uint64) {
++	prefix := "m14." + name
++	b.label(prefix)
++	m14Enter(b)
++	b.emit(subImmX(31, 31, 80), strX(1, 31, 1), strX(2, 31, 2), strX(3, 31, 3), movzX(1, m14SocketKind))
++	b.bl("m14.handle.lookup")
++	b.cbz(0, prefix+".closed")
++	b.emit(ldrX(9, 0, 0), cmpZeroX(9))
++	b.bc(11, prefix+".closed")
++	b.emit(strX(9, 31, 4), ldrX(0, 31, 1))
++	b.bl("m14.array.ptr")
++	b.emit(cmpImmX(1, 4))
++	b.bc(1, prefix+".invalid")
++	b.emit(strX(0, 31, 5), ldrX(10, 31, 2), cmpZeroX(10))
++	b.bc(11, prefix+".invalid")
++	b.emit(movzX(11, 65535), m8Cmp(10, 11))
++	b.bc(8, prefix+".invalid")
++
++	// [sp+48..sp+63]: sin_len=16, sin_family=AF_INET(2), sin_port=BE,
++	// sin_addr=4 exact octets, sin_zero=8 bytes.
++	b.emit(movzX(12, 0), strX(12, 31, 6), strX(12, 31, 7), addImmX(14, 31, 48))
++	b.emit(movzX(13, 16), m8StrB(13, 14), addImmX(15, 14, 1), movzX(13, 2), m8StrB(13, 15))
++	b.emit(addImmX(15, 14, 2), m10Lsr(13, 10, 8), m8StrB(13, 15))
++	b.emit(addImmX(15, 14, 3), m8StrB(10, 15))
++	b.emit(ldrX(9, 31, 5))
++	for i := uint32(0); i < 4; i++ {
++		if i != 0 {
++			b.emit(addImmX(9, 9, 1))
++		}
++		b.emit(m8LdrB(12, 9), addImmX(15, 14, 4+i), m8StrB(12, 15))
++	}
++	b.emit(ldrX(0, 31, 4), addImmX(1, 31, 48), movzX(2, 16), movzX(16, sysno), svc(0x80))
++	b.bc(2, prefix+".status")
++	b.emit(movzX(0, 0))
++	b.b(prefix + ".status")
++	b.label(prefix + ".closed")
++	b.emit(movzX(0, 9))
++	b.b(prefix + ".status")
++	b.label(prefix + ".invalid")
++	b.emit(movzX(0, 22))
++	b.label(prefix + ".status")
++	b.bl("m14.socket.classify")
++	b.emit(movX(1, 0), ldrX(0, 31, 3))
++	b.bl("m14.status.byte")
++	b.emit(addImmX(31, 31, 80))
++	m14ReturnTagged(b, emptyTagged)
++}
++
++func socketDecimal(value uint16) string {
++	if value < 10 {
++		return string(rune('0' + value))
++	}
++	return string(rune('0'+value/10)) + string(rune('0'+value%10))
++}
+diff --git a/internal/aot/darwinarm64/m14_nativesocket_test.go b/internal/aot/darwinarm64/m14_nativesocket_test.go
+new file mode 100644
+index 0000000..37fcce7
+--- /dev/null
++++ b/internal/aot/darwinarm64/m14_nativesocket_test.go
+@@ -0,0 +1,25 @@
++package darwinarm64
++
++import "testing"
++
++func TestM14NativeSocketRuntimeIsOptIn(t *testing.T) {
++	without, oldEntries, _, err := appendM14NativeFSRuntime(1, false)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, exists := oldEntries["socket_open"]; exists {
++		t.Fatal("filesystem-only program must not expose socket entry points")
++	}
++	with, newEntries, _, err := appendM14NativeFSRuntime(1, true)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, name := range []string{"socket_open", "socket_status", "socket_bind_ipv4", "socket_connect_ipv4", "socket_listen", "socket_accept", "socket_read", "socket_write", "socket_close"} {
++		if _, exists := newEntries[name]; !exists {
++			t.Fatalf("missing native socket entry %s", name)
++		}
++	}
++	if len(with) <= len(without) {
++		t.Fatalf("socket runtime should add code only when imported: %d <= %d", len(with), len(without))
++	}
++}
+diff --git a/internal/aot/darwinarm64/stack.go b/internal/aot/darwinarm64/stack.go
+index 94a34be..c71ce32 100644
+--- a/internal/aot/darwinarm64/stack.go
++++ b/internal/aot/darwinarm64/stack.go
+@@ -125,10 +125,14 @@ func (e *StackEmitter) EmitNativeFSFunction(op string, params int) error {
+ 		roots = []int{0}
+ 	case "stat", "mkdir":
+ 		roots = []int{0, 1}
+-	case "file_status", "close", "dir_status", "dir_close":
++	case "file_status", "close", "dir_status", "dir_close", "socket_status", "socket_close":
+ 		roots = []int{1}
+-	case "read", "write":
++	case "read", "write", "socket_read", "socket_write":
+ 		roots = []int{1, 4}
++	case "socket_bind_ipv4", "socket_connect_ipv4":
++		roots = []int{1, 3}
++	case "socket_listen":
++		roots = []int{2}
+ 	}
+ 	if err := e.SetGCRoots(roots, nil); err != nil {
+ 		return err
+@@ -1294,6 +1298,13 @@ func (e *StackEmitter) finishWithM11(functions []*StackEmitter, strings []string
+ 			code[call.at] = word
+ 		}
+ 		if len(nativeFSCalls) != 0 {
++			withSockets := false
++			for _, call := range nativeFSCalls {
++				if len(call.op) >= 7 && call.op[:7] == "socket_" {
++					withSockets = true
++					break
++				}
++			}
+ 			nativeStart := len(code)
+ 			emptyID := 0
+ 			for id, value := range strings {
+@@ -1302,7 +1313,7 @@ func (e *StackEmitter) finishWithM11(functions []*StackEmitter, strings []string
+ 					break
+ 				}
+ 			}
+-			nativeWords, nativeEntries, nativeExternal, err := appendM14NativeFSRuntime(uint64(emptyID<<1 | 1))
++			nativeWords, nativeEntries, nativeExternal, err := appendM14NativeFSRuntime(uint64(emptyID<<1|1), withSockets)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+diff --git a/internal/aot/m14_nativesocket_test.go b/internal/aot/m14_nativesocket_test.go
+new file mode 100644
+index 0000000..6fe5c69
+--- /dev/null
++++ b/internal/aot/m14_nativesocket_test.go
+@@ -0,0 +1,115 @@
++package aot
++
++import (
++	"bytes"
++	"fmt"
++	"io"
++	"net"
++	"path/filepath"
++	"runtime"
++	"testing"
++	"time"
++)
++
++// Native TCP primitives must lower into actual Darwin ARM64 code. A regular
++// MMA binding with no native body would otherwise compile into an empty stub.
++func TestM14NativeSocketCompilesPureMioTCP(t *testing.T) {
++	root, err := filepath.Abs(filepath.Join("..", ".."))
++	if err != nil {
++		t.Fatal(err)
++	}
++	sources := []string{
++		`yobu "mio/sys/socket";
++kaku handle = socket.open();
++kaku status: []uint8 = [0];
++socket.status(handle, status);
++socket.bind_ipv4(handle, [uint8(127), uint8(0), uint8(0), uint8(1)], 0, status);
++socket.listen(handle, 8, status);
++socket.close(handle, status);
++`,
++		`yobu "kiso/net/tcp";
++kaku address = tcp.ipv4(uint8(127), uint8(0), uint8(0), uint8(1), 8080);
++kaku result = tcp.connect(address);
++chant(result.error == mu);
++`,
++	}
++	for _, source := range sources {
++		program := m17CompileMio(t, root, source)
++		image, err := CompileDarwinARM64(program)
++		if err != nil {
++			t.Fatalf("Darwin ARM64 native socket lowering: %v", err)
++		}
++		if len(image) < 4096 || !bytes.Equal(image[:4], []byte{0xcf, 0xfa, 0xed, 0xfe}) {
++			t.Fatalf("expected a nonempty Mach-O executable, got %d bytes", len(image))
++		}
++	}
++}
++
++// Runs only on the target OS. The Linux CI compile test above cannot validate
++// Darwin's actual socket syscall ABI, sockaddr layout, or kernel behavior.
++func TestM14NativeSocketDarwinLoopback(t *testing.T) {
++	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
++		t.Skip("native TCP loopback requires macOS ARM64")
++	}
++	server, err := net.Listen("tcp4", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer server.Close()
++	serverError := make(chan error, 1)
++	go func() {
++		conn, err := server.Accept()
++		if err != nil {
++			serverError <- err
++			return
++		}
++		defer conn.Close()
++		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
++			serverError <- err
++			return
++		}
++		request := make([]byte, 2)
++		if _, err := io.ReadFull(conn, request); err != nil {
++			serverError <- err
++			return
++		}
++		if !bytes.Equal(request, []byte{17, 18}) {
++			serverError <- fmt.Errorf("unexpected native request: %v", request)
++			return
++		}
++		_, err = conn.Write([]byte{19, 20})
++		serverError <- err
++	}()
++	root, err := filepath.Abs(filepath.Join("..", ".."))
++	if err != nil {
++		t.Fatal(err)
++	}
++	port := server.Addr().(*net.TCPAddr).Port
++	source := fmt.Sprintf(`yobu "kiso/net/tcp";
++yobu "kiso/io";
++waza exercise(connection: tcp.Connection?) -> unit {
++    moshi (connection == mu) { kaesu; }
++    kaku sent = tcp.write_all(connection, [uint8(17), uint8(18)], 0, 2);
++    chant(sent.count); chant(sent.error == mu);
++    kaku data: []uint8 = [0, 0];
++    kaku received = io.read_full(tcp.reader(connection), data, 0, 2);
++    chant(received.count); chant(received.error == mu);
++    chant(data[0]); chant(data[1]);
++    kaku closed = tcp.close(connection); chant(closed.error == mu);
++}
++kaku opened = tcp.connect(tcp.ipv4(uint8(127), uint8(0), uint8(0), uint8(1), %d));
++chant(opened.error == mu);
++exercise(opened.connection);
++`, port)
++	program := m17CompileMio(t, root, source)
++	output, err := runM12Native(t, program)
++	if err != nil {
++		t.Fatalf("native TCP execution: %v output=%q", err, output)
++	}
++	if string(output) != "hai\n2\nhai\n2\nhai\n19\n20\nhai\n" {
++		t.Fatalf("unexpected native TCP output: %q", output)
++	}
++	if err := <-serverError; err != nil {
++		t.Fatal(err)
++	}
++}
+diff --git a/internal/aot/m6.go b/internal/aot/m6.go
+index 162461e..bcd65b4 100644
+--- a/internal/aot/m6.go
++++ b/internal/aot/m6.go
+@@ -81,11 +81,17 @@ func (k m6Kind) String() string {
+ }
+ 
+ func m14NativeName(name string) (string, bool) {
+-	const prefix = "$mma::mio/fs/runtime::"
+-	if !strings.HasPrefix(name, prefix) {
++	const fsPrefix = "$mma::mio/fs/runtime::"
++	const socketPrefix = "$mma::mio/sys/socket::"
++	if strings.HasPrefix(name, socketPrefix) {
++		rest := strings.TrimPrefix(name, socketPrefix)
++		operation, _, ok := strings.Cut(rest, "::")
++		return "socket_" + operation, ok
++	}
++	if !strings.HasPrefix(name, fsPrefix) {
+ 		return "", false
+ 	}
+-	rest := strings.TrimPrefix(name, prefix)
++	rest := strings.TrimPrefix(name, fsPrefix)
+ 	operation, _, ok := strings.Cut(rest, "::")
+ 	return operation, ok
+ }
+@@ -96,6 +102,18 @@ func m14NativeSignature(name string) ([]m6Kind, m6Kind, bool) {
+ 		return nil, m6Unknown, false
+ 	}
+ 	switch op {
++	case "socket_open":
++		return nil, m6Resource, true
++	case "socket_accept":
++		return []m6Kind{m6Resource}, m6Resource, true
++	case "socket_status", "socket_close":
++		return []m6Kind{m6Resource, m6Array}, m6String, true
++	case "socket_bind_ipv4", "socket_connect_ipv4":
++		return []m6Kind{m6Resource, m6Array, m6Int, m6Array}, m6String, true
++	case "socket_listen":
++		return []m6Kind{m6Resource, m6Int, m6Array}, m6String, true
++	case "socket_read", "socket_write":
++		return []m6Kind{m6Resource, m6Array, m6Int, m6Int, m6Array}, m6String, true
+ 	case "close", "dir_close", "file_status", "dir_status":
+ 		return []m6Kind{m6Resource, m6Array}, m6String, true
+ 	case "stat", "mkdir":
+diff --git a/internal/nativesocket/socket.go b/internal/nativesocket/socket.go
+new file mode 100644
+index 0000000..7f82802
+--- /dev/null
++++ b/internal/nativesocket/socket.go
+@@ -0,0 +1,310 @@
++//go:build !windows
++
++// Package nativesocket provides the VM backend for Mio's low-level socket
++// primitives. Native AOT lowers the same symbols directly to OS syscalls.
++package nativesocket
++
++import (
++	"encoding/binary"
++	"errors"
++	"io"
++	"syscall"
++
++	"Mio/mma"
++)
++
++const (
++	modulePath    = "mio/sys/socket"
++	resourceType  = "mio/sys/socket.Socket"
++	maxNativeRead = 256 << 20
++)
++
++// The byte-sized codes are shared with the native AOT socket backend.
++const (
++	statusOK byte = iota
++	statusInvalidArgument
++	statusClosed
++	statusTimedOut
++	statusConnectionRefused
++	statusConnectionReset
++	statusAddressInUse
++	statusPermissionDenied
++	statusWouldBlock
++	statusOther
++)
++
++type socketState struct {
++	fd  int
++	err error
++}
++
++// Register exposes OS primitives, never TCP buffering or connection policy.
++func Register(registry *mma.ModuleRegistry) error {
++	return registry.RegisterModule(mma.ModuleDefinition{Path: modulePath, Functions: []mma.FunctionDefinition{
++		def("open", nil, mma.TypeResource, socketOpen),
++		def("status", []mma.Type{mma.TypeResource, mma.TypeBytes}, mma.TypeString, socketStatus),
++		def("bind_ipv4", []mma.Type{mma.TypeResource, mma.TypeBytes, mma.TypeInt64, mma.TypeBytes}, mma.TypeString, socketBind),
++		def("connect_ipv4", []mma.Type{mma.TypeResource, mma.TypeBytes, mma.TypeInt64, mma.TypeBytes}, mma.TypeString, socketConnect),
++		def("listen", []mma.Type{mma.TypeResource, mma.TypeInt64, mma.TypeBytes}, mma.TypeString, socketListen),
++		def("accept", []mma.Type{mma.TypeResource}, mma.TypeResource, socketAccept),
++		def("read", []mma.Type{mma.TypeResource, mma.TypeBytes, mma.TypeInt64, mma.TypeInt64, mma.TypeBytes}, mma.TypeString, socketRead),
++		def("write", []mma.Type{mma.TypeResource, mma.TypeBytes, mma.TypeInt64, mma.TypeInt64, mma.TypeBytes}, mma.TypeString, socketWrite),
++		def("close", []mma.Type{mma.TypeResource, mma.TypeBytes}, mma.TypeString, socketClose),
++	}})
++}
++
++func def(name string, args []mma.Type, result mma.Type, function mma.NativeFunction) mma.FunctionDefinition {
++	return mma.FunctionDefinition{Name: name, Public: true, Signature: mma.FunctionSignature{Parameters: args, Return: result}, Function: function}
++}
++
++func intArgument(call *mma.CallContext, index int) (int64, error) {
++	arg, err := call.Argument(index)
++	if err != nil {
++		return 0, err
++	}
++	return mma.Values.AsInt64(arg)
++}
++
++func createSocket(call *mma.CallContext, state *socketState) error {
++	value, err := call.CreateResource(resourceType, state, func(raw any) error {
++		socket := raw.(*socketState)
++		if socket.fd < 0 {
++			return nil
++		}
++		return syscall.Close(socket.fd)
++	})
++	if err != nil {
++		if state.fd >= 0 {
++			_ = syscall.Close(state.fd)
++		}
++		return err
++	}
++	return call.Return(value)
++}
++
++func socketOpen(call *mma.CallContext) error {
++	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
++	if err == nil {
++		err = configureSocket(fd)
++		if err != nil {
++			_ = syscall.Close(fd)
++			fd = -1
++		}
++	}
++	return createSocket(call, &socketState{fd: fd, err: err})
++}
++
++func configureSocket(fd int) error {
++	if err := configureNoSigpipe(fd); err != nil {
++		return err
++	}
++	return syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
++}
++
++func socketStatus(call *mma.CallContext) error {
++	value, err := call.UseResource(0, resourceType)
++	if err == nil {
++		err = value.(*socketState).err
++	}
++	return simpleStatus(call, 1, err)
++}
++
++func sockaddr(call *mma.CallContext, addressIndex, portIndex int) (*syscall.SockaddrInet4, error) {
++	arg, err := call.Argument(addressIndex)
++	if err != nil {
++		return nil, err
++	}
++	address, err := mma.Values.AsBytes(arg)
++	if err != nil || len(address) != 4 {
++		return nil, syscall.EINVAL
++	}
++	port, err := intArgument(call, portIndex)
++	if err != nil || port < 0 || port > 65535 {
++		return nil, syscall.EINVAL
++	}
++	result := &syscall.SockaddrInet4{Port: int(port)}
++	copy(result.Addr[:], address)
++	return result, nil
++}
++
++func socketBind(call *mma.CallContext) error {
++	return bindOrConnect(call, false)
++}
++
++func socketConnect(call *mma.CallContext) error {
++	return bindOrConnect(call, true)
++}
++
++func bindOrConnect(call *mma.CallContext, connect bool) error {
++	address, err := sockaddr(call, 1, 2)
++	if err == nil {
++		var state *socketState
++		state, err = useSocket(call)
++		if err == nil {
++			if connect {
++				err = syscall.Connect(state.fd, address)
++			} else {
++				err = syscall.Bind(state.fd, address)
++			}
++		}
++	}
++	return simpleStatus(call, 3, err)
++}
++
++func socketListen(call *mma.CallContext) error {
++	backlog, err := intArgument(call, 1)
++	if err == nil && (backlog < 0 || backlog > 65535) {
++		err = syscall.EINVAL
++	}
++	if err == nil {
++		var state *socketState
++		state, err = useSocket(call)
++		if err == nil {
++			err = syscall.Listen(state.fd, int(backlog))
++		}
++	}
++	return simpleStatus(call, 2, err)
++}
++
++func socketAccept(call *mma.CallContext) error {
++	fd := -1
++	state, err := useSocket(call)
++	if err == nil {
++		fd, _, err = syscall.Accept(state.fd)
++		if err == nil {
++			err = configureSocket(fd)
++			if err != nil {
++				_ = syscall.Close(fd)
++				fd = -1
++			}
++		}
++	}
++	return createSocket(call, &socketState{fd: fd, err: err})
++}
++
++func useSocket(call *mma.CallContext) (*socketState, error) {
++	value, err := call.UseResource(0, resourceType)
++	if err != nil {
++		return nil, err
++	}
++	state := value.(*socketState)
++	if state.err != nil {
++		return nil, state.err
++	}
++	if state.fd < 0 {
++		return nil, syscall.EBADF
++	}
++	return state, nil
++}
++
++func socketRead(call *mma.CallContext) error {
++	return readOrWrite(call, true)
++}
++
++func socketWrite(call *mma.CallContext) error {
++	return readOrWrite(call, false)
++}
++
++func readOrWrite(call *mma.CallContext, reading bool) error {
++	state, err := useSocket(call)
++	if err != nil {
++		return operationStatus(call, 4, 0, false, err)
++	}
++	offset, err := intArgument(call, 2)
++	if err != nil {
++		return err
++	}
++	length, err := intArgument(call, 3)
++	if err != nil {
++		return err
++	}
++	if offset < 0 || length < 0 || length > maxNativeRead {
++		return operationStatus(call, 4, 0, false, syscall.EINVAL)
++	}
++	// Validate the caller's complete byte range before touching the socket.
++	// A failed destination write must never consume incoming TCP bytes.
++	buffer, err := call.ReadBytes(1, offset, length)
++	if err != nil {
++		return operationStatus(call, 4, 0, false, syscall.EINVAL)
++	}
++	if length == 0 {
++		return operationStatus(call, 4, 0, false, nil)
++	}
++	count := 0
++	if reading {
++		count, err = syscall.Read(state.fd, buffer)
++	} else {
++		count, err = socketSend(state.fd, buffer)
++	}
++	if reading && count > 0 {
++		if writeErr := call.WriteBytes(1, offset, buffer[:count]); writeErr != nil {
++			return operationStatus(call, 4, 0, false, syscall.EINVAL)
++		}
++	}
++	return operationStatus(call, 4, int64(count), reading && count == 0 && err == nil, err)
++}
++
++func socketClose(call *mma.CallContext) error {
++	return simpleStatus(call, 1, call.CloseResource(0, resourceType))
++}
++
++func simpleStatus(call *mma.CallContext, index int, err error) error {
++	if writeErr := call.WriteBytes(index, 0, []byte{classify(err)}); writeErr != nil {
++		return writeErr
++	}
++	if err != nil {
++		return call.Return(mma.Values.String(err.Error()))
++	}
++	return call.Return(mma.Values.String(""))
++}
++
++func operationStatus(call *mma.CallContext, index int, count int64, eof bool, err error) error {
++	status := make([]byte, 10)
++	binary.LittleEndian.PutUint64(status[:8], uint64(count))
++	if eof {
++		status[8] = 1
++	}
++	status[9] = classify(err)
++	if writeErr := call.WriteBytes(index, 0, status); writeErr != nil {
++		return writeErr
++	}
++	if err != nil {
++		return call.Return(mma.Values.String(err.Error()))
++	}
++	return call.Return(mma.Values.String(""))
++}
++
++func classify(err error) byte {
++	if err == nil || errors.Is(err, io.EOF) {
++		return statusOK
++	}
++	var runtimeErr *mma.RuntimeError
++	if errors.As(err, &runtimeErr) {
++		switch runtimeErr.Code {
++		case "closed_resource":
++			return statusClosed
++		case "invalid_resource", "resource_type", "invalid_argument":
++			return statusInvalidArgument
++		}
++	}
++	switch {
++	case errors.Is(err, syscall.EINVAL), errors.Is(err, syscall.EAFNOSUPPORT):
++		return statusInvalidArgument
++	case errors.Is(err, syscall.EBADF), errors.Is(err, syscall.ENOTSOCK):
++		return statusClosed
++	case errors.Is(err, syscall.ETIMEDOUT):
++		return statusTimedOut
++	case errors.Is(err, syscall.ECONNREFUSED):
++		return statusConnectionRefused
++	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE):
++		return statusConnectionReset
++	case errors.Is(err, syscall.EADDRINUSE):
++		return statusAddressInUse
++	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM):
++		return statusPermissionDenied
++	case errors.Is(err, syscall.EAGAIN), errors.Is(err, syscall.EWOULDBLOCK):
++		return statusWouldBlock
++	default:
++		return statusOther
++	}
++}
+diff --git a/internal/nativesocket/socket_options_darwin.go b/internal/nativesocket/socket_options_darwin.go
+new file mode 100644
+index 0000000..4769f34
+--- /dev/null
++++ b/internal/nativesocket/socket_options_darwin.go
+@@ -0,0 +1,13 @@
++//go:build darwin
++
++package nativesocket
++
++import "syscall"
++
++func configureNoSigpipe(fd int) error {
++	return syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_NOSIGPIPE, 1)
++}
++
++func socketSend(fd int, data []byte) (int, error) {
++	return syscall.Write(fd, data)
++}
+diff --git a/internal/nativesocket/socket_options_linux.go b/internal/nativesocket/socket_options_linux.go
+new file mode 100644
+index 0000000..235d6cb
+--- /dev/null
++++ b/internal/nativesocket/socket_options_linux.go
+@@ -0,0 +1,11 @@
++//go:build linux
++
++package nativesocket
++
++import "syscall"
++
++func configureNoSigpipe(_ int) error { return nil }
++
++func socketSend(fd int, data []byte) (int, error) {
++	return syscall.SendmsgN(fd, data, nil, nil, syscall.MSG_NOSIGNAL)
++}
+diff --git a/internal/nativesocket/socket_options_other.go b/internal/nativesocket/socket_options_other.go
+new file mode 100644
+index 0000000..8d976c3
+--- /dev/null
++++ b/internal/nativesocket/socket_options_other.go
+@@ -0,0 +1,12 @@
++//go:build !linux && !darwin && !windows
++
++package nativesocket
++
++import "syscall"
++
++// Other Unix targets need their own MSG_NOSIGNAL/SO_NOSIGPIPE specialization.
++func configureNoSigpipe(_ int) error { return nil }
++
++func socketSend(fd int, data []byte) (int, error) {
++	return syscall.Write(fd, data)
++}
+diff --git a/internal/nativesocket/socket_windows.go b/internal/nativesocket/socket_windows.go
+new file mode 100644
+index 0000000..69531c6
+--- /dev/null
++++ b/internal/nativesocket/socket_windows.go
+@@ -0,0 +1,9 @@
++//go:build windows
++
++package nativesocket
++
++import "Mio/mma"
++
++// Windows' Winsock backend is not implemented yet. Keep unrelated Mio
++// standard-library commands functional instead of failing registry setup.
++func Register(_ *mma.ModuleRegistry) error { return nil }
+diff --git a/internal/stdlib/registry.go b/internal/stdlib/registry.go
+index 115df2b..357ea54 100644
+--- a/internal/stdlib/registry.go
++++ b/internal/stdlib/registry.go
+@@ -3,6 +3,7 @@ package stdlib
+ 
+ import (
+ 	"Mio/internal/nativefs"
++	"Mio/internal/nativesocket"
+ 	"Mio/mma"
+ )
+ 
+@@ -12,5 +13,8 @@ func NewRegistry() (*mma.ModuleRegistry, error) {
+ 	if err := nativefs.Register(registry); err != nil {
+ 		return nil, err
+ 	}
++	if err := nativesocket.Register(registry); err != nil {
++		return nil, err
++	}
+ 	return registry, nil
+ }
+diff --git a/internal/tester/tester.go b/internal/tester/tester.go
+index 6e476dc..5527f8a 100644
+--- a/internal/tester/tester.go
++++ b/internal/tester/tester.go
+@@ -14,6 +14,7 @@ import (
+ 	"Mio/internal/constant"
+ 	"Mio/internal/diagnostic"
+ 	"Mio/internal/nativefs"
++	"Mio/internal/nativesocket"
+ 	"Mio/internal/resolver"
+ 	"Mio/internal/typecheck"
+ 	"Mio/internal/vm"
+@@ -85,6 +86,9 @@ func NewRegistry(recorder *Recorder) (*mma.ModuleRegistry, error) {
+ 	if err := nativefs.Register(registry); err != nil {
+ 		return nil, err
+ 	}
++	if err := nativesocket.Register(registry); err != nil {
++		return nil, err
++	}
+ 	err := registry.RegisterModule(mma.ModuleDefinition{
+ 		Path: runtimeModule,
+ 		Functions: []mma.FunctionDefinition{{
