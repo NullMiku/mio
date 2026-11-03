@@ -1,0 +1,6 @@
+yobu "kiso/array";
+yobu "kiso/string";
+yobu "kiso/math";
+kaku numbers=array.make[int64](16,7);
+chant(math.max(numbers[15],9));
+chant(string.concat("Bunko ","ok"));

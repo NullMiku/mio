@@ -1,0 +1,2 @@
+kaku value: int64 = "wrong";
+chant(value);
