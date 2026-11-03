@@ -10,9 +10,10 @@ kata Transport {
     input: fs.File; output: fs.File; frames: lsp.FrameBuffer; chunk: []uint8;
     pending: [][]uint8; error: []string; ended: []bool;
     current_id: []string; current_method: []string; generation: []int64;
+    cancellation_scanned: []int64;
 }
 waza transport(input: fs.File, output: fs.File) -> Transport {
-    kaesu Transport {input:input,output:output,frames:lsp.frame_buffer(),chunk:array.make[uint8](4096,uint8(0)),pending:[],error:[""],ended:[iie],current_id:[""],current_method:[""],generation:[0]};
+    kaesu Transport {input:input,output:output,frames:lsp.frame_buffer(),chunk:array.make[uint8](4096,uint8(0)),pending:[],error:[""],ended:[iie],current_id:[""],current_method:[""],generation:[0],cancellation_scanned:[0]};
 }
 waza semantic_method(method: string) -> bool {
     kaesu method=="textDocument/hover" || method=="textDocument/definition" || method=="textDocument/references" || method=="textDocument/documentSymbol" || method=="textDocument/completion" || method=="textDocument/signatureHelp";
@@ -51,7 +52,25 @@ waza read_transport(state: Session, io: Transport, service: bool) -> unit {
     moshi(received.count==0 && !received.eof){io.error[0]="lsp: stdin made no progress";kaesu;}
     collect_frames(state,io,service);
 }
+waza service_pending_cancellations(state: Session, io: Transport) -> unit {
+    // A blocking read queues complete frames without service. Cancellation in
+    // that SAME read must be visible before the queued semantic reply commits.
+    // Keep all other frames in order. Only newly queued bytes are inspected;
+    // compiler checkpoints never repeatedly parse an unchanged request backlog.
+    kaku at=io.cancellation_scanned[0];kaku kept=at;
+    aida(at<len(io.pending)){
+        kaku payload=io.pending[at];kaku document=json.parse(payload);kaku root=document.root;
+        kaku method=json.text(document,json.member(document,root,"method"));kaku id=json.member(document,root,"id");
+        kaku notification=id<0;moshi(id>=0){notification=document.values[id].kind==0;}
+        moshi(document.error=="" && notification && method=="$/cancelRequest"){
+            kaku reply=dispatch(state,payload);send_messages(io,reply.messages);
+        }sore{io.pending[kept]=payload;kept=kept+1;}
+        at=at+1;
+    }
+    array.truncate(io.pending,kept);io.cancellation_scanned[0]=kept;
+}
 waza pump_transport(state: Session, io: Transport) -> bool {
+    service_pending_cancellations(state,io);
     collect_frames(state,io,hai);kaku at=0;
     // Bound each checkpoint's I/O work so a continuously writing client cannot
     // starve compiler work. Partial frames remain buffered without blocking.
@@ -68,6 +87,7 @@ waza pump_transport(state: Session, io: Transport) -> bool {
 }
 waza take_pending(io: Transport) -> []uint8 {
     kaku result=io.pending[0];kaku at=0;
+    moshi(io.cancellation_scanned[0]>0){io.cancellation_scanned[0]=io.cancellation_scanned[0]-1;}
     aida(at+1<len(io.pending)){io.pending[at]=io.pending[at+1];at=at+1;}array.truncate(io.pending,len(io.pending)-1);kaesu result;
 }
 waza serve_cooperative(state: Session, io: Transport) -> ServeResult {
