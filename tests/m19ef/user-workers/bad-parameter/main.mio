@@ -1,0 +1,5 @@
+waza rt_start(callback:() -> unit) -> int64 {kaesu 0;}
+waza rt_join(handle:int64) -> int64 {kaesu 0;}
+waza rt_wait(ns:int8) -> int64 {kaesu 0;}
+waza rt_collect(major:int64) -> int64 {kaesu 0;}
+chant(rt_wait(int8(0)));
