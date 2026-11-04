@@ -158,3 +158,7 @@ PASS / FAIL / SKIP / NOT_RUN 的模块协议未改。Go 记录 reference/supplem
 管理员后续：首先部署并验证隔离 PR Runner、安全 ACL 与 Seed 副本，再启用 readiness 变量；配置 `Mio CI / required` 为 Mio-2.1 合并门槛；处理默认分支缺少 Full Workflow 导致的 schedule/手动入口部署问题；检查已有 Runner 在线状态、队列与权限；在真机运行 Quick/Full 和既有 Release 验证并检查原生/独立/参考三种证据。发布策略缺失脚本属于独立既存问题，本次按限制保留。
 
 所有设置与默认分支变更只作报告，不在本任务执行。工作仅在 Mio-2.1，未修改 Core/GC/正式 AOT/Object ABI/Runtime IR/自举架构，未新增正式运行时依赖。
+
+## 后续变更：GitHub-hosted macOS 与 Native Verification 暂缓
+
+本文第三节关于 `mio-native-pr` Runner group、`MIO_PR_RUNNER_READY` 和共享 macOS 资源组的描述已被取代：Quick/Full 的 macOS 作业改用 GitHub-hosted `macos-15`，并因 Native Seed 不可用而暂缓 Native Verification（NOT_RUN）。当前行为、限制和重新启用条件见 [测试架构](testing.md) 的“暂行措施”。Release 工作流未变。

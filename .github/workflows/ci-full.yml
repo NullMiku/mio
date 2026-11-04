@@ -16,6 +16,12 @@ jobs:
     name: Full / trusted ref
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      linux_modules: ${{ steps.plan.outputs.linux_modules }}
+      macos_modules: ${{ steps.plan.outputs.macos_modules }}
+    env:
+      # Native Verification stays deferred (NOT_RUN) unless the repository variable is exactly "enabled".
+      MIO_NATIVE_VERIFICATION: ${{ vars.MIO_NATIVE_VERIFICATION }}
     steps:
       - name: Restrict manual native execution to Mio-2.1
         env:
@@ -26,6 +32,36 @@ jobs:
             echo 'NOT_RUN: Full native validation requires Mio-2.1'
             exit 2
           fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'Mio-2.1' || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - id: plan
+        name: Select Full modules and record the Native Verification state
+        run: |
+          python scripts/ci/plan.py full --output build/ci-plan/full-plan.json
+          python - <<'PY'
+          import json, os
+          plan = json.load(open("build/ci-plan/full-plan.json"))
+          verification = plan["native_verification"]
+          if verification["status"] == "NOT_RUN":
+              print("::warning title=Native Verification NOT_RUN::" + verification["reason"])
+          summary = os.environ["GITHUB_STEP_SUMMARY"]
+          with open(summary, "a", encoding="utf-8") as stream:
+              stream.write("### Full: Native Verification %s\n\n" % verification["status"])
+              stream.write("Supplementary modules passing does not mean Mio native tests passed.\n\n")
+              stream.write("Modules: %s\n" % ", ".join(verification["modules"]))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-plan/full-plan.json
+          if-no-files-found: error
+          retention-days: 7
   full:
     name: Full / ${{ matrix.target }}
     needs: policy
@@ -36,14 +72,11 @@ jobs:
           - target: linux-amd64
             runner: '["ubuntu-24.04"]'
           - target: macos-arm64
-            runner: '["self-hosted", "macOS", "ARM64", "mio-native"]'
+            runner: '["macos-15"]'
     runs-on: ${{ fromJSON(matrix.runner) }}
-    concurrency:
-      group: ci-resource-${{ matrix.target }}-${{ matrix.target == 'macos-arm64' && 'shared' || github.run_id }}
-      cancel-in-progress: false
-      queue: max
     timeout-minutes: 360
     env:
+      MODULES: ${{ matrix.target == 'macos-arm64' && needs.policy.outputs.macos_modules || needs.policy.outputs.linux_modules }}
       MIO_CI_RESULTS: build/ci-results/run-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
       MIO_CI_EVIDENCE_KEY: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
     steps:
@@ -59,7 +92,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - run: bash scripts/ci/run.sh ${{ matrix.target }} all full
+      - run: bash scripts/ci/run.sh ${{ matrix.target }} "$MODULES" full
         shell: bash
       - uses: actions/upload-artifact@v4
         if: always()

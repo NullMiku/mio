@@ -481,6 +481,94 @@ exit "$result"
         self.assertEqual((code, report["status"]), (0, "PASS"))
         self.assertEqual(built, ["./cmd/mio", "./cmd/mochi-aot"])
 
+    # ---- Native Verification deferral (GitHub-hosted runners have no trusted Native Seed) ----
+
+    def test_native_verification_is_deferred_unless_exactly_enabled(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MIO_NATIVE_VERIFICATION", None)
+            self.assertEqual(plan.native_verification_state(), "deferred")
+        for value in ("", "true", "1", "Enabled", "enabled ", "on"):
+            self.assertEqual(plan.native_verification_state(value), "deferred", value)
+        self.assertEqual(plan.native_verification_state("enabled"), "enabled")
+
+    def test_deferred_quick_plan_runs_only_supplementary_modules_and_records_native_not_run(self):
+        modules = runner.discover()
+        complete = plan.select(["go.mod"], modules, native_verification="enabled")
+        deferred = plan.select(["go.mod"], modules, native_verification="deferred")
+        self.assertEqual(deferred["native_modules"], [])
+        self.assertEqual(deferred["deferred_native_modules"], complete["native_modules"])
+        self.assertIn("go-reference", deferred["macos_modules"])
+        for name in deferred["macos_modules"] + deferred["reference_modules"]:
+            self.assertNotEqual(modules[name].get("engine", "native"), "native", name)
+        statuses = {m["module"]: m for m in deferred["modules"]}
+        for name in deferred["deferred_native_modules"]:
+            self.assertEqual(statuses[name]["status"], "NOT_RUN")
+            self.assertIn("Native Verification is deferred", statuses[name]["reason"])
+        self.assertEqual(complete["macos_modules"], [])
+
+    def test_deferred_gate_passes_on_supplementary_checks_but_never_reports_native_pass(self):
+        result = plan.select(["go.mod"], runner.discover(), native_verification="deferred")
+        report = plan.gate(result, "success", "skipped", "success", "success")
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["native_verification"]["status"], "NOT_RUN")
+        self.assertIn("does not mean Mio native tests passed", report["note"])
+        for job_result in ("failure", "cancelled", "skipped", ""):
+            self.assertNotEqual(plan.gate(result, "success", "skipped", "success", job_result)["status"], "PASS")
+            self.assertNotEqual(plan.gate(result, "success", "skipped", job_result, "success")["status"], "PASS")
+            self.assertNotEqual(plan.gate(result, job_result, "skipped", "success", "success")["status"], "PASS")
+        self.assertEqual(plan.gate(result, "success", "skipped", "success", "failure")["status"], "FAIL")
+        # A native job result cannot turn the deferred native state into a pass.
+        self.assertEqual(plan.gate(result, "success", "success", "success", "success")["native_verification"]["status"], "NOT_RUN")
+
+    def test_enabled_gate_still_requires_the_native_job(self):
+        result = plan.select(["go.mod"], runner.discover(), native_verification="enabled")
+        self.assertEqual(plan.gate(result, "success", "success", "success")["status"], "PASS")
+        for job_result in ("skipped", "cancelled", ""):
+            self.assertEqual(plan.gate(result, "success", job_result, "success")["status"], "NOT_RUN")
+        self.assertEqual(plan.gate(result, "success", "failure", "success")["status"], "FAIL")
+        self.assertEqual(plan.gate(result, "success", "success", "success")["native_verification"]["status"], "PASS")
+
+    def test_full_plan_defers_native_modules_and_keeps_every_other_module(self):
+        modules = runner.discover()
+        deferred = plan.full_plan(modules, "deferred")
+        enabled = plan.full_plan(modules, "enabled")
+        self.assertEqual((enabled["linux_modules"], enabled["macos_modules"]), ("all", "all"))
+        self.assertEqual(deferred["native_verification"]["status"], "NOT_RUN")
+        self.assertEqual(deferred["deferred_native_modules"], enabled["executed_native_modules"])
+        self.assertIn("bootstrap", deferred["deferred_native_modules"])
+        for target, field in (("linux-amd64", "linux_modules"), ("macos-arm64", "macos_modules")):
+            chosen = deferred[field].split(",")
+            expected = [n for n, m in modules.items() if target in m["targets"] and "full" in m["suites"]
+                        and m.get("engine", "native") != "native"]
+            self.assertEqual(sorted(chosen), sorted(expected))
+            for name in chosen:
+                self.assertNotEqual(modules[name].get("engine", "native"), "native")
+        self.assertIn("go-aot-reference", deferred["macos_modules"].split(","))
+
+    def test_hosted_workflows_have_no_self_hosted_or_shared_macos_dependency(self):
+        root = HERE.parents[1] / ".github" / "workflows"
+        texts = {name: (root / name).read_text(encoding="utf-8") for name in ("ci-pr.yml", "ci-full.yml", "release.yml")}
+        for name in ("ci-pr.yml", "ci-full.yml"):
+            text = texts[name]
+            for forbidden in ("self-hosted", "mio-native", "MIO_PR_RUNNER_READY", "ci-resource-macos-arm64-shared", "continue-on-error"):
+                self.assertNotIn(forbidden, text, name + " contains " + forbidden)
+            self.assertIn("macos-15", text)
+        # Release keeps its strict persistent-host pipeline.
+        self.assertIn("self-hosted", texts["release.yml"])
+        self.assertIn("MIO_NATIVE_SEED", texts["release.yml"])
+
+    def test_workflow_artifact_names_are_unique_and_run_scoped(self):
+        import re
+        root = HERE.parents[1] / ".github" / "workflows"
+        for name in ("ci-pr.yml", "ci-full.yml"):
+            names = re.findall(r"upload-artifact@v4\n(?:\s+if: .*\n)?\s+with:\n\s+name: (.*)\n",
+                               (root / name).read_text(encoding="utf-8"))
+            self.assertTrue(names, name)
+            self.assertEqual(len(names), len(set(names)), name)
+            for artifact in names:
+                self.assertIn("github.run_id", artifact)
+                self.assertIn("github.run_attempt", artifact)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

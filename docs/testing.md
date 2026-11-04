@@ -80,11 +80,11 @@ bash scripts/ci/run.sh macos-arm64 native-release release
 
 完整 Quick 包含已有库测试和 Core/AOT/GC 的基本双重验证。PR 先由 `scripts/ci/plan.py` 生成计划：文档修改只跑 hosted quality；普通标准库 `*_test.mio` 局部修改跑 Core、受影响包及 Go/VM 基线；所有实现代码、Core/ABI/GC/AOT、测试调度/清单、未知或无法获取的 diff 均回退完整 Quick。没有启用缩小范围的依赖图猜测。每次计划保存选中项 NOT_RUN、未选中项 SKIP 和原因，实际执行后再验收，不能将计划当作测试通过。
 
-`ci-pr.yml` 的 hosted infrastructure 统一运行 quality；Linux 运行计划中的补充参考模块，macOS 运行原生模块及仅适用 macOS 的检查。避免 Quick 在 macOS 再跑相同 quality 和跨平台 Go/VM 基线；Full 仍保留两平台上的适用回归。Quick 不运行完整自举或生产验证。Go 参考工具由模块可选的 `reference_tools` 声明，在一次运行内按需构建并复用，go-reference 只需 mio；其他模块缺省保留原三工具。不跨提交缓存编译器或测试 PASS。
+`ci-pr.yml` 的 hosted infrastructure 统一运行 quality；Linux 运行计划中的补充参考模块；GitHub-hosted `macos-15` 在 Native Verification 暂缓期间运行适用 macOS 的补充（Go / VM 参考）模块，Native Verification 启用后另有独立的 native job 运行原生模块。避免 Quick 在 macOS 再跑相同 quality 和跨平台 Go/VM 基线；Full 仍保留两平台上的适用回归。Quick 不运行完整自举或生产验证。Go 参考工具由模块可选的 `reference_tools` 声明，在一次运行内按需构建并复用，go-reference 只需 mio；其他模块缺省保留原三工具。不跨提交缓存编译器或测试 PASS。
 
 Full 增加完整 selfhost、原生 ABCD 和历史 Go 全量补充测试。自举顺序执行，Go 包并行度为 1 或 2。原生路径使用受信任 Seed 构建的当前源码编译器。`ci-full.yml` 对 `Mio-2.1` push、手动及每周调度调用 `all full`，保留完整 Go、VM、AOT、race 和旧固定点检查，不使用 continue-on-error。定时任务显式 checkout `Mio-2.1`；手动仅允许 Mio-2.1，其他 ref 由 hosted policy job 拒绝并标 NOT_RUN。Full 不根据 PR 影响范围缩减。
 
-macOS 重任务共享 `ci-resource-macos-arm64-shared`，`cancel-in-progress: false`、`queue: max`，Full 外层也保留扩展队列。Quick 外层按 PR number 分组并取消同 PR 旧提交；不同 PR 不共用可取消的外层组。扩展队列上限为 100，并不保证恢复离线 Runner。PR 只可使用一次性的隔离 `mio-native-pr` group/label，部署后才设置仓库变量 MIO_PR_RUNNER_READY=true；没有部署时 native job 被阻止，gate 必须为 NOT_RUN。生产组授权、磁盘/凭据隔离和 Seed 副本由管理员在仓库外保证，YAML 标签不等同于隔离证明。
+并发：macOS 现在使用 GitHub-hosted `macos-15`，每个 job 都是全新的独立环境，因此取消了 `ci-resource-macos-arm64-shared` 这种为保护单台共享主机而设的全局串行组，job 级并发组已全部移除。Quick 外层按 PR number 分组并取消同 PR 旧提交（`cancel-in-progress: true`），不同 PR 的 Quick 互不影响；Full 外层仍按 ref 分组，`cancel-in-progress: false`、`queue: max`，等待中的 Full 不会被替换，等待数上限为 100，不会无限增长。hosted macOS 并行 job 数受 GitHub 账户配额限制。Release 工作流不变，仍使用既有持久化主机。
 
 `native-release release` 是显式发布验证，因生产冻结输入和较高资源需求，不加入每个 PR。正式 `.github/workflows/release.yml` 保持不变。
 
@@ -127,7 +127,7 @@ ABCD 继续使用现有、带冻结源和哈希/签名复核的脚本；不重�
 
 先查看 report.reason，再看 module.log 和独立 stdout/stderr。Python 捕获真实退出码，避免 tee 吞掉失败；POSIX 超时终止进程组，嵌套检查器转发终止信号；Windows 自检通过 taskkill /T /F 清理进程树。中断也返回非零并记录 NOT_RUN，不能把部分完成的运行写成 PASS。默认单检查超时 2400 秒、模块 7200 秒；Full Go 全集检查为 6600 秒，Go 包自身为 60 分钟，避免原有自举测试因少于 30 分钟的测试期限而跳过，支持 MIO_CI_CHECK_TIMEOUT/MIO_CI_MODULE_TIMEOUT；MIO_CI_RESULTS 可更改报告父目录。PYTHON 可指定解释器。生产环境不需要这些变量。
 
-CI 命令可以在相同平台/架构本地原样执行，不依赖 GitHub 环境变量。Full/Release 的受信任 Seed 由既有主机提供；PR 必须使用隔离 worker 中同摘要的只读测试副本，不能访问生产凭据或持久化主机。缺少相应 Runner/Seed 时不得宣称原生 CI 已运行。
+CI 命令可以在相同平台/架构本地原样执行，不依赖 GitHub 环境变量。Release 的受信任 Seed 仍由既有主机提供；开发用 Quick/Full 暂不使用 Seed（见下文“暂行措施”）。缺少 Seed 时不得宣称原生 CI 已运行。
 
 ## 外部工具隔离与发布验证
 
@@ -163,8 +163,20 @@ Windows 开发 checkout 的逐字节 Unicode diagnostic golden 由 `.gitattribut
 
 报告增加 source_revision、source_worktree_dirty、模块 engine 和检查 kind。native 模块必须确实记录 Mio 原生检查，参考 Go 的成功不能代替它。JSONL 追加使用跨进程锁，防止并行检查丢失记录。需要强制执行的 Go 检查使用 `ci_check go-required <name> ...`：任何 SKIP 或空测试都返回 NOT_RUN/2；普通 go 检查保留平台基线跳过，不能由其 PASS 推断全部子测试已运行。
 
-PR workflow 的 `Mio CI / required` 根据计划汇总 infrastructure、native、reference 作业，并核验执行报告中的模块集合、源码 SHA、平台、suite 和结果。必需 job 跳过、取消或报告缺失/过期不能成功。文档范围允许显式 SKIP 语言测试，其 PASS 只代表文档所需检查。维护者应在分支规则中将 gate 设为 required；本地修改不会更改远端规则。独立 infrastructure job 不依赖 Native Seed；Quick/Full artifact 名称和目录包含 run ID、attempt、target 或用途，gate 仅下载小型 report artifact，完整日志仍保留。ABCD 上传也只匹配本次运行的目录。
+PR workflow 的 `Mio CI / required`（Supplementary CI Gate；名称保持不变以兼容分支保护）根据计划汇总 infrastructure、reference、macos（hosted 补充）作业；Native Verification 启用时同时要求 native 作业。它核验执行报告中的模块集合、源码 SHA、平台、suite 和结果。必需 job 跳过、取消或报告缺失/过期不能成功。文档范围允许显式 SKIP 语言测试，其 PASS 只代表文档所需检查。维护者应在分支规则中将 gate 设为 required；本地修改不会更改远端规则。暂缓期间 gate 的 PASS 不代表 Native Verification 成功，报告的 `native_verification` 字段固定为 NOT_RUN，并在 Step Summary 与 `::warning` 中显示。独立 infrastructure job 不依赖 Native Seed；Quick/Full artifact 名称和目录包含 run ID、attempt、target 或用途，gate 仅下载小型 report artifact，完整日志仍保留。ABCD 上传也只匹配本次运行的目录。
 
 本次问题分类、实际命令与 NOT_RUN 边界见 [可靠性审计](ci-reliability-audit.md)；未合并模块的 test.sh/ci-module.json 方案见 [PR 接入方案](ci-pr-integration.md)。历史 testing-audit.md 保留为上次工作的记录，不能替代本次运行证据。
 
 Quick / Full / Release 三级设计、原架构审计、资源对比和管理员部署清单见 [三级 CI 调度审计](ci-scheduling-audit.md)。本地 actionlint 1.7.7 需显式兼容已受 GitHub 支持的 concurrency.queue；不能把未经兼容的 raw lint 失败写成 PASS。
+
+## 暂行措施：Native Verification 推迟（临时，仅开发用 CI）
+
+**Native Seed 目前未准备好**：受信任的 GF4 Native Seed（SHA-256 `4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da`，runner 仍强制校验）无法被 GitHub-hosted Runner 取得；仓库内没有已批准的 Seed 分发来源。为了让 `ci-pr.yml` 与 `ci-full.yml` 先迁移到 GitHub-hosted Runner 并正常运行，需要 Seed 的验证被推迟。这是**临时措施**，不改变 `release.yml`。
+
+- **Native Verification 的状态是 NOT_RUN。** 所有 `engine=native` 模块（Core、AOT、GC、selfhost、ABCD、标准库原生测试及 `kiso/aot/x86-64` 等）不会启动，也不会被写成 PASS 或 SKIP 之外的成功状态；计划与报告列出它们并标 NOT_RUN。
+- **补充测试成功不等于 Native 测试成功。** 暂缓期间 `Mio CI / required` 只是 Supplementary CI Gate：infrastructure（quality、自检、发布隔离静态检查）、Linux 参考模块、hosted `macos-15` 上的 Go / VM 参考模块（Full 另含 `go-aot-reference`、`legacy-bootstrap`）。它通过时报告仍写 `native_verification: NOT_RUN`。
+- **不做的事：** 不下载或生成任何 Seed，不用 Go 编译器或参考 VM 代替 Native Seed，不运行未验证的二进制，不把参考结果写成 Native 结果。
+- **Quick：** `scripts/ci/plan.py plan` 在暂缓时把原生模块移入 `deferred_native_modules`（NOT_RUN），`macos_modules` 为 macOS 上可执行的补充模块。**Full：** `plan.py full` 为 Linux/macOS 只选 `engine != native` 的模块，原生模块列为 NOT_RUN 并写入 Step Summary 与 `full-plan` artifact。
+- **重新启用条件：** (1) 确定并批准受信任 Seed 的分发来源，且在运行前校验固定 SHA-256；(2) 在 `ci-pr.yml` 的 native job 与 Full 的 macOS job 前加入准备 Seed 并导出 `MIO_NATIVE_SEED` 的步骤（不得向 fork PR 提供生产机密）；(3) 设置仓库变量 `MIO_NATIVE_VERIFICATION=enabled`。启用后 Quick 计划恢复 `native_modules`，gate 要求 native job 与其执行报告，Full 恢复 `all full`。仅设置变量而没有 Seed 时，runner 返回 NOT_RUN/2，作业失败，不会成功。
+- **仍保留的风险：** 暂缓期间合并所依据的只有补充测试，原生编译器、AOT、GC 与自举的回归不会被 CI 发现；`Mio CI / required` 为绿色容易被误读；`legacy-bootstrap` 是基于 Go 的历史引导 gate，在 hosted macOS 上的行为尚未实测；hosted `macos-15` 的并行额度和 6 小时作业上限可能限制 Full；`queue: max` 需 GitHub 支持，本地 actionlint 1.7.7 不认识它。维护者合并涉及编译器/AOT/GC 的 PR 前仍应在受信任的 macOS ARM64 环境手动运行 `bash scripts/ci/run.sh macos-arm64 all quick`（或 full）。
+- 不要把 “Native Verification” 加入必需检查，直到它真正启用：被跳过的必需检查在 GitHub 上会被当作通过。

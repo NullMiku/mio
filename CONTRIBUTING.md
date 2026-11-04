@@ -89,4 +89,4 @@ Go、Shell、Python 或其他外部工具只能作为 Development / CI Dependenc
 
 提交验证材料时附命令、平台和 `report.json`；分别说明 PASS、FAIL、SKIP、NOT_RUN。全跳过或没有实际检查不能写成成功。CI 基础设施变更请运行 `bash scripts/ci/selftest.sh`，并检查工作流语法。当前已知 Core 失败不得通过改预期、放宽断言或跳过测试隐藏。详见 [测试架构](docs/testing.md) 和 [本次审计](docs/testing-audit.md)。
 
-只有普通标准库测试文件的局部修改才缩小 Quick；实现代码、Core/ABI/GC/AOT、清单或未知范围改动均回退完整 Quick。PR 原生作业仅使用隔离的一次性 `mio-native-pr` Runner group；缺少此环境时汇总为 NOT_RUN，不能使用生产持久化 Runner 代替。部署要求与验证记录见 [三级 CI 调度审计](docs/ci-scheduling-audit.md)。
+只有普通标准库测试文件的局部修改才缩小 Quick；实现代码、Core/ABI/GC/AOT、清单或未知范围改动均回退完整 Quick。macOS 现使用 GitHub-hosted `macos-15`。**暂行措施：** 受信任 Native Seed 尚不可用于 GitHub-hosted Runner，Native Verification 暂时为 NOT_RUN（只有仓库变量 `MIO_NATIVE_VERIFICATION=enabled` 并提供 Seed 后才会恢复），`Mio CI / required` 此时只是补充测试 gate，其通过不代表原生测试通过。详见 [测试架构](docs/testing.md) 的“暂行措施”与 [三级 CI 调度审计](docs/ci-scheduling-audit.md)。
