@@ -210,3 +210,26 @@ waza test_set_node_type_updates_in_place() -> unit {
     testing.expect(len(env.result.node_types) == 3 && env.result.node_types[2].type_id == 6, "foreign node recorded once");
 }
 
+waza test_qualified_name_matches_concatenation() -> unit {
+    kaku packages = ["main", "kiso/array", "", "mio/os", "é"];
+    kaku names = ["Point", "Box", "", "x", "名"];
+    kaku wrong = 0;
+    kaku p = 0;
+    aida (p < len(packages)) {
+        kaku n = 0;
+        aida (n < len(names)) {
+            kaku qualified = string.concat(string.concat(packages[p], "."), names[n]);
+            moshi (!qualified_name_matches(packages[p], names[n], qualified)) { wrong = wrong + 1; }
+            // every near miss must be rejected exactly like the string comparison rejects it
+            moshi (qualified_name_matches(packages[p], names[n], string.concat(qualified, "x"))) { wrong = wrong + 1; }
+            moshi (qualified_name_matches(packages[p], names[n], names[n])) { wrong = wrong + 1; }
+            moshi (qualified_name_matches(packages[p], names[n], string.concat(string.concat(packages[p], ":"), names[n]))) { wrong = wrong + 1; }
+            moshi (qualified_name_matches(string.concat(packages[p], "x"), names[n], qualified)) { wrong = wrong + 1; }
+            moshi (qualified_name_matches(packages[p], string.concat("y", names[n]), qualified)) { wrong = wrong + 1; }
+            n = n + 1;
+        }
+        p = p + 1;
+    }
+    testing.expect(wrong == 0, "qualified name comparison equals package + dot + name");
+    testing.expect(qualified_name_matches("a", "bc", "a.bc") && !qualified_name_matches("ab", "c", "a.bc") && !qualified_name_matches("a", "bc", "a.bd"), "split point and last byte matter");
+}

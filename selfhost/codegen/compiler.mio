@@ -451,7 +451,7 @@ waza struct_definition(state: CompilerState, type_id: int64) -> int64 {
     kaku name = state.checked.types[type_id].name; kaku index = 0;
     aida (index < len(state.checked.structs)) {
         kaku definition = state.checked.structs[index];
-        moshi (name == definition.name || name == string.concat(string.concat(definition.package_path, "."), definition.name)) { kaesu index; }
+        moshi (name == definition.name || typecheck.qualified_name_matches(definition.package_path, definition.name, name)) { kaesu index; }
         index = index + 1;
     }
     kaesu -1;
@@ -570,7 +570,7 @@ waza get_slot(context: CompileContext, slot: int64) -> unit { moshi (context.in_
 waza enum_definition(state: CompilerState, type_id: int64) -> int64 {
     moshi (type_id < 0 || type_id >= len(state.checked.types)) { kaesu -1; }
     kaku name = state.checked.types[type_id].name; kaku index = 0;
-    aida (index < len(state.checked.enums)) { kaku definition = state.checked.enums[index]; moshi (name == definition.name || name == string.concat(string.concat(definition.package_path, "."), definition.name)) { kaesu index; } index = index + 1; }
+    aida (index < len(state.checked.enums)) { kaku definition = state.checked.enums[index]; moshi (name == definition.name || typecheck.qualified_name_matches(definition.package_path, definition.name, name)) { kaesu index; } index = index + 1; }
     kaesu -1;
 }
 
