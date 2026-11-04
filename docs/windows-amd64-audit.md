@@ -119,3 +119,27 @@ Windows CI 应扩展已有统一入口的主机映射，先运行可用的 Mio �
 ## 维护者后续决定
 
 2026-11-04：维护者明确授权先独立实现 PE Writer，并要求创建 PR 供贡献者参与修改。工作分支为 `windows-amd64/pe-writer`，目标为 `Mio-2.1`。阶段 B 不引入 #4/#5，不新增 AMD64 编码器、OS Adapter 或完整语言 AOT 接入。上述测试矩阵记录阶段 A 当时状态，后续实测结果随阶段 B 更新。
+
+## 阶段 B 实施与实测
+
+协作草稿：[PR #6](https://github.com/mio-kobo/mio/pull/6)。实现位于 `bunko/kiso/aot/pe`，API/限制详见相邻 README。正式功能全部使用 Mio；独立读者和驱动位于 `tests/pe-writer`，只作开发测试。
+
+- PE32+：DOS/PE/COFF/Optional Header、动态节表、text/rdata/data/BSS、命名导入/ILT/IAT、RVA32/REL32/VA64 fixups、按页分组的 DIR64 relocations。
+- 展开：pdata/xdata 支持无寄存器保存的单次分配，ALLOC_SMALL / ALLOC_LARGE (OpInfo=0) 及零 codes；不声称完整 Windows unwind/ABI。
+- 当前源码重新构建的 Go/VM 参考工具执行纯 Mio writer 和测试；不得称为 Native Seed 自举。
+- `tests/pe-writer/run.py` 显式区分 native/reference，无自动降级；report 和日志记录 compiler/writer SHA256。
+
+| 阶段 B 检查 | 状态 | 范围 |
+| --- | --- | --- |
+| 14 项 Mio 编写测试经参考 VM 执行 | PASS | 补充层，非 Mio 原生执行 |
+| 既有 ARM64/Mach-O/binary/target 模块经参考 VM 执行 | PASS | 分别 7/3/5/1 项；不代替对应平台原生回归 |
+| 6 个 PE 独立结构检查 | PASS | 独立 Python reader |
+| oracle 故意损坏输入 | PASS | 7 个全部拒绝 |
+| Windows AMD64 实际执行 | PASS | 4 个 `.exe`，退出 42/43/44/45、stdout/stderr 空；包括 BSS 末尾零读取 |
+| Mio Native Seed 模块测试/fixture 生成 | NOT_RUN | 无 macOS ARM64 Seed/主机 |
+| 实际异常展开、强制 rebase | NOT_RUN | 已有字节/结构检查，不等于实际展开/rebase |
+| macOS/Linux 原生回归 | NOT_RUN | 本机为 Windows |
+| Windows ABI lowering / OS Adapter / GC / Selfhost | 未实现 | 不变更 runtime capabilities |
+| GitHub Actions | NOT_RUN | 按后续指示不处理 CI 重建，不改 workflow |
+
+模块 test.sh/ci-module.json 仅按既有贡献约定注册测试，不新增 Windows 原生目标。共享目录被其他工作切换分支并修改 CI 后，PE 工作转入独立 checkout，未携带或提交其他工作的改动。

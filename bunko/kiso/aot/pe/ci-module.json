@@ -1,0 +1,1 @@
+{"module":"kiso/aot/pe","targets":["macos-arm64"],"suites":["quick","full","unit"],"required_checks":["native","independent"],"skip_reason":"Mio native tests and fixture builder require macOS ARM64 and a verified native seed; Windows fixture execution is a separate explicit check"}
