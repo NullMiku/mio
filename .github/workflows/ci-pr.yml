@@ -1,43 +1,23 @@
 name: Mio CI V2 / Quick
 on:
   pull_request:
+    branches: [Mio-2.1]
 permissions:
   contents: read
 concurrency:
-  group: ci-quick-${{ github.ref }}
+  group: ci-quick-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
   infrastructure:
     name: CI infrastructure
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.12'
-      - run: python scripts/ci/runner.py inventory
-      - run: bash scripts/ci/selftest.sh
-  quick:
-    name: Quick / ${{ matrix.target }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: linux-amd64
-            runner: '["ubuntu-24.04"]'
-          - target: macos-arm64
-            runner: '["self-hosted", "macOS", "ARM64", "mio-native"]'
-    runs-on: ${{ fromJSON(matrix.runner) }}
-    concurrency:
-      group: ci-resource-${{ matrix.target }}-${{ matrix.target == 'macos-arm64' && 'shared' || github.run_id }}
-      cancel-in-progress: false
-      queue: max
-    timeout-minutes: 180
+    timeout-minutes: 15
+    outputs:
+      native_modules: ${{ steps.plan.outputs.native_modules }}
+      reference_modules: ${{ steps.plan.outputs.reference_modules }}
+      native_needs_go: ${{ steps.plan.outputs.native_needs_go }}
     env:
-      MIO_CI_RESULTS: build/ci-results/run-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
+      MIO_CI_RESULTS: build/ci-results/quick-${{ github.run_id }}-${{ github.run_attempt }}-infrastructure
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -49,26 +29,162 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false # This repository has no go.sum.
-      - run: bash scripts/ci/run.sh ${{ matrix.target }} all quick
-        shell: bash
+          cache: false
+      - id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: python scripts/ci/plan.py plan --base "$BASE_SHA" --head "$HEAD_SHA" --output build/ci-plan/plan.json
+      - run: bash scripts/ci/run.sh linux-amd64 quality quick
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: quick-${{ matrix.target }}
+          name: quick-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-plan/plan.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-infrastructure-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.MIO_CI_RESULTS }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-infrastructure-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/*/report.json
+          if-no-files-found: error
+          retention-days: 7
+  reference:
+    name: Quick / linux-amd64
+    needs: infrastructure
+    if: needs.infrastructure.outputs.reference_modules != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MIO_CI_RESULTS: build/ci-results/quick-${{ github.run_id }}-${{ github.run_attempt }}-linux-amd64
+      MODULES: ${{ needs.infrastructure.outputs.reference_modules }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: bash scripts/ci/run.sh linux-amd64 "$MODULES" quick
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-linux-amd64-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/*/report.json
+          if-no-files-found: error
+          retention-days: 7
+  native:
+    name: Quick / macos-arm64
+    needs: infrastructure
+    # Approval alone does not isolate a fork. This group must contain only
+    # disposable PR workers, without production credentials or shared storage.
+    if: needs.infrastructure.outputs.native_modules != '' && vars.MIO_PR_RUNNER_READY == 'true'
+    runs-on:
+      group: mio-native-pr
+      labels: [self-hosted, macOS, ARM64, mio-native-pr]
+    concurrency:
+      group: ci-resource-macos-arm64-shared
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 180
+    env:
+      MIO_CI_RESULTS: build/ci-results/quick-${{ github.run_id }}-${{ github.run_attempt }}-macos-arm64
+      MODULES: ${{ needs.infrastructure.outputs.native_modules }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        if: needs.infrastructure.outputs.native_needs_go == 'true'
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: bash scripts/ci/run.sh macos-arm64 "$MODULES" quick
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-macos-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-macos-arm64-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/*/report.json
           if-no-files-found: error
           retention-days: 7
   gate:
     name: Mio CI / required
     if: always()
-    needs: [infrastructure, quick]
+    needs: [infrastructure, reference, native]
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Require infrastructure and both platform jobs
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: quick-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-plan-download
+      - uses: actions/download-artifact@v4
+        if: needs.infrastructure.result == 'success'
+        with:
+          name: quick-infrastructure-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-evidence/infrastructure
+      - uses: actions/download-artifact@v4
+        if: needs.native.result == 'success'
+        with:
+          name: quick-macos-arm64-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-evidence/native
+      - uses: actions/download-artifact@v4
+        if: needs.reference.result == 'success'
+        with:
+          name: quick-linux-amd64-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-evidence/reference
+      - name: Verify required jobs against the recorded plan and execution reports
         env:
           INFRASTRUCTURE: ${{ needs.infrastructure.result }}
-          QUICK: ${{ needs.quick.result }}
-        run: |
-          test "$INFRASTRUCTURE" = success
-          test "$QUICK" = success
+          NATIVE: ${{ needs.native.result }}
+          REFERENCE: ${{ needs.reference.result }}
+        run: >-
+          python scripts/ci/plan.py gate --plan build/ci-plan-download/plan.json
+          --infrastructure "$INFRASTRUCTURE" --native "$NATIVE" --reference "$REFERENCE"
+          --infrastructure-results build/ci-evidence/infrastructure
+          --native-results build/ci-evidence/native --reference-results build/ci-evidence/reference
+          --output build/ci-gate/report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-gate/
+          if-no-files-found: error
+          retention-days: 7

@@ -83,8 +83,10 @@ Go、Shell、Python 或其他外部工具只能作为 Development / CI Dependenc
 
 ## CI V2 测试入口
 
-普通 PR 由 `ci-pr.yml` 调用 `bash scripts/ci/run.sh <target> all quick`；`Mio-2.1` push、手动及定期 Full 由 `ci-full.yml` 调用同一入口的 `all full`。修改单一模块时可直接运行其 `test.sh <target> [quick|full]`。正式发布工作流保持独立。
+普通 PR 由 `ci-pr.yml` 先生成保守的 Quick 计划，再调用 `bash scripts/ci/run.sh <target> <modules> quick`；`Mio-2.1` push、手动及定期 Full 由 `ci-full.yml` 调用同一入口的 `all full`。修改单一模块时可直接运行其 `test.sh <target> [quick|full]`。正式发布工作流保持独立。
 
 原生测试先由受信任 Seed 构建当前工作树编译器，再复用产物运行模块；只运行 Seed 的历史内嵌实现不能证明当前源码通过。新增独立模块应提供相邻 `ci-module.json`、`test.sh` 和真实 Mio 测试，关键模块同时提供固定输出、字节、退出码或参考实现 oracle。使用公共 `ci_native_and_crosscheck` 可在原生层失败时继续收集独立层结果，最终仍返回非零。
 
 提交验证材料时附命令、平台和 `report.json`；分别说明 PASS、FAIL、SKIP、NOT_RUN。全跳过或没有实际检查不能写成成功。CI 基础设施变更请运行 `bash scripts/ci/selftest.sh`，并检查工作流语法。当前已知 Core 失败不得通过改预期、放宽断言或跳过测试隐藏。详见 [测试架构](docs/testing.md) 和 [本次审计](docs/testing-audit.md)。
+
+只有普通标准库测试文件的局部修改才缩小 Quick；实现代码、Core/ABI/GC/AOT、清单或未知范围改动均回退完整 Quick。PR 原生作业仅使用隔离的一次性 `mio-native-pr` Runner group；缺少此环境时汇总为 NOT_RUN，不能使用生产持久化 Runner 代替。部署要求与验证记录见 [三级 CI 调度审计](docs/ci-scheduling-audit.md)。

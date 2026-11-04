@@ -12,8 +12,23 @@ concurrency:
   cancel-in-progress: false
   queue: max
 jobs:
+  policy:
+    name: Full / trusted ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Restrict manual native execution to Mio-2.1
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_REF: ${{ github.ref }}
+        run: |
+          if [ "$EVENT_NAME" != schedule ] && [ "$SOURCE_REF" != refs/heads/Mio-2.1 ]; then
+            echo 'NOT_RUN: Full native validation requires Mio-2.1'
+            exit 2
+          fi
   full:
     name: Full / ${{ matrix.target }}
+    needs: policy
     strategy:
       fail-fast: false
       matrix:
@@ -49,7 +64,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: full-${{ matrix.target }}
+          name: full-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.MIO_CI_RESULTS }}/
             build/m19ef-evidence/ci-abcd-${{ env.MIO_CI_EVIDENCE_KEY }}/

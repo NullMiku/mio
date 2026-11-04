@@ -109,3 +109,4 @@ __pycache__/
 !/docs/testing-audit.md
 !/docs/ci-reliability-audit.md
 !/docs/ci-pr-integration.md
+!/docs/ci-scheduling-audit.md

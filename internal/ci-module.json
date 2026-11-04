@@ -1,6 +1,7 @@
 {
   "module": "go-reference",
   "engine": "reference",
+  "reference_tools": ["mio"],
   "targets": [
     "linux-amd64",
     "macos-arm64"

@@ -29,6 +29,7 @@ def load(name, path):
 runner = load("ci_runner", HERE / "runner.py")
 verify = load("ci_verify", HERE / "verify.py")
 isolation = load("release_isolation", HERE / "release_isolation.py")
+plan = load("ci_plan", HERE / "plan.py")
 
 
 class ContractTests(unittest.TestCase):
@@ -379,6 +380,106 @@ exit "$result"
                 return 0, b"", b"", "PASS", "", 1
             code, report = self.dispatch(modules, execute=execute)
             self.assertEqual((code, report["status"]), (2, "NOT_RUN"))
+
+    def test_quick_documentation_scope_is_explicit_skip(self):
+        result = plan.select(["docs/testing.md", "CONTRIBUTING.md"], runner.discover())
+        self.assertEqual(result["mode"], "documentation")
+        self.assertEqual((result["native_modules"], result["reference_modules"]), ([], []))
+        gate = plan.gate(result, "success", "skipped", "skipped")
+        self.assertEqual(gate["status"], "PASS")
+        self.assertEqual([c["status"] for c in gate["checks"]], ["PASS", "SKIP", "SKIP"])
+
+    def test_quick_test_only_scope_keeps_core_and_affected_package(self):
+        result = plan.select(["bunko/kiso/math/math_test.mio"], runner.discover())
+        self.assertEqual(result["mode"], "module-tests")
+        self.assertEqual(set(result["native_modules"]), {"core", "kiso/math"})
+        self.assertEqual(result["reference_modules"], ["go-reference"])
+        self.assertFalse(result["native_needs_go"])
+
+    def test_quick_critical_unknown_and_source_changes_fall_back(self):
+        modules = runner.discover()
+        complete = set(plan.select([], modules)["native_modules"])
+        for path in ("selfhost/pipeline/compiler.mio", "bunko/kiso/runtime/gc/mock_test.mio",
+                     "bunko/kiso/aot/arm64/arm64_test.mio", "bunko/kiso/math/math.mio",
+                     "bunko/kiso/math/ci-module.json", "go.mod", ".github/workflows/ci-pr.yml",
+                     "bunko/kiso/new/removed_test.mio", "unknown.file"):
+            with self.subTest(path=path):
+                result = plan.select([path], modules)
+                self.assertEqual(result["mode"], "full-quick")
+                self.assertEqual(set(result["native_modules"]), complete)
+        result = plan.select(["docs/testing.md"], modules, "diff unavailable")
+        self.assertEqual(result["mode"], "full-quick")
+
+    def test_new_modules_are_included_without_central_registration(self):
+        modules = runner.discover()
+        modules["new-native"] = dict(module="new-native", targets=["macos-arm64"], suites=["quick"], script="new/test.sh")
+        modules["new-reference"] = dict(module="new-reference", engine="reference", targets=["linux-amd64"], suites=["quick"], script="new/test.sh")
+        result = plan.select(["new/source.file"], modules)
+        self.assertIn("new-native", result["native_modules"])
+        self.assertIn("new-reference", result["reference_modules"])
+
+    def test_diff_failure_never_becomes_docs_only(self):
+        def git(*args):
+            if args[0] == "diff":
+                raise subprocess.CalledProcessError(1, args)
+            return b"a" * 40
+        with patch.object(plan, "git", side_effect=git):
+            result = plan.make_plan("base", "head")
+        self.assertEqual(result["mode"], "full-quick")
+        self.assertIn("unreliable", result["reason"])
+
+    def test_required_quick_job_cannot_skip_cancel_or_fail_to_green(self):
+        result = plan.select(["go.mod"], runner.discover())
+        for job_result in ("skipped", "cancelled", "failure", "", "pending"):
+            with self.subTest(result=job_result):
+                self.assertNotEqual(plan.gate(result, "success", job_result, "success")["status"], "PASS")
+                self.assertNotEqual(plan.gate(result, job_result, "success", "success")["status"], "PASS")
+                self.assertNotEqual(plan.gate(result, "success", "success", job_result)["status"], "PASS")
+        self.assertEqual(plan.gate(result, "success", "skipped", "success")["status"], "NOT_RUN")
+        self.assertEqual(plan.gate(result, "success", "success", "success")["status"], "PASS")
+        with self.assertRaises(ValueError):
+            plan.gate({}, "success", "success", "success")
+
+    def test_multi_module_failure_does_not_hide_other_module(self):
+        modules = {name: dict(module=name, engine="infrastructure", targets=["linux-amd64"], suites=["quick"], script="fake.sh") for name in ("one", "two")}
+        def execute(argv, timeout, env):
+            state = "FAIL" if env["MIO_CI_MODULE_DIR"].endswith("one") else "PASS"
+            Path(env["MIO_CI_CHECKS"]).write_text(json.dumps(dict(name="check", status=state)) + "\n")
+            return 1 if state == "FAIL" else 0, b"", b"", state, "", 1
+        code, report = self.dispatch(modules, selected="one,two", execute=execute)
+        self.assertEqual((code, report["status"]), (1, "FAIL"))
+        self.assertEqual([m["status"] for m in report["checks"]], ["FAIL", "PASS"])
+        code, report = self.dispatch(modules, selected="one,missing", execute=execute)
+        self.assertEqual((code, report["status"]), (2, "NOT_RUN"))
+
+    def test_successful_job_still_requires_scope_and_source_evidence(self):
+        report = dict(status="PASS", exit_code=0, suite="quick", target="macos-arm64",
+                      source_revision="current", selected_modules=["core"], checks=[dict(module="core", status="PASS")])
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            self.assertEqual(plan.evidence(directory, ["core"], "macos-arm64", "current")["status"], "NOT_RUN")
+            (directory / "report.json").write_text(json.dumps(report))
+            self.assertEqual(plan.evidence(directory, ["core"], "macos-arm64", "current")["status"], "PASS")
+            self.assertEqual(plan.evidence(directory, ["core", "gc"], "macos-arm64", "current")["status"], "NOT_RUN")
+            self.assertEqual(plan.evidence(directory, ["core"], "macos-arm64", "stale")["status"], "NOT_RUN")
+            report["checks"][0]["status"] = "SKIP"
+            (directory / "report.json").write_text(json.dumps(report))
+            self.assertEqual(plan.evidence(directory, ["core"], "macos-arm64", "current")["status"], "NOT_RUN")
+
+    def test_reference_tools_build_lazily_once_per_run(self):
+        modules = {name: dict(module=name, engine="reference", targets=["linux-amd64"], suites=["quick"],
+                             script="fake.sh", reference_tools=tools) for name, tools in
+                   (("one", ["mio"]), ("two", ["mio", "mochi-aot"]), ("three", ["mio"]))}
+        built = []
+        def execute(argv, timeout, env):
+            if argv[0] == "go":
+                built.append(argv[-1])
+            else:
+                Path(env["MIO_CI_CHECKS"]).write_text('{"name":"reference","status":"PASS"}\n')
+            return 0, b"", b"", "PASS", "", 1
+        code, report = self.dispatch(modules, execute=execute)
+        self.assertEqual((code, report["status"]), (0, "PASS"))
+        self.assertEqual(built, ["./cmd/mio", "./cmd/mochi-aot"])
 
 
 if __name__ == "__main__":

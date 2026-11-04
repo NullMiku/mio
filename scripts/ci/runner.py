@@ -190,6 +190,9 @@ def discover():
             for field in ("required_checks", "requires"):
                 if not isinstance(data.get(field, []), list) or not all(isinstance(v, str) and v for v in data.get(field, [])):
                     raise ValueError("invalid module " + field + ": " + name)
+            if "reference_tools" in data and (not isinstance(data["reference_tools"], list) or
+                    any(tool not in ("mio", "mochi-aot", "mochi-aot-audit") for tool in data["reference_tools"])):
+                raise ValueError("invalid reference_tools: " + name)
             suite_checks = data.get("suite_checks", {})
             if (not isinstance(suite_checks, dict) or
                     any(suite not in data["suites"] or not isinstance(names, list) or not all(isinstance(v, str) and v for v in names)
@@ -258,7 +261,7 @@ def run(args):
                 report["source_revision"] = revision.stdout.decode().strip()
                 report["source_worktree_dirty"] = bool(dirty.stdout.strip())
         if len(args) != 3:
-            raise ValueError("usage: bash scripts/ci/run.sh <linux-amd64|macos-arm64> <module|all> <quick|full|all|module-suite>")
+            raise ValueError("usage: bash scripts/ci/run.sh <linux-amd64|macos-arm64> <module[,module...]|all> <quick|full|all|module-suite>")
         target, selected, suite = args
         module_timeout = timeout_value("MIO_CI_MODULE_TIMEOUT", "7200")
         timeout_value("MIO_CI_CHECK_TIMEOUT", "2400")
@@ -266,9 +269,11 @@ def run(args):
         if target not in TARGETS or TARGETS[target] != (platform.system(), platform.machine().lower()):
             raise ValueError("unsupported target or host mismatch: " + target)
         modules = discover()
-        if selected != "all" and selected not in modules:
+        names = selected.split(",")
+        if selected != "all" and (len(set(names)) != len(names) or any(name not in modules for name in names)):
             raise ValueError("unknown module: " + selected)
-        chosen = list(modules.values()) if selected == "all" else [modules[selected]]
+        chosen = list(modules.values()) if selected == "all" else [m for m in modules.values() if m["module"] in names]
+        report["selected_modules"] = [m["module"] for m in chosen]
         report["checks"] = [dict(module=m["module"], engine=m.get("engine", "native"), status="NOT_RUN", reason="module not started", duration_ms=0, checks=[], artifacts=[]) for m in chosen]
         if selected == "all" and suite not in ("quick", "full"):
             raise ValueError("all modules require quick, full or all")
@@ -283,7 +288,7 @@ def run(args):
         env["MIO_CI_TOOLS"] = str(directory / "tools")
         # Reference binaries are development-only, never used to build a release.
         Path(env["MIO_CI_TOOLS"]).mkdir()
-        reference_build = None
+        reference_build = {}
         native_build = None
         native_compiler = Path(env["MIO_CI_TOOLS"]) / "mio-native"
         seed = Path(os.environ.get("MIO_NATIVE_SEED", ""))
@@ -293,7 +298,7 @@ def run(args):
             if target not in module["targets"] or suite not in module["suites"]:
                 item.update(status="SKIP", reason=module.get("skip_reason", "not supported for this target/suite; see testing.md"))
                 continue
-            if selected == "all" and delegated(module, modules, target, suite):
+            if module.get("covered_by") in report["selected_modules"] and delegated(module, modules, target, suite):
                 item.update(status="SKIP", reason="native tests delegated to recursive package check: " + module["covered_by"])
                 continue
             work = directory / module["module"].replace("/", "-")
@@ -338,22 +343,24 @@ def run(args):
                 module_env["MIO_CI_SEED"] = str(seed.resolve())
                 item["compiler"] = dict(path=str(native_compiler), sha256=native_build["compiler_sha256"], seed_sha256=SEED_SHA256)
             elif engine == "reference":
-                if reference_build is None:
-                    reference_build = []
-                    for tool in ("mio", "mochi-aot", "mochi-aot-audit"):
+                tools = module.get("reference_tools", ["mio", "mochi-aot", "mochi-aot-audit"])
+                for tool in tools:
+                    if tool not in reference_build:
                         argv = ["go", "build", "-o", str(Path(env["MIO_CI_TOOLS"]) / tool), "./cmd/" + tool]
                         code, out, err, status, reason, duration = execute(argv, 300, env)
                         log = directory / (tool + "-build.log")
                         log.write_bytes(out + err)
                         build = dict(name="reference-" + tool, status=status, reason=reason, command=argv, duration_ms=duration, artifacts=[str(log)])
-                        reference_build.append(build)
+                        reference_build[tool] = build
                         report["builds"].append(build)
                         if status != "PASS":
                             break
-                if any(b["status"] != "PASS" for b in reference_build):
+                    elif reference_build[tool]["status"] != "PASS":
+                        break
+                if any(tool not in reference_build or reference_build[tool]["status"] != "PASS" for tool in tools):
                     item.update(status="NOT_RUN", reason="reference tool build failed; see builds",
                                 checks=[dict(name=name, status="NOT_RUN", reason="reference compiler unavailable") for name in required])
-                    exit_code = max(exit_code, 1 if any(b["status"] == "FAIL" for b in reference_build) else 2)
+                    exit_code = max(exit_code, 1 if any(b["status"] == "FAIL" for b in reference_build.values()) else 2)
                     continue
             code, out, err, status, reason, duration = execute(["bash", module["script"], target, suite], module_timeout, module_env)
             (work / "module.log").write_bytes(out + err)
