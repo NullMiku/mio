@@ -20,7 +20,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("mochi-aot", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	out := flags.String("o", "", "native executable output file")
-	target := flags.String("target", "darwin-arm64", "target architecture (darwin-arm64 only)")
+	target := flags.String("target", "darwin-arm64", "target: darwin-arm64 or linux-amd64")
 	m11 := flags.Bool("m11-gc", false, "enable M11a integrated native GC lifecycle self-test")
 	gcStress := flags.Bool("gc-stress", false, "force precise GC at every safe object allocation")
 	heapMiB := flags.Uint64("heap-mib", 1, "managed heap capacity in MiB (hard limit 1024)")
@@ -28,7 +28,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if flags.NArg() != 1 || *out == "" || *target != "darwin-arm64" || *m11 && *gcStress {
+	if flags.NArg() != 1 || *out == "" || *target != "darwin-arm64" && *target != "linux-amd64" || *target == "linux-amd64" && *m11 || *m11 && *gcStress {
 		fmt.Fprintln(stderr, "mochi-aot: usage: go run ./cmd/mochi-aot -o <output> [-target darwin-arm64] [-heap-mib 1..1024] [-gc-telemetry] [-m11-gc|-gc-stress] <input.mochi>")
 		return 1
 	}
@@ -49,7 +49,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	var native []byte
-	if *m11 {
+	if *target == "linux-amd64" {
+		native, err = aot.CompileLinuxAMD64WithOptions(bytecode, aot.LinuxAMD64Options{
+			HeapCapacity: *heapMiB << 20,
+			GCStress:     *gcStress,
+		})
+	} else if *m11 {
 		native, err = aot.CompileDarwinARM64WithM11Runtime(bytecode)
 	} else {
 		native, err = aot.CompileDarwinARM64WithOptions(bytecode, aot.DarwinARM64Options{
@@ -65,6 +70,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err := writeExecutable(*out, native); err != nil {
 		fmt.Fprintln(stderr, "mochi-aot:", err)
 		return 1
+	}
+	if *target == "linux-amd64" {
+		fmt.Fprintf(stdout, "wrote %s (%d bytes, ELF64 x86-64)\n", *out, len(native))
+		return 0
 	}
 	fmt.Fprintf(stdout, "wrote %s (%d bytes, unsigned Mach-O arm64)\n", *out, len(native))
 	fmt.Fprintln(stdout, "on macOS, run: codesign --force --sign - "+*out)
