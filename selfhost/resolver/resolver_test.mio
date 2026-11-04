@@ -161,3 +161,49 @@ waza test_package_diagnostics() -> unit {
     testing.expect(len(cycle.errors) == 1, "import cycle count");
     testing.expect(resolve_error_kind_code(cycle.errors[0].kind) == 5, "import cycle kind");
 }
+
+waza linear_binding(result: ResolvedPackage, file_id: int64, node_id: int64) -> int64 {
+    kaku index = 0;
+    aida (index < len(result.bindings)) {
+        kaku binding = result.bindings[index];
+        moshi (binding.reference.file_id == file_id && binding.reference.node_id == node_id) { kaesu binding.symbol_id; }
+        index = index + 1;
+    }
+    kaesu -1;
+}
+
+// The dense table must answer exactly like the front-to-back scan for every node of every file, and for
+// addresses outside the table (negative, past the last node, unknown file).
+waza test_binding_table_matches_linear_scan() -> unit {
+    kaku parsed = parse_source("kaku value = 10; waza example(a: int64) -> int64 { kaku value = a + 20; kaesu value + example(1); }");
+    kaku result = resolve_program("main", parsed);
+    testing.expect(len(result.errors) == 0 && len(result.bindings) > 3, "resolved with bindings");
+    kaku table = build_binding_table(result);
+    testing.expect(table.complete, "all bindings address real nodes");
+    kaku mismatches = 0;
+    kaku file = 0;
+    aida (file < len(result.files)) {
+        kaku node = 0;
+        aida (node < len(result.files[file].ast.nodes)) {
+            moshi (lookup_binding(result, table, file, node) != linear_binding(result, file, node)) { mismatches = mismatches + 1; }
+            node = node + 1;
+        }
+        moshi (lookup_binding(result, table, file, len(result.files[file].ast.nodes)) != -1) { mismatches = mismatches + 1; }
+        moshi (lookup_binding(result, table, file, -1) != -1) { mismatches = mismatches + 1; }
+        file = file + 1;
+    }
+    moshi (lookup_binding(result, table, len(result.files), 0) != -1 || lookup_binding(result, table, -1, 0) != -1) { mismatches = mismatches + 1; }
+    testing.expect(mismatches == 0, "table equals linear scan");
+    testing.expect(node_slot(table.nodes, 0, 0) == 0 && node_slot(table.nodes, 0, -1) == -1 && node_slot(table.nodes, 1, 0) == -1, "node slots");
+}
+
+// A binding that points outside the node table disables the table; the original scan then still answers.
+waza test_binding_table_falls_back_for_foreign_bindings() -> unit {
+    kaku parsed = parse_source("kaku value = 10; chant(value);");
+    kaku result = resolve_program("main", parsed);
+    array.push(result.bindings, Binding { reference: NodeRef { file_id: 5, node_id: 900 }, symbol_id: 3, capture: iie });
+    kaku table = build_binding_table(result);
+    testing.expect(!table.complete, "foreign binding detected");
+    testing.expect(lookup_binding(result, table, 5, 900) == 3, "scan fallback finds the foreign binding");
+    testing.expect(lookup_binding(result, table, 5, 901) == -1, "scan fallback misses absent nodes");
+}

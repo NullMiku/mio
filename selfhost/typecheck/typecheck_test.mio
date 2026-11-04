@@ -194,3 +194,19 @@ waza test_symbol_index_matches_linear_scan() -> unit {
     testing.expect(find_current_symbol(build_symbol_index(empty_symbols), "test", "area", 4) == -1, "empty index finds nothing");
 }
 
+// set_node_type keeps one entry per node: a repeated call replaces the type in place, and the entry order is
+// the order of first recording (what the linear scan produced).
+waza test_set_node_type_updates_in_place() -> unit {
+    kaku parsed = parser.parse(string.to_bytes("kaku a = 1; kaku b = 2;"));
+    kaku resolved = resolver.resolve_program("test", parsed);
+    kaku env = new_environment(resolved);
+    testing.expect(set_node_type(env, 0, 2, 7) == 7, "first record returns the type");
+    testing.expect(set_node_type(env, 0, 1, 8) == 8, "second node");
+    testing.expect(set_node_type(env, 0, 2, 9) == 9, "update returns the new type");
+    testing.expect(len(env.result.node_types) == 2, "one entry per node");
+    testing.expect(env.result.node_types[0].node.node_id == 2 && env.result.node_types[0].type_id == 9, "updated in place at its first position");
+    testing.expect(env.result.node_types[1].node.node_id == 1 && env.result.node_types[1].type_id == 8, "order of first recording kept");
+    testing.expect(set_node_type(env, 3, 4000, 5) == 5 && set_node_type(env, 3, 4000, 6) == 6, "nodes outside the table use the scan");
+    testing.expect(len(env.result.node_types) == 3 && env.result.node_types[2].type_id == 6, "foreign node recorded once");
+}
+

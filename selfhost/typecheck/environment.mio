@@ -22,6 +22,8 @@ kata TypeEnvironment {
     loop_depth: []int64;
     function_depth: []int64;
     constant_states: []int64;
+    bindings: resolver.BindingTable;
+    node_type_slots: []int64;
 }
 
 waza empty_result(path: string) -> TypeCheckResult {
@@ -58,6 +60,7 @@ waza new_environment_with_progress(resolved: resolver.ResolvedPackage, work: pro
     scalar_type(result, TypeKind.Unit(), "unit");
     scalar_type(result, TypeKind.Resource(), "resource");
     kaku versions = array.make[int64](len(resolved.symbols), 0);
+    kaku bindings = resolver.build_binding_table(resolved);
     kaesu TypeEnvironment {
         work:work,
         resolved: resolved,
@@ -69,7 +72,9 @@ waza new_environment_with_progress(resolved: resolver.ResolvedPackage, work: pro
         versions: versions,
         loop_depth: [0],
         function_depth: [0],
-        constant_states: array.make[int64](len(resolved.symbols), 0)
+        constant_states: array.make[int64](len(resolved.symbols), 0),
+        bindings: bindings,
+        node_type_slots: array.make[int64](bindings.nodes.total, -1)
     };
 }
 
@@ -90,13 +95,7 @@ waza node_at(env: TypeEnvironment, file_id: int64, node_id: int64) -> parser.Nod
 }
 
 waza binding_of(env: TypeEnvironment, file_id: int64, node_id: int64) -> int64 {
-    kaku index = 0;
-    aida (index < len(env.resolved.bindings)) {
-        kaku binding = env.resolved.bindings[index];
-        moshi (binding.reference.file_id == file_id && binding.reference.node_id == node_id) { kaesu binding.symbol_id; }
-        index = index + 1;
-    }
-    kaesu -1;
+    kaesu resolver.lookup_binding(env.resolved, env.bindings, file_id, node_id);
 }
 
 waza symbol_type(env: TypeEnvironment, symbol_id: int64) -> int64 {
@@ -140,6 +139,19 @@ waza set_symbol_type(env: TypeEnvironment, symbol_id: int64, type_id: int64) -> 
 }
 
 waza set_node_type(env: TypeEnvironment, file_id: int64, node_id: int64, type_id: int64) -> int64 {
+    // node_type_slots maps a node to its position in result.node_types (-1: not recorded yet). set_node_type is
+    // the only writer of node_types, so the positions stay exact and each node still has at most one entry.
+    kaku slot = resolver.node_slot(env.bindings.nodes, file_id, node_id);
+    moshi (slot >= 0) {
+        kaku position = env.node_type_slots[slot];
+        moshi (position >= 0) {
+            env.result.node_types[position] = NodeType { node: env.result.node_types[position].node, type_id: type_id };
+            kaesu type_id;
+        }
+        env.node_type_slots[slot] = len(env.result.node_types);
+        array.push(env.result.node_types, NodeType { node: resolver.NodeRef { file_id: file_id, node_id: node_id }, type_id: type_id });
+        kaesu type_id;
+    }
     kaku index = 0;
     aida (index < len(env.result.node_types)) {
         kaku item = env.result.node_types[index];
