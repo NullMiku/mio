@@ -693,7 +693,8 @@ waza compile_function_body(state: CompilerState, reference: resolver.NodeRef, id
         aida (parameter < node.operator) { kaku parameter_id = node.children[node.integer + parameter]; array.push(context.local_symbols, binding_of(state, reference.file_id, parameter_id)); array.push(context.local_slots, parameter); parameter = parameter + 1; }
         emit_statement(state, context, reference.file_id, node.children[len(node.children) - 1]);
         kaku returns_value = iie; kaku signature = 0;
-        aida (signature < len(state.checked.signatures)) { moshi (state.checked.signatures[signature].symbol_id == binding_of(state, reference.file_id, reference.node_id)) { returns_value = typecheck.type_kind_code(state.checked.types[materialized_type(state,state.checked.signatures[signature].result)].kind) != 13; } signature = signature + 1; }
+        kaku function_symbol = binding_of(state, reference.file_id, reference.node_id);
+        aida (signature < len(state.checked.signatures)) { moshi (state.checked.signatures[signature].symbol_id == function_symbol) { returns_value = typecheck.type_kind_code(state.checked.types[materialized_type(state,state.checked.signatures[signature].result)].kind) != 13; } signature = signature + 1; }
         moshi (!returns_value) { emit0(context.emitter, OP_RETURN); }
         patch_labels(context.emitter);
         state.layout.functions[id] = FunctionLayout { id: id, name: name, parameter_count: node.operator, local_count: len(context.local_symbols), returns_value: returns_value, captures: array.with_capacity[CaptureLayout](0), instructions: context.emitter.bytes };
