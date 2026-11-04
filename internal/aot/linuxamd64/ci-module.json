@@ -9,17 +9,21 @@
     "unit",
     "full"
   ],
-  "skip_reason": "supplementary Go tests of the Linux AMD64 AOT backend execute ELF images and need Linux x86-64",
+  "requires": [
+    "go",
+    "objdump"
+  ],
+  "required_checks": [
+    "backend",
+    "blob-source-hashes",
+    "objdump-scalar",
+    "objdump-heap",
+    "objdump-decode"
+  ],
   "suite_checks": {
-    "quick": [
-      "linux-amd64-aot"
-    ],
-    "unit": [
-      "linux-amd64-aot"
-    ],
     "full": [
-      "linux-amd64-aot",
-      "linux-amd64-aot-race"
+      "backend-race"
     ]
-  }
+  },
+  "skip_reason": "supplementary Go tests of the Linux AMD64 AOT backend execute ELF images and need Linux x86-64"
 }
