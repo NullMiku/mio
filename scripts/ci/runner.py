@@ -67,13 +67,21 @@ def execute(argv, timeout, env=None):
             if proc.poll() is None:
                 proc.kill()
         else:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
+            def signal_group(number):
+                try:
+                    os.killpg(proc.pid, number)
+                    return True
+                except ProcessLookupError:
+                    return False
+                except PermissionError:
+                    # macOS answers EPERM, not ESRCH, when the only members left in the group are zombies
+                    # that have not been reaped yet (the leader exited on SIGTERM). Nothing alive remains to
+                    # kill; any live descendant in the group would have made the call succeed.
+                    return False
+            if signal_group(signal.SIGTERM):
                 # Check runners forward TERM to their own subprocess group.
                 time.sleep(0.05 if os.environ.get("MIO_CI_CHECKS") else 0.5)
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+                signal_group(signal.SIGKILL)
     def interrupted(signum, frame):
         kill_tree()
         proc.communicate()
@@ -143,6 +151,18 @@ def timeout_value(name, default):
     return value
 
 
+def check_environment(kind):
+    """Environment of a check's command.
+
+    The runner exports MIO_BUNKO for the Mio commands it starts. Go tests run in a developer's environment, and
+    MIO_BUNKO overrides the library root of the temporary workspaces the LSP tests create, so Go checks do not
+    inherit it (the same tests pass locally without it).
+    """
+    if kind not in ("go", "go-required"):
+        return None
+    return {key: value for key, value in os.environ.items() if key != "MIO_BUNKO"}
+
+
 def check(args):
     if len(args) < 3 or not os.environ.get("MIO_CI_CHECKS"):
         print("check requires an active module, kind, name and command", file=sys.stderr)
@@ -155,7 +175,7 @@ def check(args):
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
-    code, out, err, status, reason, duration = execute(argv, timeout)
+    code, out, err, status, reason, duration = execute(argv, timeout, check_environment(kind))
     status, reason, details = assess(kind, code, out, status, reason)
     stdout, stderr = directory / (stem + ".stdout.log"), directory / (stem + ".stderr.log")
     stdout.write_bytes(out)
@@ -190,6 +210,11 @@ def discover():
             for field in ("required_checks", "requires"):
                 if not isinstance(data.get(field, []), list) or not all(isinstance(v, str) and v for v in data.get(field, [])):
                     raise ValueError("invalid module " + field + ": " + name)
+            if not isinstance(data.get("standalone", False), bool):
+                raise ValueError("invalid standalone flag: " + name)
+            if "module_timeout" in data and (isinstance(data["module_timeout"], bool) or
+                    not isinstance(data["module_timeout"], (int, float)) or not 0 < data["module_timeout"] <= 21600):
+                raise ValueError("invalid module_timeout: " + name)
             if "reference_tools" in data and (not isinstance(data["reference_tools"], list) or
                     any(tool not in ("mio", "mochi-aot", "mochi-aot-audit") for tool in data["reference_tools"])):
                 raise ValueError("invalid reference_tools: " + name)
@@ -234,8 +259,9 @@ def inventory():
     return [dict(module=m["module"], engine=m.get("engine", "native"),
                  script=str(Path(m["script"]).relative_to(ROOT)),
                  targets=m["targets"], suites=m["suites"],
+                 standalone=bool(m.get("standalone", False)),
                  schedule={target: {suite: ("SKIP" if target not in m["targets"] or suite not in m["suites"]
-                            else "DELEGATED" if delegated(m, modules, target, suite) else "RUN")
+                            else "STANDALONE" if m.get("standalone") else "DELEGATED" if delegated(m, modules, target, suite) else "RUN")
                             for suite in ("quick", "full")} for target in TARGETS})
             for m in modules.values()]
 
@@ -297,6 +323,10 @@ def run(args):
         for module, item in zip(chosen, report["checks"]):
             if target not in module["targets"] or suite not in module["suites"]:
                 item.update(status="SKIP", reason=module.get("skip_reason", "not supported for this target/suite; see testing.md"))
+                continue
+            if selected == "all" and module.get("standalone"):
+                item.update(status="SKIP", reason="standalone long-running module: not part of `all`; it runs in its own CI job "
+                            "or when named explicitly (see docs/testing.md)")
                 continue
             if module.get("covered_by") in report["selected_modules"] and delegated(module, modules, target, suite):
                 item.update(status="SKIP", reason="native tests delegated to recursive package check: " + module["covered_by"])
@@ -362,7 +392,7 @@ def run(args):
                                 checks=[dict(name=name, status="NOT_RUN", reason="reference compiler unavailable") for name in required])
                     exit_code = max(exit_code, 1 if any(b["status"] == "FAIL" for b in reference_build.values()) else 2)
                     continue
-            code, out, err, status, reason, duration = execute(["bash", module["script"], target, suite], module_timeout, module_env)
+            code, out, err, status, reason, duration = execute(["bash", module["script"], target, suite], module.get("module_timeout", module_timeout), module_env)
             (work / "module.log").write_bytes(out + err)
             print((out + err).decode(errors="replace"), end="", flush=True)
             try:

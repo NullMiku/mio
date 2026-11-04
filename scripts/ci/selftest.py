@@ -539,7 +539,7 @@ exit "$result"
         for target, field in (("linux-amd64", "linux_modules"), ("macos-arm64", "macos_modules")):
             chosen = deferred[field].split(",")
             expected = [n for n, m in modules.items() if target in m["targets"] and "full" in m["suites"]
-                        and m.get("engine", "native") != "native"]
+                        and m.get("engine", "native") != "native" and not m.get("standalone")]
             self.assertEqual(sorted(chosen), sorted(expected))
             for name in chosen:
                 self.assertNotEqual(modules[name].get("engine", "native"), "native")
@@ -568,6 +568,87 @@ exit "$result"
             for artifact in names:
                 self.assertIn("github.run_id", artifact)
                 self.assertIn("github.run_attempt", artifact)
+
+    # ---- Full-run failures observed on GitHub-hosted runners (run 41825096644) ----
+
+    def test_timeout_kill_survives_macos_eperm_for_zombie_only_groups(self):
+        # macOS answers EPERM instead of ESRCH when only unreaped zombies remain in the process group.
+        real = os.killpg
+        calls = []
+        def killpg(group, number):
+            calls.append(number)
+            real(group, number)
+            if number == runner.signal.SIGKILL:
+                raise PermissionError(1, "Operation not permitted")
+        with patch.object(runner.os, "killpg", side_effect=killpg), patch.dict(os.environ, {"MIO_CI_CHECKS": "x"}):
+            code, _, _, status, reason, _ = runner.execute([sys.executable, "-c", "import time; time.sleep(30)"], 0.2)
+        self.assertEqual((status, reason), ("FAIL", "timeout"))
+        self.assertEqual(calls[0], runner.signal.SIGTERM)
+
+    def test_go_checks_do_not_inherit_the_harness_only_library_root(self):
+        with patch.dict(os.environ, {"MIO_BUNKO": "/repo/bunko", "KEEP": "1"}):
+            for kind in ("go", "go-required"):
+                environment = runner.check_environment(kind)
+                self.assertNotIn("MIO_BUNKO", environment)
+                self.assertEqual(environment["KEEP"], "1")
+            for kind in ("mio", "command"):
+                self.assertIsNone(runner.check_environment(kind))
+
+    def test_standalone_module_is_not_part_of_all_but_stays_selectable(self):
+        modules = {"a": dict(module="a", engine="infrastructure", targets=["linux-amd64"], suites=["full"], script="a.sh"),
+                   "long": dict(module="long", engine="reference", targets=["linux-amd64"], suites=["full"], script="long.sh",
+                                reference_tools=[], standalone=True)}
+        executed = []
+        def execute(argv, timeout, env):
+            executed.append(argv[1])
+            Path(env["MIO_CI_CHECKS"]).write_text('{"name":"check","status":"PASS"}\n')
+            return 0, b"", b"", "PASS", "", 1
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, MIO_CI_RESULTS=directory), \
+             patch.object(runner, "discover", return_value=modules), \
+             patch.object(runner.platform, "system", return_value="Linux"), \
+             patch.object(runner.platform, "machine", return_value="x86_64"), \
+             patch.object(runner.shutil, "which", return_value="tool"), \
+             patch.object(runner, "execute", side_effect=execute):
+            self.assertEqual(runner.run(["linux-amd64", "all", "full"]), 0)
+            report = json.loads(sorted(Path(directory).glob("*/report.json"))[-1].read_text())
+            states = {item["module"]: item for item in report["checks"]}
+            self.assertEqual(states["long"]["status"], "SKIP")
+            self.assertIn("standalone", states["long"]["reason"])
+            self.assertNotIn("long.sh", executed)
+            self.assertEqual(runner.run(["linux-amd64", "long", "full"]), 0)
+            self.assertIn("long.sh", executed)
+
+    def test_bootstrap_has_its_own_job_and_module_and_leaves_the_repository_check(self):
+        root = HERE.parents[1]
+        modules = runner.discover()
+        module = modules["go-bootstrap-reference"]
+        self.assertTrue(module["standalone"])
+        self.assertEqual(module["suites"], ["full"])
+        self.assertEqual(sorted(module["targets"]), ["linux-amd64", "macos-arm64"])
+        self.assertGreaterEqual(module["module_timeout"], 3 * 3600)
+        script = (root / "internal" / "bootstrap-reference" / "test.sh").read_text(encoding="utf-8")
+        self.assertIn("./selfhost/bootstrap", script)
+        self.assertIn("-timeout 175m", script)
+        shared = (root / "internal" / "test.sh").read_text(encoding="utf-8")
+        self.assertIn("grep -v '^Mio/selfhost/bootstrap$'", shared)
+        self.assertNotIn("go test -json -p 2 ./... ", shared)
+        workflow = (root / ".github" / "workflows" / "ci-full.yml").read_text(encoding="utf-8")
+        self.assertIn("go-bootstrap-reference full", workflow)
+        self.assertIn("timeout-minutes: 210", workflow)
+        plan_result = plan.full_plan(modules, "deferred")
+        self.assertNotIn("go-bootstrap-reference", plan_result["linux_modules"].split(","))
+        self.assertNotIn("go-bootstrap-reference", plan_result["macos_modules"].split(","))
+        self.assertIn("go-bootstrap-reference", plan_result["standalone_modules"]["linux-amd64"])
+
+    def test_legacy_m18_uses_the_migrated_ancestor_and_does_not_run_tests_without_evidence(self):
+        script = (HERE / "legacy" / "test.sh").read_text(encoding="utf-8")
+        self.assertIn("M18_ANCESTOR=f398065", script)
+        self.assertEqual(script.count('--ci-ancestor "$M18_ANCESTOR"'), 2)
+        self.assertIn("m18_reference", script)
+        self.assertIn("NOT_RUN: legacy-m18-reference", script)
+        # The frozen hashes of the historical BCD gate are not touched.
+        bootstrap = (HERE.parent / "check-native-bootstrap.sh").read_text(encoding="utf-8")
+        self.assertIn("b5904e8fd51e96be16183826177504ed395be67143e0c78d7a4b5d304cfd00a1", bootstrap)
 
 
 if __name__ == "__main__":

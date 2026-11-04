@@ -71,7 +71,8 @@ bash scripts/ci/run.sh macos-arm64 native-release release
 | bootstrap | bootstrap, full | 先原生 codegen 测试，再运行并独立复核现有 `tests/m19ef/bootstrap-abcd.sh` |
 | native-release | release | 原生 archive 测试，复现正式生产沙箱和构建/安装检查，再独立审核真实包 |
 | quality | quick, full | gofmt/vet/whitespace、负向自检、发布隔离静态检查 |
-| go-reference | quick, unit, full | 补充 Go/VM 回归；full 保留完整 `go test ./...` 和 VM 回归 |
+| go-reference | quick, unit, full | 补充 Go/VM 回归；full 保留 VM 回归和 `go test` 全仓库（`Mio/selfhost/bootstrap` 除外，见下） |
+| go-bootstrap-reference | full（standalone） | `go test ./selfhost/bootstrap`：参考 VM 中的 Compiler A→B→C→D 自编译，Linux 约 56 分钟、macOS 更久；独立长时间模块，Full 用单独的 job 运行 |
 | go-aot-reference | unit, full, race | 原有 Go AOT 全集与 race；仅 macOS ARM64 |
 | legacy-bootstrap | bootstrap, fixed-point, full | 原有 BCD/M17/M18 调用；从本仓库历史恢复的 BCD/M17/M18 gate；full 也执行，不放宽历史哈希或断言 |
 | kiso/* | quick, unit, full | 每个已有 `*_test.mio` 包的原生测试；实际清单见各模块注册文件 |
@@ -149,7 +150,7 @@ CI 命令可以在相同平台/架构本地原样执行，不依赖 GitHub 环�
 
 ARM64 编码器、Mach-O Writer 可以单独执行原生测试及独立 backend oracle。该 oracle 直接调用模块生成固定指令字及含 NUL 的常量，Python 比较固定 ARM64 words、Mach-O 头、768 字节入口及常量布局，签名后执行生成程序，要求退出码 42；另执行九参数 ABI/输出检查。Core 的独立检查还拒绝非法词法、语法、未定义符号和类型错误。Runtime CPU 模块具有原生 IR 测试与实际运行程序交叉检查；GC 保留真实回收遥测。关键模块共用 `ci_native_and_crosscheck`，原生层失败后仍尝试独立层，最终返回失败。
 
-`ci-module.json` 可声明 `requires`（该模块额外工具）、`required_checks`（全部 suite 的必需检查）和 `suite_checks`（按 suite 增加必需检查）。缺失依赖记录 NOT_RUN/2；单独请求不支持的平台/等级也返回 2。模块 ID 从仓库相邻清单发现，不依赖 GitHub 环境。
+`ci-module.json` 可声明 `requires`（该模块额外工具）、`required_checks`（全部 suite 的必需检查）和 `suite_checks`（按 suite 增加必需检查）。可选字段 `standalone: true` 表示长时间独立模块：`all` 不运行它（在报告中记为带原因的 SKIP），只在被显式点名时运行；`module_timeout`（秒，≤21600）覆盖该模块的整体超时。缺失依赖记录 NOT_RUN/2；单独请求不支持的平台/等级也返回 2。模块 ID 从仓库相邻清单发现，不依赖 GitHub 环境。
 
 尚未独立接入的库包包括 array、bytes、convert、fs、os、string、testing、utf8、aot/lower/nativefs、aot/sign、runtime/ir 和 regexp/unicode_data：当前没有自己的 `*_test.mio`，通过调用者部分覆盖，不能声称逐包独立测试通过。`net/tcp.before-patch` 是历史快照；E5/E6 长压力、并发 GC、外部 FFI ABI 尚未整体接入。未跟踪的 PE 开发文件属于用户正在进行的工作，不由此次 CI 改造注册或修改。
 
@@ -180,3 +181,20 @@ Quick / Full / Release 三级设计、原架构审计、资源对比和管理员
 - **重新启用条件：** (1) 确定并批准受信任 Seed 的分发来源，且在运行前校验固定 SHA-256；(2) 在 `ci-pr.yml` 的 native job 与 Full 的 macOS job 前加入准备 Seed 并导出 `MIO_NATIVE_SEED` 的步骤（不得向 fork PR 提供生产机密）；(3) 设置仓库变量 `MIO_NATIVE_VERIFICATION=enabled`。启用后 Quick 计划恢复 `native_modules`，gate 要求 native job 与其执行报告，Full 恢复 `all full`。仅设置变量而没有 Seed 时，runner 返回 NOT_RUN/2，作业失败，不会成功。
 - **仍保留的风险：** 暂缓期间合并所依据的只有补充测试，原生编译器、AOT、GC 与自举的回归不会被 CI 发现；`Mio CI / required` 为绿色容易被误读；`legacy-bootstrap` 是基于 Go 的历史引导 gate，在 hosted macOS 上的行为尚未实测；hosted `macos-15` 的并行额度和 6 小时作业上限可能限制 Full；`queue: max` 需 GitHub 支持，本地 actionlint 1.7.7 不认识它。维护者合并涉及编译器/AOT/GC 的 PR 前仍应在受信任的 macOS ARM64 环境手动运行 `bash scripts/ci/run.sh macos-arm64 all quick`（或 full）。
 - 不要把 “Native Verification” 加入必需检查，直到它真正启用：被跳过的必需检查在 GitHub 上会被当作通过。
+
+## Full 失败修复记录（run 41825096644，ff64fd0）
+
+下表为对该次 Full 失败的逐项归因。所有结论来自下载的 `report.json` 与 artifact、对 11820c1 / dc8cc30 / 9c35560 / ff64fd0 的本地复现；未在 macOS 上重新执行的内容标为 NOT_RUN。
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| macOS `infrastructure`：`test_timeout`、`test_timeout_kills_descendants` 抛 `PermissionError: [Errno 1]` | `runner.execute` 在超时后先 `killpg(SIGTERM)`，再 `killpg(SIGKILL)`。进程组领导者因 SIGTERM 退出但尚未被回收时，macOS 对只剩僵尸进程的进程组返回 EPERM（Linux 返回成功或 ESRCH）。 | `kill_tree` 将该 EPERM 视为“组内已无存活进程”；仍有存活后代时 `killpg` 会成功，后代照常被杀。测试条件不变；新增自检用注入的 EPERM 复现，并确认修复前的 runner 在同一注入下抛出同一错误。macOS 实机 NOT_RUN。 |
+| 6 个 `internal/lsp` 测试失败（Linux、macOS） | 不是 9c35560 之前就存在的基线问题：这些测试在 11820c1、dc8cc30、ff64fd0 上直接 `go test ./internal/lsp` 全部通过。runner 为所有子命令导出 `MIO_BUNKO=<仓库>/bunko`，该变量会覆盖测试自建临时工作区的库根，6 个测试因此找不到其临时 `bunko`。设置 `MIO_BUNKO` 后可本地精确复现这 6 个失败。 | Go 检查（`go`、`go-required`）不再继承 `MIO_BUNKO`（与开发者直接运行一致）；Mio 命令仍使用它。在 runner 环境下 `internal/lsp` 107 项通过。 |
+| `Resolver/Typechecker/Codegen SelfAndBunkoSources` 报 `package kiso/string resolve errors=1` | 既有基线问题（11820c1 起就失败），根因是测试数据过期而非 runner：测试里 `kiso/string` 的依赖表缺 `kiso/array`（`string.mio` 导入了 array），而 `selfhost/lexer|parser|resolver|typecheck|codegen` 导入的 `selfhost/progress` 不在包列表里，纯 Mio resolver 因此报未解析导入。 | 只更正三个测试里的包依赖数据（补 `kiso/array` 依赖与 `selfhost/progress` 包）；断言不变。三项现已通过（resolver 3.8 s、typecheck 134 s、codegen 448 s，Linux）。 |
+| `selfhost/bootstrap` 在 `repository` 检查里 3600 s 超时（macOS）/ 约 56 分钟（Linux，通过） | `go test ./...` 包含 Go 自举自编译，单项就接近一小时，并受 `-timeout 60m` 限制。 | 拆为独立模块 `go-bootstrap-reference`（`standalone`，`module_timeout` 11400 s，go test `-timeout 175m`）和 `ci-full.yml` 中单独的 `bootstrap` job（两个平台各一个，`timeout-minutes: 210`，不使用 continue-on-error）。`repository` 检查改为 `go list ./...` 去掉 `Mio/selfhost/bootstrap` 其余全部包。测试范围不变：Full 仍然运行该测试。 |
+| `legacy-bcd`：`Bootstrap hash mismatch: build/compiler-A.mochi (b18049e2…)` | 不是非确定性，也不是环境：固定哈希 `b5904e8f…` 是 f398065 时代 Compiler A 的哈希（在 f398065 上重建得到 `b5904e8f…`）；从 d4a11b3 起源码变化，Compiler A 变为 `b18049e2…`（二分确认；重复构建两次，Linux/macOS CI 都得到同一值）。 | **未修改**。冻结哈希属于历史基线，只有维护者可以决定重定基线（或让该 gate 针对其历史提交运行）。该 gate 在当前源码上必然失败；报告保持 FAIL。 |
+| `legacy-m18`：`git-ci-ancestor` exit 1 | `check-native-aot-fixed-point.py` 的默认祖先 `8b53a25` 不在 Mio-2.1 历史中（历史迁移后无法到达）。迁移后的等价提交是 f398065（同作者、同时间、同标题；是 Mio-2.1 的祖先，树仅少 30 个文档/插件文件）。脚本注明“历史迁移后需显式覆盖”。 | `legacy/test.sh` 显式传 `--ci-ancestor f398065`。该等价性是推断，需维护者确认；之后 m18 能否通过 macOS NOT_RUN。 |
+| `TestM18SelfCompilerVMDeterminism`、`TestM18Stage4Differential/*`：找不到 `native-aot.mochi`、`stage4.native` | 级联：这些 Go 测试读取 `legacy-m18` 生成的证据目录，而 `legacy-m18` 在第一步（祖先检查）就失败，证据从未生成。 | `legacy-m18` 失败时不再启动这些测试，记录为 NOT_RUN（模块仍因 `legacy-m18` 的 FAIL 而失败）；成功时照常运行。测试本身未改。 |
+| macOS `go-aot-reference` 133 项失败（`static string data exceeds __const limit`、`old_sweep_enabled` 未定义） | 未修复，也不在本次范围：`m19b_generational_test.go` 复制固定的 10 个 `lower/*.mio` 文件，缺少 `old_sweep.mio` 等，导致 `old_sweep_enabled` 未定义（该函数定义在 `old_sweep.mio`）；`darwinarm64/string.go` 对静态字符串数据设了 16 KiB 页上限，而内嵌的 Mio 源码已超过。这些测试在 Linux 上被跳过，无法在此验证，是否为 9c35560 之前的基线也无法在 macOS 复核。 | 记录为已知问题，修复需要 macOS 执行；不放宽测试。 |
+
+与必需 gate 的关系：`bootstrap` job 属于 Full（push 到 Mio-2.1、手动、周计划），不属于 PR Quick；PR 的必需检查 `Mio CI / required` 不依赖它，也不会被它延迟。Full 工作流的结果是各 job 的总和（`Full / linux-amd64`、`Full / macos-arm64`、两个 `Full / bootstrap / …`），任何一个失败都使该次 Full 失败。若要把 Full 设为合并前必需，需要维护者另行配置分支规则。

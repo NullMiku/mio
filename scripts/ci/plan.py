@@ -184,10 +184,13 @@ def evidence(directory, expected, target, source_sha):
 
 def full_plan(modules, native_verification):
     """Module selection for Full. Deferred: only modules that do not need the trusted Native Seed run, and the
-    skipped native modules are listed as NOT_RUN. Enabled: every module, exactly as before."""
+    skipped native modules are listed as NOT_RUN. Enabled: every module, exactly as before. Standalone long-running
+    modules are never part of these lists: the Full workflow runs each of them in its own job."""
     def usable(module, target):
         return target in module["targets"] and "full" in module["suites"]
-    result = dict(schema_version=1, suite="full", native_verification=native_verification)
+    result = dict(schema_version=1, suite="full", native_verification=native_verification,
+                  standalone_modules={target: sorted(name for name, m in modules.items() if usable(m, target) and m.get("standalone"))
+                                      for target in ("linux-amd64", "macos-arm64")})
     native_modules = sorted(name for name, m in modules.items() if usable(m, "macos-arm64") and m.get("engine", "native") == "native")
     if native_verification == "enabled":
         result.update(linux_modules="all", macos_modules="all", executed_native_modules=native_modules, deferred_native_modules=[])
@@ -195,7 +198,8 @@ def full_plan(modules, native_verification):
                                              reason="executed by the macos-arm64 job; requires the trusted Native Seed")
     else:
         for target, field in (("linux-amd64", "linux_modules"), ("macos-arm64", "macos_modules")):
-            names = [name for name, m in modules.items() if usable(m, target) and m.get("engine", "native") != "native"]
+            names = [name for name, m in modules.items()
+                     if usable(m, target) and m.get("engine", "native") != "native" and not m.get("standalone")]
             if not names:
                 raise ValueError("no executable supplementary module for " + target)
             result[field] = ",".join(names)

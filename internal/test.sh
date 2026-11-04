@@ -13,7 +13,11 @@ ci_module() {
       trap 'exit 143' TERM HUP
       trap 'exit 130' INT
       ci_check go vm-regression go test -json -p 2 ./internal/vm/... ./internal/mochi/... -count=1 -timeout 30m || result=$?
-      MIO_CI_CHECK_TIMEOUT=6600 ci_check go repository go test -json -p 2 ./... -count=1 -timeout 60m || result=$? ;;
+      # The Go bootstrap self-compilation (Mio/selfhost/bootstrap) takes about an hour by itself. It has its own
+      # long-running module, go-bootstrap-reference, which Full runs as a separate job, so that this check, and the
+      # feedback of every other package, does not wait for it. Nothing else is excluded.
+      mapfile -t packages < <(go list ./... | grep -v '^Mio/selfhost/bootstrap$')
+      MIO_CI_CHECK_TIMEOUT=6600 ci_check go repository go test -json -p 2 "${packages[@]}" -count=1 -timeout 60m || result=$? ;;
   esac
   ci_check command vm-independent "$PYTHON" scripts/ci/verify.py vm || result=$?
   return "$result"
