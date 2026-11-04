@@ -25,8 +25,8 @@ caller before the image is written.
 ## Tests
 
 `elf_test.mio` holds the native Mio tests. `check_elf.py` is an independent check run by the CI
-module `kiso/aot/elf` (`test.sh`, `ci-module.json`): it has a small Mio program write two images,
+module `kiso/aot/elf` (`test.sh`, `ci-module.json`): it has a small Mio program write four images (with and without bss, entry offset 0 and non-zero, and one that writes to and reads back the data segment),
 parses them with Python's `struct` and compares every header field with values computed from the
-ELF specification, cross-checks with GNU `readelf` when one is installed, and executes the image on
+ELF specification, cross-checks with GNU `readelf` when one is installed, and executes every image on
 a Linux x86-64 host. On other hosts the execution part, and without `readelf` the readelf part, are
 printed as `NOT_RUN`; they are not counted as passed.
