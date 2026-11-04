@@ -1,0 +1,52 @@
+name: Mio CI V2 / Full
+on:
+  push:
+    branches: [Mio-2.1]
+  workflow_dispatch:
+  schedule:
+    - cron: '19 19 * * 0'
+permissions:
+  contents: read
+concurrency:
+  group: ci-full-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  full:
+    name: Full / ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: '["ubuntu-24.04"]'
+          - target: macos-arm64
+            runner: '["self-hosted", "macOS", "ARM64", "mio-native"]'
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    concurrency:
+      group: ci-resource-${{ matrix.target }}-${{ matrix.target == 'macos-arm64' && 'shared' || github.run_id }}
+      cancel-in-progress: false
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'Mio-2.1' || github.ref }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: bash scripts/ci/run.sh ${{ matrix.target }} all full
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-${{ matrix.target }}
+          path: |
+            build/ci-results/
+            build/m19ef-evidence/ci-abcd-*/
+          if-no-files-found: error
+          retention-days: 7

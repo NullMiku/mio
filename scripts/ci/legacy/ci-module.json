@@ -1,1 +1,36 @@
-{"module":"legacy-bootstrap","engine":"reference","targets":["macos-arm64"],"suites":["bootstrap","fixed-point"],"skip_reason":"historical BCD/M18 gates retained explicitly; their referenced scripts are missing on Mio-2.1, a pre-existing baseline failure"}
+{
+  "module": "legacy-bootstrap",
+  "engine": "reference",
+  "targets": [
+    "macos-arm64"
+  ],
+  "suites": [
+    "bootstrap",
+    "fixed-point",
+    "full"
+  ],
+  "skip_reason": "historical BCD/M17/M18 tests require macOS ARM64; full or explicit suite",
+  "suite_checks": {
+    "full": [
+      "legacy-bcd",
+      "legacy-m18",
+      "legacy-m18-reference"
+    ],
+    "bootstrap": [
+      "legacy-bcd"
+    ],
+    "fixed-point": [
+      "legacy-m18",
+      "legacy-m18-reference"
+    ]
+  },
+  "requires": [
+    "go",
+    "codesign",
+    "shasum",
+    "awk",
+    "cmp",
+    "/usr/bin/lldb",
+    "/usr/bin/sandbox-exec"
+  ]
+}

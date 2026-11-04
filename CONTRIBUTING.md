@@ -79,3 +79,12 @@ Go、Shell、Python 或其他外部工具只能作为 Development / CI Dependenc
 ## AI 辅助开发
 
 允许 AI 辅助开发，请在 PR 中说明是否使用。提交者必须理解所提交代码，并对正确性、安全性、许可合规及测试结果负责。AI 生成的测试报告不能替代实际运行证据。
+
+
+## CI V2 测试入口
+
+普通 PR 由 `ci-pr.yml` 调用 `bash scripts/ci/run.sh <target> all quick`；`Mio-2.1` push、手动及定期 Full 由 `ci-full.yml` 调用同一入口的 `all full`。修改单一模块时可直接运行其 `test.sh <target> [quick|full]`。正式发布工作流保持独立。
+
+原生测试先由受信任 Seed 构建当前工作树编译器，再复用产物运行模块；只运行 Seed 的历史内嵌实现不能证明当前源码通过。新增独立模块应提供相邻 `ci-module.json`、`test.sh` 和真实 Mio 测试，关键模块同时提供固定输出、字节、退出码或参考实现 oracle。使用公共 `ci_native_and_crosscheck` 可在原生层失败时继续收集独立层结果，最终仍返回非零。
+
+提交验证材料时附命令、平台和 `report.json`；分别说明 PASS、FAIL、SKIP、NOT_RUN。全跳过或没有实际检查不能写成成功。CI 基础设施变更请运行 `bash scripts/ci/selftest.sh`，并检查工作流语法。当前已知 Core 失败不得通过改预期、放宽断言或跳过测试隐藏。详见 [测试架构](docs/testing.md) 和 [本次审计](docs/testing-audit.md)。

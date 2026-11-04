@@ -10,6 +10,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
+import shlex
 import unittest
 from unittest.mock import patch
 
@@ -30,6 +32,137 @@ isolation = load("release_isolation", HERE / "release_isolation.py")
 
 
 class ContractTests(unittest.TestCase):
+    def test_discovery_rejects_malformed_contract(self):
+        for extra in (dict(module="../escape"), dict(engine="unknown"), dict(required_checks="native"), dict(suite_checks={"quick": "native"})):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
+                module = Path(directory) / "internal/example"
+                module.mkdir(parents=True)
+                data = dict(module="example", targets=["linux-amd64"], suites=["quick"])
+                data.update(extra)
+                (module / "ci-module.json").write_text(json.dumps(data))
+                (module / "test.sh").write_text("exit 1\n")
+                with patch.object(runner, "ROOT", Path(directory)), self.assertRaises(ValueError):
+                    runner.discover()
+
+    def dispatch(self, modules, selected="all", execute=None, **environment):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, MIO_CI_RESULTS=directory, **environment), \
+             patch.object(runner, "discover", return_value=modules), \
+             patch.object(runner.platform, "system", return_value="Linux"), \
+             patch.object(runner.platform, "machine", return_value="x86_64"), \
+             patch.object(runner.shutil, "which", return_value="tool"):
+            if execute is None:
+                code = runner.run(["linux-amd64", selected, "quick"])
+            else:
+                with patch.object(runner, "execute", side_effect=execute):
+                    code = runner.run(["linux-amd64", selected, "quick"])
+            report = json.loads(next(Path(directory).glob("*/report.json")).read_text())
+            return code, report
+
+    def test_all_skipped_is_not_success(self):
+        modules = {"fake": dict(module="fake", engine="infrastructure", targets=["macos-arm64"], suites=["quick"])}
+        code, report = self.dispatch(modules)
+        self.assertEqual((code, report["status"], report["checks"][0]["status"]), (2, "NOT_RUN", "SKIP"))
+        code, report = self.dispatch({})
+        self.assertEqual((code, report["status"]), (2, "NOT_RUN"))
+
+    def test_invalid_module(self):
+        code, report = self.dispatch({}, selected="missing")
+        self.assertEqual((code, report["status"]), (2, "NOT_RUN"))
+        self.assertIn("unknown module", report["reason"])
+
+    def test_invalid_timeout(self):
+        for value in ("nan", "inf", "0", "-1", "wrong"):
+            with self.subTest(value=value):
+                code, report = self.dispatch({}, MIO_CI_MODULE_TIMEOUT=value)
+                self.assertEqual((code, report["status"]), (2, "NOT_RUN"))
+
+    def test_interrupted_module_cannot_publish_success(self):
+        modules = {"fake": dict(module="fake", engine="infrastructure", targets=["linux-amd64"], suites=["quick"], script="fake.sh")}
+        def execute(argv, timeout, env):
+            raise KeyboardInterrupt()
+        code, report = self.dispatch(modules, execute=execute)
+        self.assertEqual((code, report["status"]), (2, "NOT_RUN"))
+        self.assertIn("interrupted", report["reason"])
+
+    def test_malformed_module_report_does_not_hide_later_failure(self):
+        modules = {name: dict(module=name, engine="infrastructure", targets=["linux-amd64"], suites=["quick"], script="fake.sh") for name in ("broken", "failure")}
+        def execute(argv, timeout, env):
+            Path(env["MIO_CI_CHECKS"]).write_text('{"name":"bad","status":"UNKNOWN"}\n' if "broken" in env["MIO_CI_MODULE_DIR"] else '{"name":"failed","status":"FAIL"}\n')
+            return 0, b"", b"", "PASS", "", 1
+        code, report = self.dispatch(modules, execute=execute)
+        self.assertEqual((code, report["status"]), (2, "FAIL"))
+        self.assertEqual([m["status"] for m in report["checks"]], ["NOT_RUN", "FAIL"])
+
+    def test_native_current_source_build_is_reused(self):
+        modules = {name: dict(module=name, targets=["linux-amd64"], suites=["quick"], script="fake.sh") for name in ("one", "two")}
+        builds = []
+        def execute(argv, timeout, env):
+            if argv[1] == "build":
+                builds.append(argv)
+                Path(argv[-1]).write_bytes(b"current compiler")
+            else:
+                self.assertEqual(Path(env["MIO_CI_MIO"]).read_bytes(), b"current compiler")
+                Path(env["MIO_CI_CHECKS"]).write_text('{"name":"native","status":"PASS"}\n')
+            return 0, b"", b"", "PASS", "", 1
+        with tempfile.TemporaryDirectory() as directory:
+            seed = Path(directory) / "seed"
+            seed.write_bytes(b"seed")
+            with patch.object(runner, "SEED_SHA256", runner.hashlib.sha256(b"seed").hexdigest()):
+                code, report = self.dispatch(modules, execute=execute, MIO_NATIVE_SEED=str(seed))
+        self.assertEqual((code, report["status"], len(builds)), (0, "PASS", 1))
+
+    def test_failed_source_build_cannot_pass_or_rebuild_per_module(self):
+        modules = {name: dict(module=name, targets=["linux-amd64"], suites=["quick"], script="fake.sh", required_checks=["native", "independent"]) for name in ("one", "two")}
+        calls = []
+        def execute(argv, timeout, env):
+            calls.append(argv)
+            return 1, b"", b"old_sweep_enabled undefined", "FAIL", "compile failed", 1
+        with tempfile.TemporaryDirectory() as directory:
+            seed = Path(directory) / "seed"
+            seed.write_bytes(b"seed")
+            with patch.object(runner, "SEED_SHA256", runner.hashlib.sha256(b"seed").hexdigest()):
+                code, report = self.dispatch(modules, execute=execute, MIO_NATIVE_SEED=str(seed))
+        self.assertEqual((code, report["status"], len(calls)), (1, "FAIL", 1))
+        self.assertTrue(all(m["status"] == "NOT_RUN" for m in report["checks"]))
+        self.assertTrue(all(c["status"] == "NOT_RUN" for m in report["checks"] for c in m["checks"]))
+
+    def test_mio_skips_and_nonzero_failure_details(self):
+        data = dict(packages=[dict(tests=[dict(name="skipped", status="skipped")])], summary=dict(passed=0, failed=0))
+        self.assertEqual(runner.assess("mio", 0, json.dumps(data).encode(), "PASS", "")[0], "NOT_RUN")
+        data["packages"][0]["tests"][0]["status"] = "failed"
+        data["summary"]["failed"] = 1
+        status, _, tests = runner.assess("mio", 1, json.dumps(data).encode(), "FAIL", "exit 1")
+        self.assertEqual((status, tests[0]["status"]), ("FAIL", "FAIL"))
+
+    def test_timeout_kills_descendants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "orphan"
+            child = "import time; from pathlib import Path; time.sleep(2); Path(" + repr(str(marker)) + ").touch()"
+            parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," + repr(child) + "]); time.sleep(20)"
+            result = self.command(parent, 0.4)
+            self.assertEqual((result[3], result[4]), ("FAIL", "timeout"))
+            time.sleep(2.2)
+            self.assertFalse(marker.exists(), "timed out descendant survived")
+
+    @unittest.skipUnless(shutil.which("bash") and shutil.which("git"), "Bash/Git unavailable")
+    def test_parallel_children_and_redirection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "test.sh"
+            script.write_text('''set -euo pipefail
+"$PYTHON" "$TEST_CI_RUNNER" check command child-fail "$PYTHON" -c 'raise SystemExit(9)' > "$MIO_CI_MODULE_DIR/redirect.log" 2>&1 &
+failed=$!
+"$PYTHON" "$TEST_CI_RUNNER" check command child-pass "$PYTHON" -c 'print(1)' &
+passed=$!
+result=0
+wait "$failed" || result=$?
+wait "$passed" || result=$?
+exit "$result"
+''', encoding="utf-8")
+            modules = {"parallel": dict(module="parallel", engine="infrastructure", targets=["linux-amd64"], suites=["quick"], script=str(script))}
+            code, report = self.dispatch(modules, TEST_CI_RUNNER=str(HERE / "runner.py"))
+            self.assertEqual((code, report["status"]), (1, "FAIL"))
+            self.assertEqual({r["status"] for r in report["checks"][0]["checks"]}, {"PASS", "FAIL"})
+
     def command(self, source, timeout=5):
         return runner.execute([sys.executable, "-c", source], timeout)
 
@@ -46,6 +179,18 @@ class ContractTests(unittest.TestCase):
 
     def test_abnormal_exit(self):
         self.assertEqual(self.command("import os; os._exit(17)")[0], 17)
+
+    def test_signal_death(self):
+        result = self.command("import os,signal; os.kill(os.getpid(), signal.SIGTERM)")
+        self.assertNotEqual(result[0], 0)
+        self.assertEqual(result[3], "FAIL")
+
+    @unittest.skipUnless(shutil.which("bash"), "Bash unavailable")
+    def test_native_failure_still_runs_independent(self):
+        source = shlex.quote((HERE / "common.sh").as_posix())
+        result = runner.execute(["bash", "-c", "source " + source + "; ci_native() { return 1; }; ci_check() { echo independent-executed; }; ci_native_and_crosscheck native package independent echo oracle"], 5)
+        self.assertEqual((result[0], result[3]), (1, "FAIL"))
+        self.assertIn(b"independent-executed", result[1])
 
     def test_missing_tool(self):
         result = runner.execute(["mio-ci-nonexistent-tool-82ac"], 1)

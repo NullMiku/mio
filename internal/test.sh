@@ -2,12 +2,20 @@
 CI_MODULE=go-reference
 source "$(dirname "$0")/../scripts/ci/common.sh"
 ci_module() {
+  local result=0
   case "$2" in
-    quick|unit) ci_check go core-unit go test -json -p 2 ./internal/lexer ./internal/parser ./internal/resolver ./internal/typecheck ./internal/compiler ./internal/code ./internal/vm ./internal/mochi ./internal/tester ./cmd/mio -count=1 -timeout 10m ;;
+    quick|unit) ci_check go core-unit go test -json -p 2 ./internal/lexer ./internal/parser ./internal/resolver ./internal/typecheck ./internal/compiler ./internal/code ./internal/vm ./internal/mochi ./internal/tester ./cmd/mio -count=1 -timeout 10m || result=$? ;;
     full)
-      ci_check go vm-regression go test -json -p 2 ./internal/vm/... ./internal/mochi/... -count=1 -timeout 30m
-      ci_check go repository go test -json -p 2 ./... -count=1 -timeout 30m ;;
+      # Existing Go bootstrap tests temporarily write this source-side fixture.
+      # Restore it even when the check runner times out or cancels the child.
+      cp selfhost/bootstrap/bootstrap.config "$MIO_CI_MODULE_DIR/bootstrap.config.original"
+      trap 'cp "$MIO_CI_MODULE_DIR/bootstrap.config.original" "$CI_ROOT/selfhost/bootstrap/bootstrap.config"' EXIT
+      trap 'exit 143' TERM HUP
+      trap 'exit 130' INT
+      ci_check go vm-regression go test -json -p 2 ./internal/vm/... ./internal/mochi/... -count=1 -timeout 30m || result=$?
+      MIO_CI_CHECK_TIMEOUT=6600 ci_check go repository go test -json -p 2 ./... -count=1 -timeout 60m || result=$? ;;
   esac
-  ci_check command vm-independent "$PYTHON" scripts/ci/verify.py vm
+  ci_check command vm-independent "$PYTHON" scripts/ci/verify.py vm || result=$?
+  return "$result"
 }
 ci_main "$@"

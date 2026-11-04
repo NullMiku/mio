@@ -1,1 +1,28 @@
-{"module":"go-reference","engine":"reference","targets":["linux-amd64","macos-arm64"],"suites":["quick","full","unit"]}
+{
+  "module": "go-reference",
+  "engine": "reference",
+  "targets": [
+    "linux-amd64",
+    "macos-arm64"
+  ],
+  "suites": [
+    "quick",
+    "full",
+    "unit"
+  ],
+  "suite_checks": {
+    "quick": [
+      "core-unit",
+      "vm-independent"
+    ],
+    "unit": [
+      "core-unit",
+      "vm-independent"
+    ],
+    "full": [
+      "vm-regression",
+      "repository",
+      "vm-independent"
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-﻿# Mio Native Testing First：测试架构
+﻿# Mio CI V2：测试架构
 
 **Mio's native testing framework is the primary testing mechanism. External tools and other programming languages are permitted for supplementary testing and independent cross-validation only.**
 
@@ -52,7 +52,7 @@ bash scripts/ci/run.sh macos-arm64 native-release release
 
 会核对真实 OS 和架构。Linux ARM64、macOS AMD64、Windows 尚未接入统一原生入口。交叉编译不等于原生执行。Windows 可以独立运行基础设施自检及部分 Go 补充测试。
 
-开发驱动要求 Bash、Python 3.9+、Git；参考测试另需 Go（版本见 go.mod）。原生测试使用已有、由主机提供的 `MIO_NATIVE_SEED`，其 GF4 SHA256 必须为：
+开发驱动要求 Bash、Python 3.9+、Git；参考测试另需 Go（版本见 go.mod）。原生测试先用主机提供的 `MIO_NATIVE_SEED` 构建当前工作树的 `selfhost/cli`，整次运行只构建一次，再由各模块复用当前源码编译器。GF4 Seed 的 SHA256 必须为：
 
 ```text
 4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da
@@ -73,12 +73,12 @@ bash scripts/ci/run.sh macos-arm64 native-release release
 | quality | quick, full | gofmt/vet/whitespace、负向自检、发布隔离静态检查 |
 | go-reference | quick, unit, full | 补充 Go/VM 回归；full 保留完整 `go test ./...` 和 VM 回归 |
 | go-aot-reference | unit, full, race | 原有 Go AOT 全集与 race；仅 macOS ARM64 |
-| legacy-bootstrap | bootstrap, fixed-point | 原有 BCD/M17/M18 调用；当前分支引用的旧脚本缺失，保留失败以便定位基线问题 |
+| legacy-bootstrap | bootstrap, fixed-point, full | 原有 BCD/M17/M18 调用；从本仓库历史恢复的 BCD/M17/M18 gate；full 也执行，不放宽历史哈希或断言 |
 | kiso/* | quick, unit, full | 每个已有 `*_test.mio` 包的原生测试；实际清单见各模块注册文件 |
 
 标准库已接入 aot/arm64、aot/lower、aot/lower/types、aot/macho、crypto/sha256、encoding/binary、encoding/json、encoding/mochi、io、math、net/tcp、path、regexp、runtime/cpu/aarch64、runtime/os/darwin、runtime/target，以及单列的 gc。`all` 调度时 AOT 子包通过 `covered_by` 委托父级递归检查，单独报告 SKIP 和委托原因；显式选择子模块仍运行自己的入口。
 
-Quick 包含已有库测试和 Core/AOT/GC 的基本双重验证。Full 增加完整 selfhost、原生 ABCD 和历史 Go 全量补充测试。自举是顺序执行的，Go 包并行度为 1 或 2。Go 工具只在补充检查需要时构建一次；原生路径始终使用受信任 Mio Seed。PR 运行原生 Quick，push/手动/每周运行 Full。辅助历史 workflow 仍保留完整 Go、VM、AOT、race 和旧固定点检查，不使用 continue-on-error。
+Quick 包含已有库测试和 Core/AOT/GC 的基本双重验证。Full 增加完整 selfhost、原生 ABCD 和历史 Go 全量补充测试。自举是顺序执行的，Go 包并行度为 1 或 2。Go 工具只在补充检查需要时构建一次；原生路径使用受信任 Seed 构建的当前源码编译器。`ci-pr.yml` 对 PR 调用 `all quick`，`ci-full.yml` 对 `Mio-2.1` push、手动及每周调度调用 `all full`。两者均调度 macOS ARM64 和 Linux AMD64；Linux 仅执行适用的补充参考测试与基础设施检查。Full 保留完整 Go、VM、AOT、race 和旧固定点检查，不使用 continue-on-error。macOS 重任务跨这两份 workflow 使用共享 concurrency group，同一运行内模块顺序执行。定时任务显式 checkout `Mio-2.1`；手动入口使用所选 ref，push 使用实际分支。
 
 `native-release release` 是显式发布验证，因生产冻结输入和较高资源需求，不加入每个 PR。正式 `.github/workflows/release.yml` 保持不变。
 
@@ -90,7 +90,7 @@ Core/AOT 独立路径调用正式 Native Seed 编译 9 参数函数、数组和�
 
 GC 独立路径复用现有 `automatic-roots/builder.mio`，由纯 Mio 生成受限堆程序。检查容器工作负载输出 `4797`，并解码 64 字节遥测：minor collections 必须大于 0，根发布、注册/退出和资源获取/释放必须满足已有协议。这是有实际回收的有限场景，不能代表长期、多 mutator、并发 old sweep 或所有内存策略均得到验证。
 
-ABCD 继续使用现有、带冻结源和哈希/签名复核的脚本；不重写自举算法。旧 BCD/M18 脚本已在 Mio-2.1 缺失，不能默默删掉旧 gate 或用新的 ABCD 声称其通过。
+ABCD 继续使用现有、带冻结源和哈希/签名复核的脚本；不重写自举算法。旧 BCD/M18 脚本从删除它们的提交 `d4a11b3` 的父提交恢复，保持原哈希、祖先约束、GC 见证及 golden 断言。BCD 在本次报告目录下的独立源码副本中执行，避免超时改动当前 checkout 的 bootstrap.config；两者复用本次已构建的参考工具。它们属于历史 Go 引导补充测试，不能代替纯 Mio ABCD，也不能因为源码变化导致历史固定输入失败而修改预期。
 
 尚无独立 Mio 测试的 array、bytes、convert、fs、string、testing、utf8、部分 nativefs/sign 辅助包通过原生库/集成路径间接覆盖；不创建空入口。selfhost 阶段全集有原生测试，但尚未逐阶段配置独立 oracle。外部 FFI/完整 ABI、长期 GC 压力、新平台后端仍未覆盖。原有 E5/E6 等脚本保留，其硬编码 Seed、固定 fixture、分支或恢复要求不被本次静默改写；未接入项应明确记录 NOT_RUN。
 
@@ -104,7 +104,7 @@ ABCD 继续使用现有、带冻结源和哈希/签名复核的脚本；不重�
 
 脚本设置 CI_MODULE，source 公共脚本，定义 `ci_module(target,suite)`，末尾调用 `ci_main "$@"`。参考 `bunko/kiso/math/test.sh`。普通模块先调用 `ci_native native <package>`；关键模块再用 `ci_check command <independent-name> <argv...>` 调用独立 oracle。Go 只能用于明确的补充检查。禁止空脚本、`true` 占位或 `|| true` 掩盖失败。
 
-公共层提供 MIO_CI_MIO（已验证 Native Seed）、MIO_CI_TOOLS（仅开发参考工具）、MIO_BUNKO、MIO_CI_MODULE_DIR。`ci_check go` 要求 Go JSON lines，`ci_check mio` 要求 Mio JSON，且均拒绝无测试/全跳过。不使用 eval 或 Shell 字符串拼接执行用户参数。
+公共层提供 MIO_CI_MIO（由当前源码构建的原生编译器）、MIO_CI_SEED（已验证的初始 Seed，仅供既有 ABCD/生产流程）、MIO_CI_TOOLS（仅开发参考工具）、MIO_BUNKO、MIO_CI_MODULE_DIR。`ci_check go` 要求 Go JSON lines，`ci_check mio` 要求 Mio JSON，且均拒绝无测试/全跳过。不使用 eval 或 Shell 字符串拼接执行用户参数。
 
 ## 报告与排错
 
@@ -119,7 +119,7 @@ ABCD 继续使用现有、带冻结源和哈希/签名复核的脚本；不重�
 
 0 为所有选定必需检查通过；1 为测试失败；2 为环境、参数或基础设施错误。显式指定不支持的组合返回 2。`all` 可以包含明确策略 SKIP，但不能把它们合并为 PASS；某个必需检查 NOT_RUN 不得成功。Go 的条件跳过保留明细，部分通过不代表覆盖所有原生路径。
 
-先查看 report.reason，再看 module.log 和独立 stdout/stderr。Python 捕获真实退出码，避免 tee 吞掉失败；POSIX 超时杀死整个进程组。默认单检查超时 2400 秒、模块 7200 秒，支持 MIO_CI_CHECK_TIMEOUT/MIO_CI_MODULE_TIMEOUT；MIO_CI_RESULTS 可更改报告父目录。PYTHON 可指定解释器。生产环境不需要这些变量。
+先查看 report.reason，再看 module.log 和独立 stdout/stderr。Python 捕获真实退出码，避免 tee 吞掉失败；POSIX 超时终止进程组，嵌套检查器转发终止信号；Windows 自检通过 taskkill /T /F 清理进程树。中断也返回非零并记录 NOT_RUN，不能把部分完成的运行写成 PASS。默认单检查超时 2400 秒、模块 7200 秒；Full Go 全集检查为 6600 秒，Go 包自身为 60 分钟，避免原有自举测试因少于 30 分钟的测试期限而跳过，支持 MIO_CI_CHECK_TIMEOUT/MIO_CI_MODULE_TIMEOUT；MIO_CI_RESULTS 可更改报告父目录。PYTHON 可指定解释器。生产环境不需要这些变量。
 
 CI 命令可以在相同平台/架构本地原样执行，不依赖 GitHub 环境变量。受信任 Seed 由和 release.yml 相同的 self-hosted macOS ARM64 Runner 提供；没有该 Runner 时不得宣称 hosted native CI 已运行。
 
@@ -136,3 +136,17 @@ CI 命令可以在相同平台/架构本地原样执行，不依赖 GitHub 环�
 `bash scripts/ci/selftest.sh` 无需 Go/Seed。Windows 可直接 `python scripts/ci/selftest.py`，若 PATH 上无 Bash 则管道及真实模块调度标为 SKIP。覆盖错误断言、错误输出、异常退出、缺工具、错误参数/平台/组合、超时、空 Go/Mio 测试、全跳过、子失败聚合、框架假阳性、混入测试驱动的包，以及失败命令经过 tee。
 
 真实端到端用例会调用 Bash 模块和检查器，核对成功/失败/空模块的 0/1/2、最终 JSON 和日志。聚合其他分支使用注入子进程结果验证协议。Core oracle 另使用真实 Mio 框架运行故意失败断言。这样证明故意错误会返回非零；本次没有提交、推送或触发远端 CI，不能宣称已观察 GitHub 状态变红。
+
+## CI V2 新增协议与验证
+
+`report.json` 的 `builds` 单独记录当前源码编译器及参考工具构建命令、耗时、日志和状态；模块因构建失败而无法执行时为 NOT_RUN，构建失败仍令总报告 FAIL。`summary` 分别统计四种模块状态，`exit_code` 保存驱动退出码。参数错误、依赖缺失、空模块、全跳过、无效 JSON 和缺少必需层均不能得到成功结果。测试失败与基础设施错误并存时总状态保持 FAIL，退出码 2 仍表示存在基础设施问题。
+
+ARM64 编码器、Mach-O Writer 可以单独执行原生测试及独立 backend oracle。该 oracle 直接调用模块生成固定指令字及含 NUL 的常量，Python 比较固定 ARM64 words、Mach-O 头、768 字节入口及常量布局，签名后执行生成程序，要求退出码 42；另执行九参数 ABI/输出检查。Core 的独立检查还拒绝非法词法、语法、未定义符号和类型错误。Runtime CPU 模块具有原生 IR 测试与实际运行程序交叉检查；GC 保留真实回收遥测。关键模块共用 `ci_native_and_crosscheck`，原生层失败后仍尝试独立层，最终返回失败。
+
+`ci-module.json` 可声明 `requires`（该模块额外工具）、`required_checks`（全部 suite 的必需检查）和 `suite_checks`（按 suite 增加必需检查）。缺失依赖记录 NOT_RUN/2；单独请求不支持的平台/等级也返回 2。模块 ID 从仓库相邻清单发现，不依赖 GitHub 环境。
+
+尚未独立接入的库包包括 array、bytes、convert、fs、os、string、testing、utf8、aot/lower/nativefs、aot/sign、runtime/ir 和 regexp/unicode_data：当前没有自己的 `*_test.mio`，通过调用者部分覆盖，不能声称逐包独立测试通过。`net/tcp.before-patch` 是历史快照；E5/E6 长压力、并发 GC、外部 FFI ABI 尚未整体接入。未跟踪的 PE 开发文件属于用户正在进行的工作，不由此次 CI 改造注册或修改。
+
+工作流和本地验证证据见 [本次审计](testing-audit.md)。macOS 原生新 oracle 未在本 Windows 主机执行，不能把静态检查通过等同于原生通过。
+
+Windows 开发 checkout 的逐字节 Unicode diagnostic golden 由 `.gitattributes` 固定 LF；Go 格式检查仅在临时副本规范 CRLF，不改变任何源码或断言。框架负向自检现有 31 项，记录真实跳过，测试取消不会生成成功报告。
