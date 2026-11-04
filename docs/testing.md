@@ -76,7 +76,7 @@ bash scripts/ci/run.sh macos-arm64 native-release release
 | legacy-bootstrap | bootstrap, fixed-point, full | 原有 BCD/M17/M18 调用；从本仓库历史恢复的 BCD/M17/M18 gate；full 也执行，不放宽历史哈希或断言 |
 | kiso/* | quick, unit, full | 每个已有 `*_test.mio` 包的原生测试；实际清单见各模块注册文件 |
 
-标准库已接入 aot/arm64、aot/lower、aot/lower/types、aot/macho、crypto/sha256、encoding/binary、encoding/json、encoding/mochi、io、math、net/tcp、path、regexp、runtime/cpu/aarch64、runtime/os/darwin、runtime/target，以及单列的 gc。`all` 调度时 AOT 子包通过 `covered_by` 委托父级递归检查，单独报告 SKIP 和委托原因；显式选择子模块仍运行自己的入口。
+标准库已接入 aot/arm64、aot/lower、aot/lower/types、aot/macho、crypto/sha256、encoding/binary、encoding/json、encoding/mochi、io、math、net/tcp、path、regexp、runtime/cpu/aarch64、runtime/os/darwin、runtime/target，以及单列的 gc。`all` 调度时仅声明 `required_checks=["native"]` 的 AOT 子包可通过 `covered_by` 委托父级递归检查，单独报告 SKIP 和委托原因；arm64、macho 的独立 oracle 必须运行。显式选择子模块仍运行自己的入口。
 
 Quick 包含已有库测试和 Core/AOT/GC 的基本双重验证。Full 增加完整 selfhost、原生 ABCD 和历史 Go 全量补充测试。自举是顺序执行的，Go 包并行度为 1 或 2。Go 工具只在补充检查需要时构建一次；原生路径使用受信任 Seed 构建的当前源码编译器。`ci-pr.yml` 对 PR 调用 `all quick`，`ci-full.yml` 对 `Mio-2.1` push、手动及每周调度调用 `all full`。两者均调度 macOS ARM64 和 Linux AMD64；Linux 仅执行适用的补充参考测试与基础设施检查。Full 保留完整 Go、VM、AOT、race 和旧固定点检查，不使用 continue-on-error。macOS 重任务跨这两份 workflow 使用共享 concurrency group，同一运行内模块顺序执行。定时任务显式 checkout `Mio-2.1`；手动入口使用所选 ref，push 使用实际分支。
 
@@ -149,4 +149,14 @@ ARM64 编码器、Mach-O Writer 可以单独执行原生测试及独立 backend 
 
 工作流和本地验证证据见 [本次审计](testing-audit.md)。macOS 原生新 oracle 未在本 Windows 主机执行，不能把静态检查通过等同于原生通过。
 
-Windows 开发 checkout 的逐字节 Unicode diagnostic golden 由 `.gitattributes` 固定 LF；Go 格式检查仅在临时副本规范 CRLF，不改变任何源码或断言。框架负向自检现有 31 项，记录真实跳过，测试取消不会生成成功报告。
+Windows 开发 checkout 的逐字节 Unicode diagnostic golden 由 `.gitattributes` 固定 LF；Go 格式检查仅在临时副本规范 CRLF，不改变任何源码或断言。框架负向自检现有 38 项，记录真实跳过，测试取消不会生成成功报告。
+
+## 可靠性审计补充
+
+`python scripts/ci/runner.py inventory` 在任何开发主机静态列出全部模块及 Linux/macOS Quick/Full 的 RUN / SKIP / DELEGATED 计划，不执行语言测试。Bunko 中新增 `*_test.mio` 而没有相邻清单会阻止调度并返回 NOT_RUN/2；缺少 test.sh、无效目标或委托关系也不能成功。
+
+报告增加 source_revision、source_worktree_dirty、模块 engine 和检查 kind。native 模块必须确实记录 Mio 原生检查，参考 Go 的成功不能代替它。JSONL 追加使用跨进程锁，防止并行检查丢失记录。需要强制执行的 Go 检查使用 `ci_check go-required <name> ...`：任何 SKIP 或空测试都返回 NOT_RUN/2；普通 go 检查保留平台基线跳过，不能由其 PASS 推断全部子测试已运行。
+
+PR workflow 的 `Mio CI / required` 汇总 infrastructure 和两个平台 matrix 的结果。维护者应在分支规则中将它设为 required；本地修改工作流不会自动更改远端规则。Native job 排队或待审批期间该 gate 不会提前成功。PR 的独立 infrastructure job 不依赖 Native Seed，及时检查发现和失败传播。Quick/Full artifact 路径按 run ID、attempt、target 隔离；ABCD 上传也只匹配本次运行的目录。
+
+本次问题分类、实际命令与 NOT_RUN 边界见 [可靠性审计](ci-reliability-audit.md)；未合并模块的 test.sh/ci-module.json 方案见 [PR 接入方案](ci-pr-integration.md)。历史 testing-audit.md 保留为上次工作的记录，不能替代本次运行证据。

@@ -12,10 +12,34 @@ import sys
 import time
 import uuid
 import math
+from contextlib import contextmanager
 
 ROOT = Path(__file__).resolve().parents[2]
 TARGETS = {"linux-amd64": ("Linux", "x86_64"), "macos-arm64": ("Darwin", "arm64")}
 SEED_SHA256 = "4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da"
+
+
+@contextmanager
+def record_lock(path):
+    """Serialize parallel check writers, including Windows text append."""
+    with open(str(path) + ".lock", "a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+            lock.write(b"\0")
+            lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def sha256(path):
@@ -77,11 +101,11 @@ def execute(argv, timeout, env=None):
 def assess(kind, code, out, status, reason):
     details = []
     if status != "PASS":
-        if status == "FAIL" and kind in ("go", "mio"):
+        if status == "FAIL" and kind in ("go", "go-required", "mio"):
             _, _, details = assess(kind, 0, out, "PASS", "")
         return status, reason, details
     try:
-        if kind == "go":
+        if kind in ("go", "go-required"):
             events = [json.loads(line) for line in out.splitlines() if line.strip()]
             details = [{"name": e["Package"] + "/" + e["Test"],
                         "status": {"pass": "PASS", "fail": "FAIL", "skip": "SKIP"}[e["Action"]],
@@ -89,6 +113,8 @@ def assess(kind, code, out, status, reason):
                        for e in events if e.get("Test") and e.get("Action") in ("pass", "fail", "skip")]
             if any(e.get("Action") == "fail" for e in events):
                 return "FAIL", "Go reported a failed test", details
+            if kind == "go-required" and any(e.get("Action") == "skip" for e in events):
+                return "NOT_RUN", "required Go tests were skipped", details
             if not any(d["status"] == "PASS" for d in details):
                 return "NOT_RUN", "no Go test executed and passed", details
         elif kind == "mio":
@@ -134,11 +160,12 @@ def check(args):
     stdout, stderr = directory / (stem + ".stdout.log"), directory / (stem + ".stderr.log")
     stdout.write_bytes(out)
     stderr.write_bytes(err)
-    record = dict(name=name, layer={"mio": "native", "go": "supplementary"}.get(kind, "independent"), status=status, reason=reason, duration_ms=duration,
+    record = dict(name=name, kind=kind, layer={"mio": "native", "go": "supplementary", "go-required": "supplementary"}.get(kind, "independent"), status=status, reason=reason, duration_ms=duration,
                   exit_code=code, command=argv, tests=details,
                   artifacts=[str(stdout), str(stderr)])
-    with open(os.environ["MIO_CI_CHECKS"], "a", encoding="utf-8") as stream:
-        stream.write(json.dumps(record) + "\n")
+    with record_lock(os.environ["MIO_CI_CHECKS"]):
+        with open(os.environ["MIO_CI_CHECKS"], "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record) + "\n")
     print(f"{status}: {name} ({duration} ms)", flush=True)
     if status != "PASS":
         print((out + err).decode(errors="replace")[-12000:], file=sys.stderr)
@@ -158,6 +185,8 @@ def discover():
             for field in ("targets", "suites"):
                 if not isinstance(data[field], list) or not data[field] or not all(isinstance(v, str) for v in data[field]):
                     raise ValueError("invalid module " + field + ": " + name)
+            if any(target not in TARGETS for target in data["targets"]):
+                raise ValueError("unknown module target: " + name)
             for field in ("required_checks", "requires"):
                 if not isinstance(data.get(field, []), list) or not all(isinstance(v, str) and v for v in data.get(field, [])):
                     raise ValueError("invalid module " + field + ": " + name)
@@ -172,7 +201,40 @@ def discover():
                 raise ValueError("duplicate module or missing test.sh: " + name)
             data["script"] = str(manifest.parent / "test.sh")
             modules[name] = data
+    # A recursive parent test is useful, but must not conceal an unregistered
+    # independently testable Bunko package introduced by a PR.
+    for test in sorted((ROOT / "bunko").rglob("*_test.mio")):
+        if not (test.parent / "ci-module.json").is_file():
+            raise ValueError("unregistered Mio test package: " + str(test.parent.relative_to(ROOT)))
+    for module in modules.values():
+        parent_name = module.get("covered_by")
+        if parent_name:
+            parent = modules.get(parent_name)
+            if (not parent or parent.get("engine", "native") != "native" or
+                    module.get("engine", "native") != "native" or
+                    Path(parent["script"]).parent not in Path(module["script"]).parent.parents):
+                raise ValueError("invalid covered_by: " + module["module"])
     return dict(sorted(modules.items(), key=lambda pair: (pair[1].get("engine", "native") != "native", pair[0])))
+
+
+def delegated(module, modules, target, suite):
+    parent = modules.get(module.get("covered_by", ""))
+    required = module.get("required_checks", []) + module.get("suite_checks", {}).get(suite, [])
+    # Only the recursive Mio layer is delegated. Independent or suite-specific
+    # oracles must still execute through the child's own entry point.
+    return bool(parent and target in parent["targets"] and suite in parent["suites"]
+                and required == ["native"])
+
+
+def inventory():
+    modules = discover()
+    return [dict(module=m["module"], engine=m.get("engine", "native"),
+                 script=str(Path(m["script"]).relative_to(ROOT)),
+                 targets=m["targets"], suites=m["suites"],
+                 schedule={target: {suite: ("SKIP" if target not in m["targets"] or suite not in m["suites"]
+                            else "DELEGATED" if delegated(m, modules, target, suite) else "RUN")
+                            for suite in ("quick", "full")} for target in TARGETS})
+            for m in modules.values()]
 
 
 def run(args):
@@ -185,8 +247,16 @@ def run(args):
         return 2
     report = dict(schema_version=1, target=args[0] if args else "", module=args[1] if len(args) > 1 else "",
                   suite=args[2] if len(args) > 2 else "", status="NOT_RUN", checks=[], builds=[], artifacts=[str(directory)])
+    report["source_revision"] = "UNKNOWN"
+    report["source_worktree_dirty"] = None
     exit_code = 2
     try:
+        if shutil.which("git"):
+            revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, timeout=10)
+            dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=ROOT, capture_output=True, timeout=10)
+            if revision.returncode == 0 and dirty.returncode == 0:
+                report["source_revision"] = revision.stdout.decode().strip()
+                report["source_worktree_dirty"] = bool(dirty.stdout.strip())
         if len(args) != 3:
             raise ValueError("usage: bash scripts/ci/run.sh <linux-amd64|macos-arm64> <module|all> <quick|full|all|module-suite>")
         target, selected, suite = args
@@ -199,7 +269,7 @@ def run(args):
         if selected != "all" and selected not in modules:
             raise ValueError("unknown module: " + selected)
         chosen = list(modules.values()) if selected == "all" else [modules[selected]]
-        report["checks"] = [dict(module=m["module"], status="NOT_RUN", reason="module not started", duration_ms=0, checks=[], artifacts=[]) for m in chosen]
+        report["checks"] = [dict(module=m["module"], engine=m.get("engine", "native"), status="NOT_RUN", reason="module not started", duration_ms=0, checks=[], artifacts=[]) for m in chosen]
         if selected == "all" and suite not in ("quick", "full"):
             raise ValueError("all modules require quick, full or all")
         for module in chosen:
@@ -223,9 +293,8 @@ def run(args):
             if target not in module["targets"] or suite not in module["suites"]:
                 item.update(status="SKIP", reason=module.get("skip_reason", "not supported for this target/suite; see testing.md"))
                 continue
-            parent = modules.get(module.get("covered_by", ""))
-            if selected == "all" and parent and target in parent["targets"] and suite in parent["suites"]:
-                item.update(status="SKIP", reason="native tests delegated to recursive package check: " + parent["module"])
+            if selected == "all" and delegated(module, modules, target, suite):
+                item.update(status="SKIP", reason="native tests delegated to recursive package check: " + module["covered_by"])
                 continue
             work = directory / module["module"].replace("/", "-")
             work.mkdir()
@@ -245,7 +314,7 @@ def run(args):
                     seed_valid = seed.is_file() and sha256(seed) == SEED_SHA256
                 if not seed_valid:
                     item.update(status="NOT_RUN", reason="verified MIO_NATIVE_SEED missing or GF4 SHA256 mismatch",
-                                checks=[dict(name=name, status="NOT_RUN", reason="native compiler unavailable") for name in module.get("required_checks", ["native"])])
+                                checks=[dict(name=name, status="NOT_RUN", reason="native compiler unavailable") for name in required])
                     exit_code = 2
                     continue
                 if native_build is None:
@@ -262,7 +331,7 @@ def run(args):
                     report["builds"].append(native_build)
                 if native_build["status"] != "PASS":
                     item.update(status="NOT_RUN", reason="current-source compiler build failed; see builds",
-                                checks=[dict(name=name, status="NOT_RUN", reason="compiler unavailable") for name in module.get("required_checks", ["native"])])
+                                checks=[dict(name=name, status="NOT_RUN", reason="compiler unavailable") for name in required])
                     exit_code = max(exit_code, 1 if native_build["status"] == "FAIL" else 2)
                     continue
                 module_env["MIO_CI_MIO"] = str(native_compiler)
@@ -299,9 +368,11 @@ def run(args):
             for name in required:
                 if not any(record["name"] == name for record in records):
                     records.append(dict(name=name, status="NOT_RUN", reason="required layer did not execute"))
+            if engine == "native" and not any(r.get("kind") == "mio" and r.get("layer") == "native" for r in records):
+                records.append(dict(name="native-protocol", status="NOT_RUN", reason="native module did not execute a Mio check"))
             item.update(checks=records, duration_ms=duration, exit_code=code, artifacts=[str(work / "module.log")])
             if code or any(c["status"] == "FAIL" for c in records):
-                item.update(status="NOT_RUN" if code == 2 else "FAIL", reason=reason)
+                item.update(status="FAIL" if any(c["status"] == "FAIL" for c in records) or code != 2 else "NOT_RUN", reason=reason)
                 exit_code = max(exit_code, 2 if code == 2 else 1)
             elif not records or any(c["status"] != "PASS" for c in records):
                 item.update(status="NOT_RUN", reason="module did not complete required checks")
@@ -312,7 +383,7 @@ def run(args):
         if not any(item["status"] == "PASS" for item in report["checks"]) and exit_code == 0:
             exit_code = 2
             report["reason"] = "no module actually executed and passed"
-    except (ValueError, OSError, KeyError, TypeError, KeyboardInterrupt, SystemExit) as error:
+    except (ValueError, OSError, KeyError, TypeError, subprocess.TimeoutExpired, KeyboardInterrupt, SystemExit) as error:
         report.update(status="NOT_RUN", reason=str(error))
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             report["reason"] = "CI interrupted before completing required modules"
@@ -331,6 +402,13 @@ def run(args):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["inventory"]:
+        try:
+            print(json.dumps(inventory(), indent=2))
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            print("NOT_RUN: " + str(error), file=sys.stderr)
+            sys.exit(2)
+        sys.exit(0)
     if len(sys.argv) < 2 or sys.argv[1] not in ("run", "check"):
         sys.exit(2)
     sys.exit(run(sys.argv[2:]) if sys.argv[1] == "run" else check(sys.argv[2:]))

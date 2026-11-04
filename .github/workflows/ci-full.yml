@@ -10,6 +10,7 @@ permissions:
 concurrency:
   group: ci-full-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 jobs:
   full:
     name: Full / ${{ matrix.target }}
@@ -25,7 +26,11 @@ jobs:
     concurrency:
       group: ci-resource-${{ matrix.target }}-${{ matrix.target == 'macos-arm64' && 'shared' || github.run_id }}
       cancel-in-progress: false
+      queue: max
     timeout-minutes: 360
+    env:
+      MIO_CI_RESULTS: build/ci-results/run-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
+      MIO_CI_EVIDENCE_KEY: ${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -46,7 +51,7 @@ jobs:
         with:
           name: full-${{ matrix.target }}
           path: |
-            build/ci-results/
-            build/m19ef-evidence/ci-abcd-*/
+            ${{ env.MIO_CI_RESULTS }}/
+            build/m19ef-evidence/ci-abcd-${{ env.MIO_CI_EVIDENCE_KEY }}/
           if-no-files-found: error
           retention-days: 7

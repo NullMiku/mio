@@ -107,3 +107,5 @@ __pycache__/
 
 !/docs/testing.md
 !/docs/testing-audit.md
+!/docs/ci-reliability-audit.md
+!/docs/ci-pr-integration.md

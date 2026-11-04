@@ -33,7 +33,9 @@ isolation = load("release_isolation", HERE / "release_isolation.py")
 
 class ContractTests(unittest.TestCase):
     def test_discovery_rejects_malformed_contract(self):
-        for extra in (dict(module="../escape"), dict(engine="unknown"), dict(required_checks="native"), dict(suite_checks={"quick": "native"})):
+        for extra in (dict(module="../escape"), dict(engine="unknown"), dict(required_checks="native"),
+                      dict(suite_checks={"quick": "native"}), dict(targets=["typo"]),
+                      dict(covered_by="example"), dict(covered_by="missing")):
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
                 module = Path(directory) / "internal/example"
                 module.mkdir(parents=True)
@@ -102,7 +104,7 @@ class ContractTests(unittest.TestCase):
                 Path(argv[-1]).write_bytes(b"current compiler")
             else:
                 self.assertEqual(Path(env["MIO_CI_MIO"]).read_bytes(), b"current compiler")
-                Path(env["MIO_CI_CHECKS"]).write_text('{"name":"native","status":"PASS"}\n')
+                Path(env["MIO_CI_CHECKS"]).write_text('{"name":"native","kind":"mio","layer":"native","status":"PASS"}\n')
             return 0, b"", b"", "PASS", "", 1
         with tempfile.TemporaryDirectory() as directory:
             seed = Path(directory) / "seed"
@@ -309,6 +311,74 @@ exit "$result"
     def test_pipefail(self):
         result = runner.execute(["bash", "-c", "set -euo pipefail; (exit 7) | tee /dev/null"], 5)
         self.assertEqual(result[0], 7)
+
+
+    def test_unregistered_bunko_tests_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "bunko/kiso/new"
+            package.mkdir(parents=True)
+            (package / "new_test.mio").write_text("waza test_new() -> unit {}")
+            with patch.object(runner, "ROOT", Path(directory)), self.assertRaisesRegex(ValueError, "unregistered"):
+                runner.discover()
+
+    def test_wrong_seed_cannot_start_compiler_or_tests(self):
+        modules = {"fake": dict(module="fake", targets=["linux-amd64"], suites=["quick"], script="fake.sh",
+                                required_checks=["native"], suite_checks={"quick": ["independent"]})}
+        with tempfile.TemporaryDirectory() as directory:
+            seed = Path(directory) / "untrusted"
+            seed.write_bytes(b"not the trusted GF4 seed")
+            def forbidden(*args):
+                self.fail("untrusted seed or dependent tests executed")
+            code, report = self.dispatch(modules, execute=forbidden, MIO_NATIVE_SEED=str(seed))
+        self.assertEqual((code, report["status"]), (2, "NOT_RUN"))
+        self.assertEqual([r["name"] for r in report["checks"][0]["checks"]], ["native", "independent"])
+
+    def test_inventory_matches_platform_and_preserves_child_oracles(self):
+        items = {m["module"]: m for m in runner.inventory()}
+        self.assertEqual(items["kiso/aot/arm64"]["schedule"]["macos-arm64"]["quick"], "RUN")
+        self.assertEqual(items["kiso/aot/macho"]["schedule"]["macos-arm64"]["full"], "RUN")
+        self.assertTrue(all(m["schedule"]["linux-amd64"]["quick"] == "SKIP"
+                            for m in items.values() if m["engine"] == "native"))
+
+    def test_recursive_delegation_preserves_independent_checks(self):
+        parent = dict(targets=["macos-arm64"], suites=["quick", "full"])
+        child = dict(covered_by="aot", required_checks=["native"])
+        self.assertTrue(runner.delegated(child, {"aot": parent}, "macos-arm64", "quick"))
+        child["required_checks"].append("independent")
+        self.assertFalse(runner.delegated(child, {"aot": parent}, "macos-arm64", "quick"))
+        self.assertFalse(runner.delegated(child, {"aot": parent}, "linux-amd64", "quick"))
+
+    def test_reference_check_cannot_satisfy_native_module(self):
+        modules = {"fake": dict(module="fake", targets=["linux-amd64"], suites=["quick"], script="fake.sh")}
+        def execute(argv, timeout, env):
+            if argv[1] == "build":
+                Path(argv[-1]).write_bytes(b"compiler")
+            else:
+                Path(env["MIO_CI_CHECKS"]).write_text('{"name":"native","kind":"go","layer":"supplementary","status":"PASS"}\n')
+            return 0, b"", b"", "PASS", "", 1
+        with tempfile.TemporaryDirectory() as directory:
+            seed = Path(directory) / "seed"
+            seed.write_bytes(b"seed")
+            with patch.object(runner, "SEED_SHA256", runner.hashlib.sha256(b"seed").hexdigest()):
+                code, report = self.dispatch(modules, execute=execute, MIO_NATIVE_SEED=str(seed))
+        self.assertEqual((code, report["status"]), (2, "NOT_RUN"))
+
+    def test_required_go_skip_cannot_hide_behind_passing_test(self):
+        events = [dict(Package="p", Test="TestOK", Action="pass"), dict(Package="p", Test="TestRequired", Action="skip")]
+        data = b"\n".join(json.dumps(e).encode() for e in events)
+        self.assertEqual(runner.assess("go", 0, data, "PASS", "")[0], "PASS")
+        self.assertEqual(runner.assess("go-required", 0, data, "PASS", "")[0], "NOT_RUN")
+        package_skip = json.dumps(dict(Package="other", Action="skip")).encode()
+        self.assertEqual(runner.assess("go-required", 0, data.splitlines()[0] + b"\n" + package_skip, "PASS", "")[0], "NOT_RUN")
+
+    def test_missing_required_check_and_skip_are_not_success(self):
+        modules = {"fake": dict(module="fake", engine="infrastructure", targets=["linux-amd64"], suites=["quick"], script="fake.sh", required_checks=["required"])}
+        for records in ([dict(name="other", status="PASS")], [dict(name="required", status="SKIP"), dict(name="other", status="PASS")]):
+            def execute(argv, timeout, env):
+                Path(env["MIO_CI_CHECKS"]).write_text("".join(json.dumps(r) + "\n" for r in records))
+                return 0, b"", b"", "PASS", "", 1
+            code, report = self.dispatch(modules, execute=execute)
+            self.assertEqual((code, report["status"]), (2, "NOT_RUN"))
 
 
 if __name__ == "__main__":
