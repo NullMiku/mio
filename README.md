@@ -56,4 +56,6 @@ Mio 与 Mochi 也是项目中的两位角色：Mio 是上方的少女，Mochi �
 
 ## 许可证
 
+贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，原生测试优先与统一入口见 [测试架构](docs/testing.md)。
+
 Mio 程序代码采用 [MIT License](LICENSE)。[`assets/mascot/`](assets/mascot/) 中的 Mio 与 Mochi 角色插画**不属于 MIT License 授权范围**，其版权及使用许可另行适用。

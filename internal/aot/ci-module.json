@@ -1,0 +1,1 @@
+{"module":"go-aot-reference","engine":"reference","targets":["macos-arm64"],"suites":["full","unit","race"],"skip_reason":"supplementary Go AOT tests require macOS ARM64; full or explicit suite"}

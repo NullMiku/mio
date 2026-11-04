@@ -1,0 +1,1 @@
+{"module":"go-reference","engine":"reference","targets":["linux-amd64","macos-arm64"],"suites":["quick","full","unit"]}

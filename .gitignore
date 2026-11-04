@@ -104,3 +104,6 @@ __pycache__/
 
 # Release notes are CI inputs and must remain in source control.
 !/docs/releases/v[0-9]*.[mM][dD]
+
+!/docs/testing.md
+!/docs/testing-audit.md

@@ -1,0 +1,1 @@
+{"module":"core","targets":["macos-arm64"],"suites":["quick","full","unit"],"required_checks":["core-native","core-independent"],"skip_reason":"Mio native Core requires macOS ARM64 and trusted native seed"}

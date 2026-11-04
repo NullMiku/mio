@@ -1,0 +1,1 @@
+{"module":"gc","targets":["macos-arm64"],"suites":["quick","full","unit"],"required_checks":["gc-native","gc-independent"],"skip_reason":"native GC behavior requires macOS ARM64 and verified seed"}

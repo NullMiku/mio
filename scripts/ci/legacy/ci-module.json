@@ -1,0 +1,1 @@
+{"module":"legacy-bootstrap","engine":"reference","targets":["macos-arm64"],"suites":["bootstrap","fixed-point"],"skip_reason":"historical BCD/M18 gates retained explicitly; their referenced scripts are missing on Mio-2.1, a pre-existing baseline failure"}

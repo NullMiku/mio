@@ -1,4 +1,4 @@
-name: Legacy Go reference CI
+name: Auxiliary Go reference CI
 
 on:
   push:
@@ -26,21 +26,20 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Check gofmt
-        shell: bash
-        run: |
-          git ls-files -z -- '*.go' | xargs -0 -r gofmt -l > /tmp/unformatted-go.txt
-          if [ -s /tmp/unformatted-go.txt ]; then
-            cat /tmp/unformatted-go.txt
-            exit 1
-          fi
-      - name: Go Vet
-        run: go vet ./...
-      - name: Check whitespace
-        run: git diff --check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reference quality and infrastructure
+        run: bash scripts/ci/run.sh linux-amd64 quality quick
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-results
+          path: build/ci-results/
 
   go-linux:
-    name: Go Tests / Linux
+    name: Supplementary Go Tests / Linux
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -52,12 +51,19 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Full repository tests
-        run: go test ./... -count=1 -timeout 30m
+        run: bash scripts/ci/run.sh linux-amd64 go-reference full
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-reference-results
+          path: build/ci-results/
 
   native-aot:
+    if: github.event_name != 'pull_request'
     name: Apple Silicon / ${{ matrix.suite }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         suite: [aot, aot-race, full, bootstrap, native-fixed-point]
     runs-on: macos-15
@@ -75,32 +81,24 @@ jobs:
           cache: true
       - name: Native AOT tests
         if: matrix.suite == 'aot'
-        run: go test ./internal/aot/... -count=1 -timeout 30m
+        run: bash scripts/ci/run.sh macos-arm64 go-aot-reference full
       - name: Native AOT race tests
         if: matrix.suite == 'aot-race'
-        run: go test -race ./internal/aot/... -count=1 -timeout 30m
-      - name: Mochi VM regression
+        run: bash scripts/ci/run.sh macos-arm64 go-aot-reference race
+      - name: Full supplementary reference regression
         if: matrix.suite == 'full'
-        run: go test ./internal/vm/... ./internal/mochi/... -count=1 -timeout 30m
-      - name: Full macOS regression
-        if: matrix.suite == 'full'
-        run: go test ./... -count=1 -timeout 30m
-      - name: Build tools
-        if: matrix.suite == 'full'
-        run: |
-          mkdir -p build
-          go build -o build/mio ./cmd/mio
-          go build -o build/mochi-aot ./cmd/mochi-aot
-          go build -o build/mochi-aot-audit ./cmd/mochi-aot-audit
+        run: bash scripts/ci/run.sh macos-arm64 go-reference full
       - name: Native bootstrap B-C-D fixed point and M17 golden artifacts
         if: matrix.suite == 'bootstrap'
-        run: bash scripts/check-native-bootstrap.sh
+        run: bash scripts/ci/run.sh macos-arm64 legacy-bootstrap bootstrap
       - name: M18 pure Mio Native AOT machine-code fixed point
         if: matrix.suite == 'native-fixed-point'
-        run: |
-          set -euo pipefail
-          python3 scripts/check-native-aot-fixed-point.py --evidence build/m18-ci --gc-witness
-          MIO_M18_EVIDENCE_DIR="$PWD/build/m18-ci" go test ./internal/aot -run '^TestM18' -count=1 -v -timeout 30m | tee build/m18-ci/m18-tests.log
+        run: bash scripts/ci/run.sh macos-arm64 legacy-bootstrap fixed-point
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reference-${{ matrix.suite }}-results
+          path: build/ci-results/
       - name: Upload M18 provenance and native generations
         if: always() && matrix.suite == 'native-fixed-point'
         uses: actions/upload-artifact@v4

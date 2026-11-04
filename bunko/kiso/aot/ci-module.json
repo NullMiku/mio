@@ -1,0 +1,1 @@
+{"module":"aot","targets":["macos-arm64"],"suites":["quick","full","unit"],"required_checks":["aot-native","aot-independent"],"skip_reason":"Mio native AOT requires macOS ARM64 and trusted native seed"}

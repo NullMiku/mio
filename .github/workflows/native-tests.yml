@@ -1,0 +1,66 @@
+name: Mio Native Testing First
+on:
+  pull_request:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+  schedule:
+    - cron: '19 19 * * 0'
+permissions:
+  contents: read
+concurrency:
+  group: native-tests-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    name: Native / macos-arm64 / ${{ github.event_name == 'pull_request' && 'quick' || 'full' }}
+    runs-on: [self-hosted, macOS, ARM64, mio-native]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Native modules, then supplementary cross-validation
+        shell: bash
+        # MIO_NATIVE_SEED is the same verified host-provisioned seed used by
+        # release.yml. It is not downloaded or replaced by a Go compiler.
+        run: bash scripts/ci/run.sh macos-arm64 all ${{ github.event_name == 'pull_request' && 'quick' || 'full' }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-macos-arm64
+          path: |
+            build/ci-results/
+            build/m19ef-evidence/ci-abcd-*/
+          if-no-files-found: error
+          retention-days: 7
+  portable-reference:
+    name: Supplementary / linux-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: bash scripts/ci/run.sh linux-amd64 go-reference quick
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: supplementary-linux-amd64
+          path: build/ci-results/
+          if-no-files-found: error
