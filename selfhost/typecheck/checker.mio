@@ -180,7 +180,7 @@ waza register_function_signatures(env: TypeEnvironment) -> unit {
                 kaku return_type = builtin_type(env, "unit");
                 moshi (child < len(node.children) - 1) { return_type = resolve_type_node(env, file_id, node.children[child], type_params); }
                 kaku symbol_id = binding_of(env, file_id, node_id);
-                array.push(env.result.signatures, FunctionSignature { symbol_id: symbol_id, name: node.text, package_path: env.resolved.package_path, type_parameters: type_params, parameters: parameter_types, result: return_type });
+                add_signature(env, FunctionSignature { symbol_id: symbol_id, name: node.text, package_path: env.resolved.package_path, type_parameters: type_params, parameters: parameter_types, result: return_type });
                 moshi (len(type_params) == 0) { set_symbol_type(env, symbol_id, function_type(env.result, parameter_types, return_type)); }
             }
             index = index + 1;
@@ -290,7 +290,7 @@ waza import_dependency_types(env: TypeEnvironment, dependencies: []TypeCheckResu
             moshi (current_symbol >= 0) {
                 kaku parameters = array.with_capacity[int64](len(source.parameters)); kaku parameter = 0;
                 aida (parameter < len(source.parameters)) { array.push(parameters, copy_type_from(env, dependency, source.parameters[parameter])); parameter = parameter + 1; }
-                array.push(env.result.signatures, FunctionSignature { symbol_id: current_symbol, name: source.name, package_path: source.package_path, type_parameters: source.type_parameters, parameters: parameters, result: copy_type_from(env, dependency, source.result) });
+                add_signature(env, FunctionSignature { symbol_id: current_symbol, name: source.name, package_path: source.package_path, type_parameters: source.type_parameters, parameters: parameters, result: copy_type_from(env, dependency, source.result) });
             }
             signature_index = signature_index + 1;
         }
