@@ -107,3 +107,4 @@ __pycache__/
 
 !/docs/testing.md
 !/docs/testing-audit.md
+!/docs/windows-amd64-audit.md
