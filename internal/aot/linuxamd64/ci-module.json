@@ -1,0 +1,25 @@
+{
+  "module": "go-aot-linux-amd64",
+  "engine": "reference",
+  "targets": [
+    "linux-amd64"
+  ],
+  "suites": [
+    "quick",
+    "unit",
+    "full"
+  ],
+  "skip_reason": "supplementary Go tests of the Linux AMD64 AOT backend execute ELF images and need Linux x86-64",
+  "suite_checks": {
+    "quick": [
+      "linux-amd64-aot"
+    ],
+    "unit": [
+      "linux-amd64-aot"
+    ],
+    "full": [
+      "linux-amd64-aot",
+      "linux-amd64-aot-race"
+    ]
+  }
+}
