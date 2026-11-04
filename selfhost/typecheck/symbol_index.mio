@@ -1,0 +1,84 @@
+yobu "kiso/array";
+yobu "kiso/string";
+yobu "selfhost/resolver";
+
+// Open-addressing index of a resolved package's symbols by (package path, name, kind code).
+// It answers the same question as a front-to-back scan of the symbol list: the position of the FIRST symbol
+// with that exact triple, or -1. The symbol list of a ResolvedPackage never changes while it is type checked,
+// so the index is built once and needs no updates.
+kata SymbolIndex {
+    packages: []string;
+    names: []string;
+    kinds: []int64;
+    positions: []int64;
+}
+
+waza index_text_hash(text: string) -> int64 {
+    kaku data = string.to_bytes(text);
+    kaku hash: int64 = 0;
+    kaku at = 0;
+    aida (at < len(data)) {
+        kaku value = hash * 131 + int64(data[at]);
+        hash = value - (value / 2147483647) * 2147483647;
+        at = at + 1;
+    }
+    kaesu hash;
+}
+
+// Only the name and the kind are hashed; symbols that share both in different packages simply probe on, and the
+// package path is compared with the other two fields.
+waza index_slot(capacity: int64, name: string, kind: int64) -> int64 {
+    kaku value = index_text_hash(name) * 31 + kind;
+    kaesu value - (value / capacity) * capacity;
+}
+
+waza index_next(capacity: int64, slot: int64) -> int64 {
+    kaku next = slot + 1;
+    moshi (next == capacity) { kaesu 0; }
+    kaesu next;
+}
+
+waza build_symbol_index(symbols: []resolver.Symbol) -> SymbolIndex {
+    kaku capacity = len(symbols) * 2 + 17;
+    kaku index = SymbolIndex {
+        packages: array.make[string](capacity, ""),
+        names: array.make[string](capacity, ""),
+        kinds: array.make[int64](capacity, 0),
+        positions: array.make[int64](capacity, -1)
+    };
+    kaku position = 0;
+    aida (position < len(symbols)) {
+        kaku symbol = symbols[position];
+        kaku kind = resolver.symbol_kind_code(symbol.kind);
+        kaku slot = index_slot(capacity, symbol.name, kind);
+        kaku placed = iie;
+        aida (!placed) {
+            moshi (index.positions[slot] < 0) {
+                index.packages[slot] = symbol.package_path;
+                index.names[slot] = symbol.name;
+                index.kinds[slot] = kind;
+                index.positions[slot] = position;
+                placed = hai;
+            } sore {
+                // An earlier symbol already owns this exact triple: the first one wins, as in a linear scan.
+                moshi (index.names[slot] == symbol.name && index.kinds[slot] == kind && index.packages[slot] == symbol.package_path) {
+                    placed = hai;
+                } sore {
+                    slot = index_next(capacity, slot);
+                }
+            }
+        }
+        position = position + 1;
+    }
+    kaesu index;
+}
+
+waza find_current_symbol(index: SymbolIndex, package_path: string, name: string, kind: int64) -> int64 {
+    kaku capacity = len(index.positions);
+    kaku slot = index_slot(capacity, name, kind);
+    aida (index.positions[slot] >= 0) {
+        moshi (index.names[slot] == name && index.kinds[slot] == kind && index.packages[slot] == package_path) { kaesu index.positions[slot]; }
+        slot = index_next(capacity, slot);
+    }
+    kaesu -1;
+}

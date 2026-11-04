@@ -159,3 +159,38 @@ waza test_captured_record_replacement_and_recheck_typecheck() -> unit {
     kaku replaced=check_source("kata Item { key: string; } waza apply(callback: () -> unit) -> unit { callback(); } waza test() -> unit { kaku item: Item?=Item {key: \"alive\"}; kaku replace=waza () -> unit {item=Item {key: \"changed\"};}; moshi(item==mu){kaesu;} apply(replace); chant(item.key); }");
     testing.expect(len(replaced.errors)==0,"checking a closure replacement cannot narrow the surrounding declaration");
 }
+
+waza linear_symbol_position(symbols: []resolver.Symbol, package_path: string, name: string, kind: int64) -> int64 {
+    kaku at = 0;
+    aida (at < len(symbols)) {
+        kaku symbol = symbols[at];
+        moshi (symbol.package_path == package_path && symbol.name == name && resolver.symbol_kind_code(symbol.kind) == kind) { kaesu at; }
+        at = at + 1;
+    }
+    kaesu -1;
+}
+
+// The symbol index must answer exactly like a front-to-back scan: same position for every symbol (the first one
+// when a triple repeats), -1 for absent names, wrong kinds and wrong packages.
+waza test_symbol_index_matches_linear_scan() -> unit {
+    kaku source = "kata Point { x: int64; } waza area(p: Point) -> int64 { kaku shadow = p.x; kaesu shadow; } waza shadow(a: int64) -> int64 { kaku shadow = a; kaesu shadow; } kaku value = area(Point { x: 1 }) + shadow(2);";
+    kaku parsed = parser.parse(string.to_bytes(source));
+    kaku resolved = resolver.resolve_program("test", parsed);
+    testing.expect(len(resolved.symbols) > 8, "enough symbols to exercise the table");
+    kaku index = build_symbol_index(resolved.symbols);
+    kaku at = 0;
+    kaku mismatches = 0;
+    aida (at < len(resolved.symbols)) {
+        kaku symbol = resolved.symbols[at];
+        kaku kind = resolver.symbol_kind_code(symbol.kind);
+        moshi (find_current_symbol(index, symbol.package_path, symbol.name, kind) != linear_symbol_position(resolved.symbols, symbol.package_path, symbol.name, kind)) { mismatches = mismatches + 1; }
+        moshi (find_current_symbol(index, symbol.package_path, symbol.name, kind + 100) != -1) { mismatches = mismatches + 1; }
+        moshi (find_current_symbol(index, "other/package", symbol.name, kind) != -1) { mismatches = mismatches + 1; }
+        moshi (find_current_symbol(index, symbol.package_path, string.concat(symbol.name, "_missing"), kind) != -1) { mismatches = mismatches + 1; }
+        at = at + 1;
+    }
+    testing.expect(mismatches == 0, "indexed lookup equals linear scan for hits and misses");
+    kaku empty_symbols: []resolver.Symbol = [];
+    testing.expect(find_current_symbol(build_symbol_index(empty_symbols), "test", "area", 4) == -1, "empty index finds nothing");
+}
+

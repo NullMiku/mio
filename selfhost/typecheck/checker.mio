@@ -215,16 +215,6 @@ koukai waza copy_type_info(result: TypeCheckResult, source: TypeCheckResult, id:
     kaesu parameter_type(result, info.name);
 }
 
-waza find_current_symbol(env: TypeEnvironment, package_path: string, name: string, kind: int64) -> int64 {
-    kaku index = 0;
-    aida (index < len(env.resolved.symbols)) {
-        kaku symbol = env.resolved.symbols[index];
-        moshi (symbol.package_path == package_path && symbol.name == name && resolver.symbol_kind_code(symbol.kind) == kind) { kaesu index; }
-        index = index + 1;
-    }
-    kaesu -1;
-}
-
 waza copied_constant(env: TypeEnvironment, dependency: TypeCheckResult, value: ConstantValue) -> ConstantValue {
     kaesu ConstantValue {
         kind: value.kind, state: value.state, type_id: copy_type_from(env, dependency, value.type_id),
@@ -234,13 +224,14 @@ waza copied_constant(env: TypeEnvironment, dependency: TypeCheckResult, value: C
 }
 
 waza import_dependency_types(env: TypeEnvironment, dependencies: []TypeCheckResult) -> unit {
+    kaku current_symbols = build_symbol_index(env.resolved.symbols);
     kaku dependency_index = 0;
     aida (dependency_index < len(dependencies)) {
         kaku dependency = dependencies[dependency_index];
         kaku symbol_index = 0;
         aida (symbol_index < len(dependency.symbol_types)) {
             kaku item = dependency.symbol_types[symbol_index];
-            kaku source_symbol = find_current_symbol(env, item.package_path, item.name, item.symbol_kind);
+            kaku source_symbol = find_current_symbol(current_symbols, item.package_path, item.name, item.symbol_kind);
             moshi (source_symbol >= 0) { set_symbol_type(env, source_symbol, copy_type_from(env, dependency, item.type_id)); }
             symbol_index = symbol_index + 1;
         }
@@ -252,7 +243,7 @@ waza import_dependency_types(env: TypeEnvironment, dependencies: []TypeCheckResu
                 aida (source_type_index < len(dependency.symbol_types) && dependency.symbol_types[source_type_index].symbol_id != source_constant.symbol_id) { source_type_index = source_type_index + 1; }
                 moshi (source_type_index < len(dependency.symbol_types)) {
                     kaku source_type = dependency.symbol_types[source_type_index];
-                    kaku current_symbol = find_current_symbol(env, source_type.package_path, source_type.name, 3);
+                    kaku current_symbol = find_current_symbol(current_symbols, source_type.package_path, source_type.name, 3);
                     moshi (current_symbol >= 0) {
                         kaku value = copied_constant(env, dependency, source_constant.value);
                         array.push(env.result.constants, ConstantBinding { node: resolver.NodeRef { file_id: -1, node_id: -1 }, symbol_id: current_symbol, declaration: hai, value: value });
@@ -265,7 +256,7 @@ waza import_dependency_types(env: TypeEnvironment, dependencies: []TypeCheckResu
         kaku struct_index = 0;
         aida (struct_index < len(dependency.structs)) {
             kaku source = dependency.structs[struct_index];
-            kaku current_symbol = find_current_symbol(env, source.package_path, source.name, 6);
+            kaku current_symbol = find_current_symbol(current_symbols, source.package_path, source.name, 6);
             moshi (current_symbol >= 0) {
                 kaku fields = array.with_capacity[StructField](len(source.fields)); kaku field = 0;
                 aida (field < len(source.fields)) { array.push(fields, StructField { name: source.fields[field].name, type_id: copy_type_from(env, dependency, source.fields[field].type_id) }); field = field + 1; }
@@ -276,12 +267,12 @@ waza import_dependency_types(env: TypeEnvironment, dependencies: []TypeCheckResu
         kaku enum_index = 0;
         aida (enum_index < len(dependency.enums)) {
             kaku source = dependency.enums[enum_index];
-            kaku current_symbol = find_current_symbol(env, source.package_path, source.name, 7);
+            kaku current_symbol = find_current_symbol(current_symbols, source.package_path, source.name, 7);
             moshi (current_symbol >= 0) {
                 kaku variants = array.with_capacity[EnumVariant](len(source.variants)); kaku variant_index = 0;
                 aida (variant_index < len(source.variants)) {
                     kaku source_variant = source.variants[variant_index];
-                    kaku current_variant = find_current_symbol(env, source.package_path, source_variant.name, 8);
+                    kaku current_variant = find_current_symbol(current_symbols, source.package_path, source_variant.name, 8);
                     kaku fields = array.with_capacity[int64](len(source_variant.fields)); kaku field = 0;
                     aida (field < len(source_variant.fields)) { array.push(fields, copy_type_from(env, dependency, source_variant.fields[field])); field = field + 1; }
                     array.push(variants, EnumVariant { symbol_id: current_variant, name: source_variant.name, fields: fields });
@@ -294,8 +285,8 @@ waza import_dependency_types(env: TypeEnvironment, dependencies: []TypeCheckResu
         kaku signature_index = 0;
         aida (signature_index < len(dependency.signatures)) {
             kaku source = dependency.signatures[signature_index];
-            kaku current_symbol = find_current_symbol(env, source.package_path, source.name, 4);
-            moshi (current_symbol < 0) { current_symbol = find_current_symbol(env, source.package_path, source.name, 5); }
+            kaku current_symbol = find_current_symbol(current_symbols, source.package_path, source.name, 4);
+            moshi (current_symbol < 0) { current_symbol = find_current_symbol(current_symbols, source.package_path, source.name, 5); }
             moshi (current_symbol >= 0) {
                 kaku parameters = array.with_capacity[int64](len(source.parameters)); kaku parameter = 0;
                 aida (parameter < len(source.parameters)) { array.push(parameters, copy_type_from(env, dependency, source.parameters[parameter])); parameter = parameter + 1; }
