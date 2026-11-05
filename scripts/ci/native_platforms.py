@@ -382,6 +382,7 @@ def follower(args, target):
                      "" if same else "the Linux cross build (A) differs from this host's native build (B)")
         smoke(report, cli, target, work)
         if target == "darwin-arm64":
+            darwin_profile(report, cli, work)
             native_mio_test(report, cli, skips_allowed=False)
         else:
             report.check("mio-test", "NOT_APPLICABLE", "native",
@@ -391,6 +392,25 @@ def follower(args, target):
         contract(report, cli, target)
         contract(report, cli, target, suite="differential")
     return finish(report)
+
+
+def darwin_profile(report, cli, work):
+    """Self-build of the CLI by an observation build of itself: the collector/memory counters and the time and peak RSS
+    of a real compiler workload on this host. Observation must not change behaviour, so the output must equal B."""
+    observed = work / "mio-observed"
+    ok, reason, seconds = cli_build(report, "observed-build", cli, "selfhost/cli", "darwin-arm64", observed, extra=("--observe",))
+    if not report.check("observed-cli-build", "PASS" if ok else "FAIL", "native", "" if ok else reason, seconds=round(seconds, 1)):
+        return
+    output = work / "mio-from-observed"
+    argv = ["/usr/bin/time", "-l", observed, "build", "selfhost/cli", "--target=darwin-arm64", "-o", output]
+    code, out, err, seconds = run(report, "observed-self-build", argv, timeout=CLI_BUILD_TIMEOUT)
+    counters = dict(re.findall(r"mio-gc (\w+)=(\d+)", err))
+    timing = dict((name, float(value)) for value, name in re.findall(r"([\d.]+) (real|user|sys)", err))
+    same = code == 0 and output.is_file() and sha256(output) == report.hashes.get("cli-B")
+    report.check("observed-self-build", "PASS" if same else "FAIL", "native",
+                 "" if same else "exit %s or output differs from cli-B: %s" % (code, brief(err)),
+                 seconds=round(seconds, 1), peak_rss_mib=peak_rss_mib(err), time=timing, gc=counters)
+    print("    profile: time %s rss %d MiB counters %s" % (timing, peak_rss_mib(err), counters), flush=True)
 
 
 def finish(report):

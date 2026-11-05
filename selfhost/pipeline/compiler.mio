@@ -31,7 +31,14 @@ koukai waza build_mochi_with_options(data: []uint8, heap_capacity: int64, gc_str
 }
 
 waza build_file(file: mochi.File, heap_capacity: int64, gc_stress: bool) -> NativeBuildResult {
+    kaesu build_file_observed(file, heap_capacity, gc_stress, iie);
+}
+
+// observation: the image dumps its collector and memory counters to stderr at exit (diagnostics only; the program's
+// own behaviour and output are unchanged).
+waza build_file_observed(file: mochi.File, heap_capacity: int64, gc_stress: bool, observation: bool) -> NativeBuildResult {
     kaku lowered = lower.compile_with_heap(file, heap_capacity, gc_stress);
+    moshi (observation) { lowered = lower.compile_with_observation(file, heap_capacity, gc_stress); }
     kaku problem = lowered.error;
     moshi (problem != mu) {
         kaku detail = string.concat(convert.format_int(lower.error_code(problem)), string.concat(" / ", convert.format_int(lower.error_detail(problem))));
@@ -51,7 +58,16 @@ koukai waza build_signed_source(root: string, entry: string, bunko_root: string)
 
 // gc_stress: the generational collector runs a collection at every allocation (lower.compile_with_heap).
 koukai waza build_signed_source_with_options(root: string, entry: string, bunko_root: string, gc_stress: bool) -> NativeBuildResult {
-    kaku compiled = build_source_with_options(root, entry, bunko_root, 1073741824, gc_stress);
+    kaesu build_signed_source_observed(root, entry, bunko_root, gc_stress, iie);
+}
+
+koukai waza build_signed_source_observed(root: string, entry: string, bunko_root: string, gc_stress: bool, observation: bool) -> NativeBuildResult {
+    kaku checked = frontend.compile_source(root, entry, bunko_root);
+    moshi (checked.error != "") { kaesu NativeBuildResult { bytes: [], error: checked.error }; }
+    kaku decoded = mochi.decode(checked.bytes); kaku file = decoded.value;
+    moshi (decoded.error != mu) { kaesu NativeBuildResult { bytes: [], error: "E_IR frontend produced invalid Mochi" }; }
+    moshi (file == mu) { kaesu NativeBuildResult { bytes: [], error: "E_IR frontend returned no module" }; }
+    kaku compiled = build_file_observed(file, 1073741824, gc_stress, observation);
     moshi (compiled.error != "") { kaesu compiled; }
     kaku signed = sign.adhoc(compiled.bytes);
     moshi (signed.error != "") { kaesu NativeBuildResult { bytes: [], error: string.concat("E_SIGN ", signed.error) }; }
