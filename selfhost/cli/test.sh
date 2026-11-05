@@ -2,7 +2,6 @@
 CI_MODULE=core
 source "$(dirname "$0")/../../scripts/ci/common.sh"
 ci_module() {
-  ci_native core-native selfhost/pipeline
-  ci_check command core-independent "$PYTHON" scripts/ci/verify_native.py core
+  ci_native_and_crosscheck core-native selfhost/pipeline core-independent "$PYTHON" scripts/ci/verify_native.py core
 }
 ci_main "$@"

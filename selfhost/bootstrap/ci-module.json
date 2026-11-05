@@ -1,1 +1,19 @@
-{"module":"bootstrap","targets":["macos-arm64"],"suites":["full","bootstrap"],"required_checks":["bootstrap-native","bootstrap-independent","bootstrap-recheck"],"skip_reason":"memory-intensive native bootstrap requires macOS ARM64; full or explicit bootstrap suite"}
+{
+  "module": "bootstrap",
+  "targets": [
+    "macos-arm64"
+  ],
+  "suites": [
+    "full",
+    "bootstrap"
+  ],
+  "required_checks": [
+    "bootstrap-native",
+    "bootstrap-independent",
+    "bootstrap-recheck"
+  ],
+  "skip_reason": "memory-intensive native bootstrap requires macOS ARM64; full or explicit bootstrap suite",
+  "requires": [
+    "codesign"
+  ]
+}

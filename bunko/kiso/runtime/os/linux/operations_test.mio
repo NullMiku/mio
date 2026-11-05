@@ -1,0 +1,89 @@
+yobu "kiso/testing";
+yobu "kiso/runtime/gc";
+
+waza test_capabilities_are_truthful_and_fail_closed() -> unit {
+    kaku t = capabilities();
+    testing.expect(t.os == "linux" && t.arch == "amd64" && t.abi == "sysv" && t.pointer_bits == 64, "descriptor");
+    testing.expect(t.atomic64 && t.virtual_memory && t.monotonic_clock && t.page_size_query && t.executable, "implemented services are claimed");
+    testing.expect(!t.threads && !t.tls && !t.precise_roots && !t.concurrent_collector, "unimplemented services are not claimed");
+    testing.expect(!t.park_wake, "park/wake means the portable condition/mutex protocol, which Linux does not provide yet (raw futex only)");
+    testing.expect(target.concurrent_error(t) != "", "no multi-mutator collector on this adapter yet");
+    testing.expect(target.operation_error(t, gc.operation(gc.thread_start)) != "", "thread start fails closed");
+    testing.expect(target.operation_error(t, gc.operation(gc.reserve)) == "", "virtual memory is accepted");
+    testing.expect(target.operation_error(t, gc.operation(gc.park)) != "" && target.operation_error(t, gc.operation(gc.wake)) != "", "park/wake fail closed");
+    testing.expect(target.operation_error(t, gc.operation(gc.mutex_create)) != "" && target.operation_error(t, gc.operation(gc.condition_create)) != "", "mutex and condition lifecycle fail closed");
+}
+
+waza test_binding_table_is_consistent() -> unit {
+    kaku all = bindings(); kaku i = 0; kaku numbers = syscall_numbers();
+    testing.expect(len(numbers) == slot_count, "slot table matches slot count");
+    aida (i < len(all)) {
+        kaku b = all[i];
+        testing.expect(b.slot >= 0 && b.slot < slot_count && len(b.arguments) <= 6 && b.result_bits == 64, "binding is encodable on System V");
+        kaku j = 0; aida (j < i) { testing.expect(all[j].operation != b.operation, "operation bound once"); j = j + 1; }
+        i = i + 1;
+    }
+}
+
+waza test_image_requires_defined_entry_and_valid_data() -> unit {
+    kaku f = ir.function("main"); ir.put(f, ir.constant, 1, 0, 0, 7); ir.put(f, ir.result, 0, 1, 0, 0);
+    testing.expect(executable([f], bindings(), "missing", 0).error == "UNDEFINED_RUNTIME_ENTRY", "entry must exist");
+    testing.expect(executable([f], bindings(), "main", -1).error == "INVALID_RUNTIME_DATA", "negative data rejected");
+    kaku ok = executable([f], bindings(), "main", 0);
+    testing.expect(ok.error == "" && ok.bytes[0] == uint8(127), "ELF image produced");
+}
+
+// The capability descriptor and the generic descriptor("linux","amd64","sysv") (which target_test.mio keeps
+// fail-closed) must describe the same platform.
+waza test_capabilities_match_the_generic_descriptor() -> unit {
+    kaku generic = target.descriptor("linux", "amd64", "sysv");
+    kaku t = capabilities();
+    testing.expect(t.os == generic.os && t.arch == generic.arch && t.abi == generic.abi, "identity");
+    testing.expect(t.pointer_bits == generic.pointer_bits && t.little_endian == generic.little_endian && t.stack_alignment == generic.stack_alignment, "word size, endianness and stack alignment");
+    testing.expect(target.concurrent_error(generic) != "" && target.concurrent_error(t) != "", "both fail closed for the concurrent collector");
+}
+
+waza defined(functions: []ir.Function, name: string) -> bool {
+    kaku i = 0;
+    aida (i < len(functions)) { moshi (functions[i].name == name) { kaesu hai; } i = i + 1; }
+    kaesu iie;
+}
+
+// os/darwin's platform_wait / platform_wake_all / platform_trylock are pthread condition and mutex operations.
+// Linux does not provide them, and must not provide look-alikes with a different meaning.
+waza test_darwin_condition_functions_are_not_defined() -> unit {
+    kaku functions = platform_program();
+    testing.expect(!defined(functions, "platform_wait") && !defined(functions, "platform_wake_all") && !defined(functions, "platform_trylock"), "no look-alike of the Darwin condition/mutex functions");
+    testing.expect(defined(functions, "platform_now") && defined(functions, "platform_futex_wait") && defined(functions, "platform_futex_wake") && defined(functions, "platform_futex_wake_all"), "clock and futex functions exist");
+    testing.expect(defined(functions, "platform_reserve") && defined(functions, "platform_commit") && defined(functions, "platform_decommit") && defined(functions, "platform_release") && defined(functions, "platform_protect"), "virtual-memory functions exist");
+    // Portable code written for Darwin (calls platform_wait) fails validation instead of mis-lowering.
+    kaku portable = ir.function("portable_wait"); ir.invoke_function(portable, "platform_wait", 3, [0, 1, 2]);
+    kaku c = x86_64.assembler();
+    testing.expect(amd64.emit_program(c, [portable], bindings(), slot_count, "t") == "UNDEFINED_RUNTIME_FUNCTION" && len(c.bytes) == 0, "a Darwin-style wait fails closed");
+    kaku signal = ir.function("signal"); ir.call(signal, 12, 1, [0]);
+    testing.expect(amd64.emit_program(c, [signal], bindings(), slot_count, "t") == "NOT_SUPPORTED_RUNTIME_OPERATION" && len(c.bytes) == 0, "the Darwin condition-signal operation is not bound");
+}
+
+waza test_platform_functions_lower_with_the_bindings() -> unit {
+    kaku c = x86_64.assembler();
+    testing.expect(amd64.emit_program(c, platform_program(), bindings(), slot_count, "p") == "", "every platform function lowers");
+    testing.expect(x86_64.assemble(c).error == "", "and assembles");
+}
+
+// platform_futex_wake_all must ask for every waiter (INT_MAX); a small count would leave waiters asleep,
+// which no single-threaded test can observe, so the constant is checked in the IR itself.
+waza test_wake_all_requests_int_max_waiters() -> unit {
+    kaku functions = platform_program();
+    kaku found = iie; kaku i = 0;
+    aida (i < len(functions)) {
+        moshi (functions[i].name == "platform_futex_wake_all") {
+            kaku s = 0;
+            aida (s < len(functions[i].steps)) {
+                moshi (functions[i].steps[s].kind == ir.constant && functions[i].steps[s].immediate == 2147483647) { found = hai; }
+                s = s + 1;
+            }
+        }
+        i = i + 1;
+    }
+    testing.expect(found, "wake_all passes INT_MAX as the count");
+}

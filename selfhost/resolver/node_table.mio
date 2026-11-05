@@ -1,0 +1,71 @@
+yobu "kiso/array";
+
+// Dense (file id, node id) addressing. Node ids are positions in a file's AST arena, so a flat array with one
+// slot per node of every file replaces searches that compare (file id, node id) pairs one entry at a time.
+koukai kata NodeTable {
+    offsets: []int64;
+    counts: []int64;
+    total: int64;
+}
+
+koukai waza build_node_table(files: []SourceFile) -> NodeTable {
+    kaku offsets = array.with_capacity[int64](len(files));
+    kaku counts = array.with_capacity[int64](len(files));
+    kaku total = 0;
+    kaku file = 0;
+    aida (file < len(files)) {
+        array.push(offsets, total);
+        array.push(counts, len(files[file].ast.nodes));
+        total = total + len(files[file].ast.nodes);
+        file = file + 1;
+    }
+    kaesu NodeTable { offsets: offsets, counts: counts, total: total };
+}
+
+// The slot of a node, or -1 when the pair does not address a node of the table.
+koukai waza node_slot(table: NodeTable, file_id: int64, node_id: int64) -> int64 {
+    moshi (file_id < 0 || file_id >= len(table.offsets) || node_id < 0 || node_id >= table.counts[file_id]) { kaesu -1; }
+    kaesu table.offsets[file_id] + node_id;
+}
+
+// symbols[slot] is the symbol of the FIRST binding recorded for that node (-2: no binding). `complete` is false when
+// a binding refers to a node outside the table; lookups then use the original front-to-back scan.
+koukai kata BindingTable {
+    nodes: NodeTable;
+    symbols: []int64;
+    complete: bool;
+}
+
+koukai waza build_binding_table(resolved: ResolvedPackage) -> BindingTable {
+    kaku nodes = build_node_table(resolved.files);
+    kaku symbols = array.make[int64](nodes.total, -2);
+    kaku complete = hai;
+    kaku at = 0;
+    aida (at < len(resolved.bindings)) {
+        kaku reference = resolved.bindings[at].reference;
+        kaku slot = node_slot(nodes, reference.file_id, reference.node_id);
+        moshi (slot < 0) {
+            complete = iie;
+        } sore {
+            moshi (symbols[slot] == -2) { symbols[slot] = resolved.bindings[at].symbol_id; }
+        }
+        at = at + 1;
+    }
+    kaesu BindingTable { nodes: nodes, symbols: symbols, complete: complete };
+}
+
+// Same answer as scanning resolved.bindings from the front: the first matching binding's symbol, else -1.
+koukai waza lookup_binding(resolved: ResolvedPackage, table: BindingTable, file_id: int64, node_id: int64) -> int64 {
+    kaku slot = node_slot(table.nodes, file_id, node_id);
+    moshi (table.complete && slot >= 0) {
+        moshi (table.symbols[slot] == -2) { kaesu -1; }
+        kaesu table.symbols[slot];
+    }
+    kaku index = 0;
+    aida (index < len(resolved.bindings)) {
+        kaku binding = resolved.bindings[index];
+        moshi (binding.reference.file_id == file_id && binding.reference.node_id == node_id) { kaesu binding.symbol_id; }
+        index = index + 1;
+    }
+    kaesu -1;
+}

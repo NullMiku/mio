@@ -1,0 +1,236 @@
+name: Mio CI V2 / Quick
+on:
+  pull_request:
+    branches: [Mio-2.1]
+permissions:
+  contents: read
+concurrency:
+  group: ci-quick-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  infrastructure:
+    name: CI infrastructure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      native_modules: ${{ steps.plan.outputs.native_modules }}
+      reference_modules: ${{ steps.plan.outputs.reference_modules }}
+      native_needs_go: ${{ steps.plan.outputs.native_needs_go }}
+      macos_modules: ${{ steps.plan.outputs.macos_modules }}
+      native_verification: ${{ steps.plan.outputs.native_verification }}
+    env:
+      MIO_CI_RESULTS: build/ci-results/quick-${{ github.run_id }}-${{ github.run_attempt }}-infrastructure
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+          # Native Verification stays deferred (NOT_RUN) unless the repository variable is exactly "enabled".
+          MIO_NATIVE_VERIFICATION: ${{ vars.MIO_NATIVE_VERIFICATION }}
+        run: python scripts/ci/plan.py plan --base "$BASE_SHA" --head "$HEAD_SHA" --output build/ci-plan/plan.json
+      - run: bash scripts/ci/run.sh linux-amd64 quality quick
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-plan/plan.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-infrastructure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-infrastructure-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/*/report.json
+          if-no-files-found: error
+          retention-days: 7
+  reference:
+    name: Quick / linux-amd64
+    needs: infrastructure
+    if: needs.infrastructure.outputs.reference_modules != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MIO_CI_RESULTS: build/ci-results/quick-${{ github.run_id }}-${{ github.run_attempt }}-linux-amd64
+      MODULES: ${{ needs.infrastructure.outputs.reference_modules }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: bash scripts/ci/run.sh linux-amd64 "$MODULES" quick
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-linux-amd64-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/*/report.json
+          if-no-files-found: error
+          retention-days: 7
+  macos:
+    name: Quick / macos-arm64
+    needs: infrastructure
+    # GitHub-hosted Apple Silicon. Runs the supplementary (Go / VM reference) modules that do not need the trusted
+    # Native Seed. Nothing here is a Native Verification result.
+    if: needs.infrastructure.outputs.macos_modules != ''
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      MIO_CI_RESULTS: build/ci-results/quick-${{ github.run_id }}-${{ github.run_attempt }}-macos-arm64
+      MODULES: ${{ needs.infrastructure.outputs.macos_modules }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: bash scripts/ci/run.sh macos-arm64 "$MODULES" quick
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-macos-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-macos-arm64-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/*/report.json
+          if-no-files-found: error
+          retention-days: 7
+  native:
+    name: Native Verification / macos-arm64
+    needs: infrastructure
+    # Only scheduled when the repository variable MIO_NATIVE_VERIFICATION is exactly "enabled" (the plan then lists
+    # native modules). It needs the trusted Native Seed (SHA-256 pinned in scripts/ci/runner.py) at $MIO_NATIVE_SEED.
+    # No approved Seed source exists yet, so nothing here downloads or builds one: without the Seed the runner
+    # reports NOT_RUN (exit 2) and this job fails; it can never pass without executing the native tests.
+    if: needs.infrastructure.outputs.native_modules != ''
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      MIO_CI_RESULTS: build/ci-results/quick-${{ github.run_id }}-${{ github.run_attempt }}-native-macos-arm64
+      MODULES: ${{ needs.infrastructure.outputs.native_modules }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        if: needs.infrastructure.outputs.native_needs_go == 'true'
+        with:
+          go-version-file: go.mod
+          cache: false
+      # A future step that materializes the trusted Native Seed and exports MIO_NATIVE_SEED belongs here.
+      - run: bash scripts/ci/run.sh macos-arm64 "$MODULES" quick
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-native-macos-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-native-macos-arm64-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MIO_CI_RESULTS }}/*/report.json
+          if-no-files-found: error
+          retention-days: 7
+  gate:
+    name: Mio CI / required
+    if: always()
+    needs: [infrastructure, reference, macos, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: quick-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-plan-download
+      - uses: actions/download-artifact@v4
+        if: needs.infrastructure.result == 'success'
+        with:
+          name: quick-infrastructure-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-evidence/infrastructure
+      - uses: actions/download-artifact@v4
+        if: needs.macos.result == 'success'
+        with:
+          name: quick-macos-arm64-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-evidence/macos
+      - uses: actions/download-artifact@v4
+        if: needs.native.result == 'success'
+        with:
+          name: quick-native-macos-arm64-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-evidence/native
+      - uses: actions/download-artifact@v4
+        if: needs.reference.result == 'success'
+        with:
+          name: quick-linux-amd64-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-evidence/reference
+      - name: Verify required jobs against the recorded plan and execution reports
+        env:
+          INFRASTRUCTURE: ${{ needs.infrastructure.result }}
+          NATIVE: ${{ needs.native.result }}
+          REFERENCE: ${{ needs.reference.result }}
+          MACOS: ${{ needs.macos.result }}
+        run: >-
+          python scripts/ci/plan.py gate --plan build/ci-plan-download/plan.json
+          --infrastructure "$INFRASTRUCTURE" --native "$NATIVE" --reference "$REFERENCE" --macos "$MACOS"
+          --infrastructure-results build/ci-evidence/infrastructure
+          --native-results build/ci-evidence/native --reference-results build/ci-evidence/reference
+          --macos-results build/ci-evidence/macos
+          --output build/ci-gate/report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quick-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/ci-gate/
+          if-no-files-found: error
+          retention-days: 7

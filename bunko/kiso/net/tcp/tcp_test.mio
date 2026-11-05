@@ -18,3 +18,57 @@ waza test_address_validation_and_listener_lifecycle() -> unit {
         testing.expect(second.error != mu, "closing a stale handle must fail safely");
     }
 }
+
+// Loopback round trip on one thread: the kernel completes connect() through the listen backlog, so connect, accept,
+// write and read can run in sequence. Covers byte transfer, EOF after the peer closes, errors on closed handles and a
+// refused connection to a port nobody listens on.
+waza test_loopback_roundtrip_eof_and_errors() -> unit {
+    kaku port = 41000;
+    kaku server = listen(ipv4(uint8(127), uint8(0), uint8(0), uint8(1), port));
+    aida (server.error != mu && port < 41050) {
+        port = port + 1;
+        server = listen(ipv4(uint8(127), uint8(0), uint8(0), uint8(1), port));
+    }
+    testing.expect(server.error == mu, "a loopback listener can be created");
+    kaku listener = server.listener;
+    moshi (listener == mu) { kaesu; }
+    kaku client = connect(ipv4(uint8(127), uint8(0), uint8(0), uint8(1), port));
+    testing.expect(client.error == mu, "connect to the listener succeeds");
+    kaku accepted = accept(listener);
+    testing.expect(accepted.error == mu, "accept returns the pending connection");
+    kaku maybe_out = client.connection;
+    kaku maybe_in = accepted.connection;
+    moshi (maybe_out == mu) { close_listener(listener); kaesu; }
+    moshi (maybe_in == mu) { close_listener(listener); kaesu; }
+    kaku outgoing = maybe_out;
+    kaku incoming = maybe_in;
+    moshi (hai) {
+        kaku payload: []uint8 = [uint8(104), uint8(105), uint8(33)];
+        kaku sent = write_all(outgoing, payload, 0, 3);
+        testing.expect(sent.error == mu && sent.count == 3, "all bytes are written");
+        kaku buffer = array.make[uint8](16, uint8(0));
+        kaku received = read(incoming, buffer, 0, 16);
+        testing.expect(received.error == mu && received.count == 3 && !received.eof, "the bytes arrive");
+        testing.expect(buffer[0] == uint8(104) && buffer[1] == uint8(105) && buffer[2] == uint8(33), "the bytes are intact");
+        kaku zero = read(incoming, buffer, 0, 0);
+        testing.expect(zero.error == mu && zero.count == 0 && !zero.eof, "a zero-length read is not EOF");
+        testing.expect(read(incoming, buffer, 0, 99).error != mu, "a range outside the buffer is rejected");
+        testing.expect(close(outgoing).error == mu, "the client closes");
+        kaku finished = read(incoming, buffer, 0, 16);
+        testing.expect(finished.error == mu && finished.count == 0 && finished.eof, "EOF after the peer closed");
+        testing.expect(write(outgoing, payload, 0, 3).error != mu, "writing on a closed connection fails");
+        testing.expect(close(outgoing).error != mu, "closing twice fails");
+        testing.expect(close(incoming).error == mu, "the server side closes");
+    }
+    testing.expect(close_listener(listener).error == mu, "the listener closes");
+    kaku refused = connect(ipv4(uint8(127), uint8(0), uint8(0), uint8(1), port));
+    testing.expect(refused.connection == mu && refused.error != mu, "a connection to a closed port is refused");
+    kaku in_use = listen(ipv4(uint8(127), uint8(0), uint8(0), uint8(1), port));
+    testing.expect(in_use.error == mu, "the port can be listened on again after close");
+    kaku again = in_use.listener;
+    moshi (again != mu) {
+        kaku clash = listen(ipv4(uint8(127), uint8(0), uint8(0), uint8(1), port));
+        testing.expect(clash.error != mu, "a second listener on the same port reports address in use");
+        close_listener(again);
+    }
+}

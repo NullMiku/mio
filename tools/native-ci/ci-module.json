@@ -1,1 +1,19 @@
-{"module":"native-release","targets":["macos-arm64"],"suites":["release"],"required_checks":["release-native","release-build","release-independent"],"skip_reason":"explicit release suite uses existing production sandbox, trusted seed and frozen production inputs; not ordinary PR coverage"}
+{
+  "module": "native-release",
+  "targets": [
+    "macos-arm64"
+  ],
+  "suites": [
+    "release"
+  ],
+  "required_checks": [
+    "release-native",
+    "release-build",
+    "release-independent"
+  ],
+  "skip_reason": "explicit release suite uses existing production sandbox, trusted seed and frozen production inputs; not ordinary PR coverage",
+  "requires": [
+    "codesign",
+    "/usr/bin/sandbox-exec"
+  ]
+}

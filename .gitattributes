@@ -6,3 +6,8 @@
 
 # Compiled Mio bytecode (only applies if such files are committed).
 *.miob binary linguist-generated -linguist-detectable
+
+# CI and module entrypoints must also work in a Windows Git Bash checkout.
+*.sh text eol=lf
+# Golden diagnostics compare exact rendered LF bytes on every host.
+internal/diagnostic/testdata/unicode.golden text eol=lf

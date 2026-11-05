@@ -159,3 +159,77 @@ waza test_captured_record_replacement_and_recheck_typecheck() -> unit {
     kaku replaced=check_source("kata Item { key: string; } waza apply(callback: () -> unit) -> unit { callback(); } waza test() -> unit { kaku item: Item?=Item {key: \"alive\"}; kaku replace=waza () -> unit {item=Item {key: \"changed\"};}; moshi(item==mu){kaesu;} apply(replace); chant(item.key); }");
     testing.expect(len(replaced.errors)==0,"checking a closure replacement cannot narrow the surrounding declaration");
 }
+
+waza linear_symbol_position(symbols: []resolver.Symbol, package_path: string, name: string, kind: int64) -> int64 {
+    kaku at = 0;
+    aida (at < len(symbols)) {
+        kaku symbol = symbols[at];
+        moshi (symbol.package_path == package_path && symbol.name == name && resolver.symbol_kind_code(symbol.kind) == kind) { kaesu at; }
+        at = at + 1;
+    }
+    kaesu -1;
+}
+
+// The symbol index must answer exactly like a front-to-back scan: same position for every symbol (the first one
+// when a triple repeats), -1 for absent names, wrong kinds and wrong packages.
+waza test_symbol_index_matches_linear_scan() -> unit {
+    kaku source = "kata Point { x: int64; } waza area(p: Point) -> int64 { kaku shadow = p.x; kaesu shadow; } waza shadow(a: int64) -> int64 { kaku shadow = a; kaesu shadow; } kaku value = area(Point { x: 1 }) + shadow(2);";
+    kaku parsed = parser.parse(string.to_bytes(source));
+    kaku resolved = resolver.resolve_program("test", parsed);
+    testing.expect(len(resolved.symbols) > 8, "enough symbols to exercise the table");
+    kaku index = build_symbol_index(resolved.symbols);
+    kaku at = 0;
+    kaku mismatches = 0;
+    aida (at < len(resolved.symbols)) {
+        kaku symbol = resolved.symbols[at];
+        kaku kind = resolver.symbol_kind_code(symbol.kind);
+        moshi (find_current_symbol(index, symbol.package_path, symbol.name, kind) != linear_symbol_position(resolved.symbols, symbol.package_path, symbol.name, kind)) { mismatches = mismatches + 1; }
+        moshi (find_current_symbol(index, symbol.package_path, symbol.name, kind + 100) != -1) { mismatches = mismatches + 1; }
+        moshi (find_current_symbol(index, "other/package", symbol.name, kind) != -1) { mismatches = mismatches + 1; }
+        moshi (find_current_symbol(index, symbol.package_path, string.concat(symbol.name, "_missing"), kind) != -1) { mismatches = mismatches + 1; }
+        at = at + 1;
+    }
+    testing.expect(mismatches == 0, "indexed lookup equals linear scan for hits and misses");
+    kaku empty_symbols: []resolver.Symbol = [];
+    testing.expect(find_current_symbol(build_symbol_index(empty_symbols), "test", "area", 4) == -1, "empty index finds nothing");
+}
+
+// set_node_type keeps one entry per node: a repeated call replaces the type in place, and the entry order is
+// the order of first recording (what the linear scan produced).
+waza test_set_node_type_updates_in_place() -> unit {
+    kaku parsed = parser.parse(string.to_bytes("kaku a = 1; kaku b = 2;"));
+    kaku resolved = resolver.resolve_program("test", parsed);
+    kaku env = new_environment(resolved);
+    testing.expect(set_node_type(env, 0, 2, 7) == 7, "first record returns the type");
+    testing.expect(set_node_type(env, 0, 1, 8) == 8, "second node");
+    testing.expect(set_node_type(env, 0, 2, 9) == 9, "update returns the new type");
+    testing.expect(len(env.result.node_types) == 2, "one entry per node");
+    testing.expect(env.result.node_types[0].node.node_id == 2 && env.result.node_types[0].type_id == 9, "updated in place at its first position");
+    testing.expect(env.result.node_types[1].node.node_id == 1 && env.result.node_types[1].type_id == 8, "order of first recording kept");
+    testing.expect(set_node_type(env, 3, 4000, 5) == 5 && set_node_type(env, 3, 4000, 6) == 6, "nodes outside the table use the scan");
+    testing.expect(len(env.result.node_types) == 3 && env.result.node_types[2].type_id == 6, "foreign node recorded once");
+}
+
+waza test_qualified_name_matches_concatenation() -> unit {
+    kaku packages = ["main", "kiso/array", "", "mio/os", "é"];
+    kaku names = ["Point", "Box", "", "x", "名"];
+    kaku wrong = 0;
+    kaku p = 0;
+    aida (p < len(packages)) {
+        kaku n = 0;
+        aida (n < len(names)) {
+            kaku qualified = string.concat(string.concat(packages[p], "."), names[n]);
+            moshi (!qualified_name_matches(packages[p], names[n], qualified)) { wrong = wrong + 1; }
+            // every near miss must be rejected exactly like the string comparison rejects it
+            moshi (qualified_name_matches(packages[p], names[n], string.concat(qualified, "x"))) { wrong = wrong + 1; }
+            moshi (qualified_name_matches(packages[p], names[n], names[n])) { wrong = wrong + 1; }
+            moshi (qualified_name_matches(packages[p], names[n], string.concat(string.concat(packages[p], ":"), names[n]))) { wrong = wrong + 1; }
+            moshi (qualified_name_matches(string.concat(packages[p], "x"), names[n], qualified)) { wrong = wrong + 1; }
+            moshi (qualified_name_matches(packages[p], string.concat("y", names[n]), qualified)) { wrong = wrong + 1; }
+            n = n + 1;
+        }
+        p = p + 1;
+    }
+    testing.expect(wrong == 0, "qualified name comparison equals package + dot + name");
+    testing.expect(qualified_name_matches("a", "bc", "a.bc") && !qualified_name_matches("ab", "c", "a.bc") && !qualified_name_matches("a", "bc", "a.bd"), "split point and last byte matter");
+}

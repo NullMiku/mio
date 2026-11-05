@@ -1,0 +1,1215 @@
+yobu "kiso/aot/elf";
+yobu "kiso/aot/lower/types";
+yobu "kiso/aot/x86_64";
+yobu "kiso/array";
+yobu "kiso/convert";
+yobu "kiso/encoding/mochi";
+yobu "kiso/string";
+
+// Pure Mio Mochi -> Linux x86-64 ELF64 lowering (scalar subset, first slice).
+//
+// Execution model: the Mochi operand stack is the native stack (rsp). Locals of a
+// function live in its frame (rbp-relative); arguments are pushed by the caller
+// and popped by the caller after the call. Globals are 64-bit slots at the start
+// of the zero-filled RW segment. Anything outside the supported subset is a
+// compile error: nothing is ignored, and there is no VM fallback.
+koukai kata LowerResult { bytes: []uint8; error: string; }
+
+waza failed(message: string) -> LowerResult { kaesu LowerResult { bytes: [], error: message }; }
+
+waza block_label(prefix: string, offset: int64) -> string {
+    kaesu string.concat(prefix, string.concat(".", convert.format_int(offset)));
+}
+waza function_label(id: int64) -> string { kaesu string.concat("fn.", convert.format_int(id)); }
+waza operand_u16(data: []uint8, offset: int64) -> int64 {
+    kaesu int64(data[offset + 1]) * 256 + int64(data[offset + 2]);
+}
+
+// 64-bit constant from the serialized high/low halves, as a signed value.
+waza constant_value(constant: mochi.Constant) -> int64 {
+    kaku high = int64(constant.bits.high);
+    kaku low = int64(constant.bits.low);
+    kaku tag = int64(constant.tag);
+    // Fixed-width constants carry their exact payload: int8/16/32 sign-extend, uint8/16/32 zero-extend.
+    moshi (tag == 5) { moshi (low >= 128) { kaesu low - 256; } kaesu low; }
+    moshi (tag == 6) { moshi (low >= 32768) { kaesu low - 65536; } kaesu low; }
+    moshi (tag == 7) { moshi (low >= 2147483648) { kaesu low - 4294967296; } kaesu low; }
+    moshi (tag >= 8) { kaesu low; }
+    moshi (high >= 2147483648) { high = high - 4294967296; }
+    kaesu high * 4294967296 + low;
+}
+
+waza push(code: x86_64.Assembler, reg: int64) -> unit { x86_64.push_r(code, reg); }
+waza pop(code: x86_64.Assembler, reg: int64) -> unit { x86_64.pop_r(code, reg); }
+
+// Slot address of local `index` of a function with `parameters` parameters.
+waza local_disp(parameters: int64, index: int64) -> int64 {
+    moshi (index < parameters) { kaesu 16 + 8 * (parameters - 1 - index); }
+    kaesu -8 * (index - parameters + 1);
+}
+
+waza emit_write_literal(code: x86_64.Assembler, label: string, length: int64, fd: int64) -> unit {
+    x86_64.mov_eax_imm(code, 1);
+    x86_64.mov_ri(code, x86_64.rdi, fd);
+    x86_64.lea_label(code, x86_64.rsi, label);
+    x86_64.mov_ri(code, x86_64.rdx, length);
+    x86_64.syscall(code);
+}
+
+waza emit_exit(code: x86_64.Assembler, status: int64) -> unit {
+    x86_64.mov_ri(code, x86_64.rdi, status);
+    x86_64.mov_eax_imm(code, 231);
+    x86_64.syscall(code);
+}
+
+waza data_string(code: x86_64.Assembler, label: string, text: string) -> unit {
+    x86_64.label(code, label);
+    kaku bytes = string.to_bytes(text);
+    kaku at = 0;
+    aida (at < len(bytes)) { x86_64.byte(code, int64(bytes[at])); at = at + 1; }
+}
+
+// rt.print_int: value in rax; writes the decimal text and a newline to stdout.
+waza emit_print_int(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.print_int");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 64);
+    x86_64.mov_ri(code, x86_64.r9, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ge, "rt.print_int.positive");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.r9, 1);
+    x86_64.label(code, "rt.print_int.positive");
+    x86_64.lea(code, x86_64.rsi, x86_64.rbp, -1);
+    x86_64.mov_ri(code, x86_64.rdx, 10);
+    x86_64.mov_store8(code, x86_64.rsi, 0, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.r8, 10);
+    x86_64.label(code, "rt.print_int.digit");
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.div_r(code, x86_64.r8);
+    x86_64.add_ri(code, x86_64.rdx, 48);
+    x86_64.sub_ri(code, x86_64.rsi, 1);
+    x86_64.mov_store8(code, x86_64.rsi, 0, x86_64.rdx);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.print_int.digit");
+    x86_64.test_rr(code, x86_64.r9, x86_64.r9);
+    x86_64.jcc(code, x86_64.cc_e, "rt.print_int.write");
+    x86_64.mov_ri(code, x86_64.rdx, 45);
+    x86_64.sub_ri(code, x86_64.rsi, 1);
+    x86_64.mov_store8(code, x86_64.rsi, 0, x86_64.rdx);
+    x86_64.label(code, "rt.print_int.write");
+    x86_64.lea(code, x86_64.rdx, x86_64.rbp, 0);
+    x86_64.sub_rr(code, x86_64.rdx, x86_64.rsi);
+    x86_64.mov_eax_imm(code, 1);
+    x86_64.mov_ri(code, x86_64.rdi, 1);
+    x86_64.syscall(code);
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+}
+
+// rt.print_bool: value in rax.
+waza emit_print_bool(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.print_bool");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.print_bool.false");
+    emit_write_literal(code, "rt.text.true", 4, 1);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.print_bool.false");
+    emit_write_literal(code, "rt.text.false", 4, 1);
+    x86_64.ret(code);
+}
+
+waza emit_trap(code: x86_64.Assembler, label: string, text: string, length: int64) -> unit {
+    x86_64.label(code, label);
+    emit_write_literal(code, text, length, 2);
+    emit_exit(code, 1);
+}
+
+waza emit_runtime(code: x86_64.Assembler) -> unit {
+    emit_print_int(code);
+    emit_print_bool(code);
+    emit_gc_runtime(code);
+    emit_string_equal(code);
+    emit_print_string(code);
+    emit_fail_string(code);
+    emit_object_runtime(code);
+    emit_box_runtime(code);
+    emit_fs_runtime(code);
+    emit_map_runtime(code);
+    emit_testing_runtime(code);
+    emit_trap(code, "rt.trap.nil", "rt.text.nil", 25);
+    emit_trap(code, "rt.trap.index", "rt.text.index", 33);
+    emit_trap(code, "rt.trap.convert", "rt.text.convert", 36);
+    emit_trap(code, "rt.trap.unreachable", "rt.text.unreachable", 37);
+    data_string(code, "rt.text.unreachable", "runtime error: unsupported operation\n");
+    emit_trap(code, "rt.trap.call", "rt.text.call", 29);
+    data_string(code, "rt.text.call", "runtime error: invalid call\n");
+    data_string(code, "rt.text.nil", "runtime error: nil reference\n");
+    data_string(code, "rt.text.index", "runtime error: index out of range\n");
+    data_string(code, "rt.text.convert", "runtime error: integer out of range\n");
+    x86_64.label(code, "rt.trap.memory");
+    emit_write_literal(code, "rt.text.memory", 22, 2);
+    emit_exit(code, 1);
+    data_string(code, "rt.text.newline", "\n");
+    data_string(code, "rt.text.nilline", "nil\n");
+    data_string(code, "rt.text.memory", "runtime error: memory\n");
+    x86_64.label(code, "rt.trap.divide");
+    emit_write_literal(code, "rt.text.divide", 32, 2);
+    emit_exit(code, 1);
+    data_string(code, "rt.text.true", "hai\n");
+    data_string(code, "rt.text.false", "iie\n");
+    data_string(code, "rt.text.divide", "runtime error: division by zero\n");
+}
+
+waza condition_for(opcode: int64) -> int64 {
+    moshi (opcode == 11) { kaesu x86_64.cc_e; }
+    moshi (opcode == 12) { kaesu x86_64.cc_ne; }
+    moshi (opcode == 13) { kaesu x86_64.cc_l; }
+    moshi (opcode == 14) { kaesu x86_64.cc_le; }
+    moshi (opcode == 15) { kaesu x86_64.cc_g; }
+    kaesu x86_64.cc_ge;
+}
+
+// Data segment: word 0 = heap_next, word 1 = heap_end, 16..1552 = NativeFS handle table, 1552..3600 = directory iteration state, then the Mochi globals.
+waza global_address(code: x86_64.Assembler, slot: int64) -> unit {
+    x86_64.mov_ri(code, x86_64.rcx, globals_base() + slot * 8);
+}
+
+// Object header word: kind in the low byte, total size in bytes above it.
+waza object_kind_string() -> int64 { kaesu 6; }
+
+waza emit_word(code: x86_64.Assembler, value: int64) -> unit {
+    kaku rest = value;
+    kaku at = 0;
+    aida (at < 8) {
+        kaku low = rest - (rest / 256) * 256;
+        x86_64.byte(code, low);
+        rest = rest / 256;
+        at = at + 1;
+    }
+}
+
+waza string_label(index: int64) -> string { kaesu string.concat("str.", convert.format_int(index)); }
+
+// String constants are immutable objects in the code segment: header, gc word, length, bytes.
+waza emit_string_constants(code: x86_64.Assembler, file: mochi.File) -> unit {
+    kaku index = 0;
+    aida (index < len(file.constants)) {
+        kaku constant = file.constants[index];
+        moshi (int64(constant.tag) == 2) {
+            x86_64.label(code, string_label(index));
+            emit_word(code, object_kind_string() + 256 * (24 + len(constant.data)));
+            emit_word(code, 0);
+            emit_word(code, len(constant.data));
+            kaku at = 0;
+            aida (at < len(constant.data)) { x86_64.byte(code, int64(constant.data[at])); at = at + 1; }
+        }
+        index = index + 1;
+    }
+}
+
+// rt.string_equal: rax, rcx = strings -> rax = 1 when equal.
+waza emit_string_equal(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.string_equal");
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rax, 16);
+    x86_64.mov_load(code, x86_64.r8, x86_64.rcx, 16);
+    x86_64.cmp_rr(code, x86_64.rdx, x86_64.r8);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.string_equal.no");
+    x86_64.lea(code, x86_64.rax, x86_64.rax, 24);
+    x86_64.lea(code, x86_64.rcx, x86_64.rcx, 24);
+    x86_64.label(code, "rt.string_equal.loop");
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.string_equal.yes");
+    x86_64.mov_load8(code, x86_64.r8, x86_64.rax, 0);
+    x86_64.mov_load8(code, x86_64.r9, x86_64.rcx, 0);
+    x86_64.cmp_rr(code, x86_64.r8, x86_64.r9);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.string_equal.no");
+    x86_64.add_ri(code, x86_64.rax, 1);
+    x86_64.add_ri(code, x86_64.rcx, 1);
+    x86_64.sub_ri(code, x86_64.rdx, 1);
+    x86_64.jmp(code, "rt.string_equal.loop");
+    x86_64.label(code, "rt.string_equal.yes");
+    x86_64.mov_ri(code, x86_64.rax, 1);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.string_equal.no");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+}
+
+// rt.fail_string: rax = message -> message and a newline on stderr, exit status 1.
+waza emit_fail_string(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fail_string");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rax, 16);
+    x86_64.lea(code, x86_64.rsi, x86_64.rax, 24);
+    x86_64.mov_eax_imm(code, 1);
+    x86_64.mov_ri(code, x86_64.rdi, 2);
+    x86_64.syscall(code);
+    emit_write_literal(code, "rt.text.newline", 1, 2);
+    emit_exit(code, 1);
+}
+
+// rt.print_string: rax = string -> text and a newline on stdout.
+waza emit_print_string(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.print_string");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.print_string.text");
+    emit_write_literal(code, "rt.text.nilline", 4, 1);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.print_string.text");
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rax, 16);
+    x86_64.lea(code, x86_64.rsi, x86_64.rax, 24);
+    x86_64.mov_eax_imm(code, 1);
+    x86_64.mov_ri(code, x86_64.rdi, 1);
+    x86_64.syscall(code);
+    emit_write_literal(code, "rt.text.newline", 1, 1);
+    x86_64.ret(code);
+}
+
+// Emits the instructions of the main program (function_id < 0) or of one function.
+waza emit_block(code: x86_64.Assembler, file: mochi.File, analysis: types.TypeAnalysis, data: []uint8,
+    prefix: string, function_id: int64, parameters: int64) -> string {
+    kaku offset = 0;
+    aida (offset < len(data)) {
+        x86_64.label(code, block_label(prefix, offset));
+        kaku opcode = int64(data[offset]);
+        moshi (!supported(opcode)) { kaesu string.concat("UNSUPPORTED_OPCODE ", convert.format_int(opcode)); }
+        kaku step = types.type_instruction_width(opcode);
+        moshi (step == 0) { kaesu string.concat("UNSUPPORTED_OPCODE ", convert.format_int(opcode)); }
+        kaku operand = 0;
+        moshi (step >= 3) { operand = operand_u16(data, offset); }
+        moshi (opcode == 65) { operand = int64(data[offset + 1]); }
+        moshi (opcode == 1) {
+            moshi (operand < 0 || operand >= len(file.constants)) { kaesu "INVALID_CONSTANT_INDEX"; }
+            kaku constant = file.constants[operand];
+            moshi (int64(constant.tag) == 2) { x86_64.lea_label(code, x86_64.rax, string_label(operand)); push(code, x86_64.rax); }
+            moshi (int64(constant.tag) == 1 || (int64(constant.tag) >= 3 && int64(constant.tag) <= 10)) { x86_64.mov_ri(code, x86_64.rax, constant_value(constant)); push(code, x86_64.rax); }
+            moshi (int64(constant.tag) != 1 && int64(constant.tag) != 2 && !(int64(constant.tag) >= 3 && int64(constant.tag) <= 10)) { kaesu string.concat("UNSUPPORTED_CONSTANT_TAG ", convert.format_int(int64(constant.tag))); }
+        }
+        moshi (opcode >= 11 && opcode <= 16 && operand_is_string(analysis, function_id, offset)) {
+            moshi (opcode >= 13) { kaesu "UNSUPPORTED_STRING_ORDERING"; }
+            kaku raw = block_label(string.concat(prefix, ".sraw"), offset);
+            kaku finished = block_label(string.concat(prefix, ".sdone"), offset);
+            pop(code, x86_64.rcx); pop(code, x86_64.rax);
+            x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+            x86_64.jcc(code, x86_64.cc_e, raw);
+            x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+            x86_64.jcc(code, x86_64.cc_e, raw);
+            x86_64.call(code, "rt.string_equal");
+            x86_64.jmp(code, finished);
+            x86_64.label(code, raw);
+            x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+            x86_64.setcc_rax(code, x86_64.cc_e);
+            x86_64.label(code, finished);
+            moshi (opcode == 12) { x86_64.mov_ri(code, x86_64.rcx, 1); x86_64.xor_rr(code, x86_64.rax, x86_64.rcx); }
+            push(code, x86_64.rax);
+        }
+        moshi ((opcode == 11 || opcode == 12) && (nilish(analysis, stack_node(analysis, function_id, offset, 0)) || nilish(analysis, stack_node(analysis, function_id, offset, 1))) && !operand_is_string(analysis, function_id, offset)) {
+            // A value that the analysis types as non-nullable can never be nil, whatever bits it holds.
+            kaku left_nil = nilish(analysis, stack_node(analysis, function_id, offset, 1));
+            kaku right_nil = nilish(analysis, stack_node(analysis, function_id, offset, 0));
+            kaku is_nil_case = block_label(string.concat(prefix, ".nnil"), offset);
+            kaku non_nil_case = block_label(string.concat(prefix, ".nval"), offset);
+            kaku finished = block_label(string.concat(prefix, ".ndone"), offset);
+            pop(code, x86_64.rcx); pop(code, x86_64.rax);
+            moshi (left_nil) { x86_64.test_rr(code, x86_64.rax, x86_64.rax); x86_64.jcc(code, x86_64.cc_e, is_nil_case); }
+            moshi (right_nil) { x86_64.test_rr(code, x86_64.rcx, x86_64.rcx); x86_64.jcc(code, x86_64.cc_e, is_nil_case); }
+            x86_64.jmp(code, non_nil_case);
+            x86_64.label(code, is_nil_case);
+            moshi (left_nil && right_nil) {
+                x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+                moshi (opcode == 11) { x86_64.setcc_rax(code, x86_64.cc_e); }
+                moshi (opcode == 12) { x86_64.setcc_rax(code, x86_64.cc_ne); }
+            }
+            moshi (!(left_nil && right_nil)) { x86_64.mov_ri(code, x86_64.rax, opcode - 11); }
+            x86_64.jmp(code, finished);
+            x86_64.label(code, non_nil_case);
+            moshi (nullable_scalar(analysis, stack_node(analysis, function_id, offset, 1))) { x86_64.mov_load(code, x86_64.rax, x86_64.rax, 16); }
+            moshi (nullable_scalar(analysis, stack_node(analysis, function_id, offset, 0))) { x86_64.mov_load(code, x86_64.rcx, x86_64.rcx, 16); }
+            x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+            moshi (opcode == 11) { x86_64.setcc_rax(code, x86_64.cc_e); }
+            moshi (opcode == 12) { x86_64.setcc_rax(code, x86_64.cc_ne); }
+            x86_64.label(code, finished);
+            push(code, x86_64.rax);
+        }
+        moshi ((opcode == 2 || opcode == 4 || opcode == 5 || opcode == 6 || (opcode >= 11 && opcode <= 16)) && float_kind(analysis, stack_node(analysis, function_id, offset, 0)) != 0 && !nil_equality(analysis, function_id, offset, opcode)) {
+            kaku fk = float_kind(analysis, stack_node(analysis, function_id, offset, 0));
+            pop(code, x86_64.rcx); pop(code, x86_64.rax);
+            unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rcx); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 1), x86_64.rax);
+            emit_float_load(code, fk, 0, x86_64.rax); emit_float_load(code, fk, 1, x86_64.rcx);
+            kaku double = fk == 2;
+            moshi (opcode == 2) { x86_64.sse_arith(code, double, 88, 0, 1); }
+            moshi (opcode == 4) { x86_64.sse_arith(code, double, 92, 0, 1); }
+            moshi (opcode == 5) { x86_64.sse_arith(code, double, 89, 0, 1); }
+            moshi (opcode == 6) { x86_64.sse_arith(code, double, 94, 0, 1); }
+            moshi (opcode <= 6) { emit_float_store(code, fk, x86_64.rax, 0); }
+            moshi (opcode == 11) {
+                x86_64.ucomis(code, double, 0, 1);
+                x86_64.setcc_rax(code, x86_64.cc_e); x86_64.setcc_rcx(code, 11); x86_64.and_rr(code, x86_64.rax, x86_64.rcx);
+            }
+            moshi (opcode == 12) {
+                x86_64.ucomis(code, double, 0, 1);
+                x86_64.setcc_rax(code, x86_64.cc_ne); x86_64.setcc_rcx(code, 10); x86_64.or_rr(code, x86_64.rax, x86_64.rcx);
+            }
+            moshi (opcode == 13 || opcode == 14) {
+                x86_64.ucomis(code, double, 1, 0);
+                moshi (opcode == 13) { x86_64.setcc_rax(code, x86_64.cc_a); }
+                moshi (opcode == 14) { x86_64.setcc_rax(code, x86_64.cc_ae); }
+            }
+            moshi (opcode == 15 || opcode == 16) {
+                x86_64.ucomis(code, double, 0, 1);
+                moshi (opcode == 15) { x86_64.setcc_rax(code, x86_64.cc_a); }
+                moshi (opcode == 16) { x86_64.setcc_rax(code, x86_64.cc_ae); }
+            }
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 7 && float_kind(analysis, stack_node(analysis, function_id, offset, 0)) != 0) {
+            kaku fk = float_kind(analysis, stack_node(analysis, function_id, offset, 0));
+            pop(code, x86_64.rax);
+            unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rax);
+            moshi (fk == 2) { x86_64.mov_ri(code, x86_64.rcx, -9223372036854775807 - 1); }
+            moshi (fk == 1) { x86_64.mov_ri(code, x86_64.rcx, 2147483648); }
+            x86_64.xor_rr(code, x86_64.rax, x86_64.rcx);
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 28 || opcode == 50) {
+            pop(code, x86_64.rax); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rax);
+            x86_64.cvtsi2s(code, opcode == 28, 0, x86_64.rax);
+            emit_float_store(code, 2 - (opcode - 28) / 22, x86_64.rax, 0);
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 29 || opcode == 51) {
+            pop(code, x86_64.rax); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rax);
+            emit_float_load(code, 2 - (opcode - 29) / 22, 0, x86_64.rax);
+            x86_64.cvtts2si(code, opcode == 29, x86_64.rax, 0);
+            x86_64.mov_ri(code, x86_64.rcx, -9223372036854775807 - 1);
+            x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+            x86_64.jcc(code, x86_64.cc_e, "rt.trap.convert");
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 52) {
+            pop(code, x86_64.rax); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rax); x86_64.movd_xmm_r(code, 0, x86_64.rax); x86_64.cvtss2sd(code, 0, 0); x86_64.movq_r_xmm(code, x86_64.rax, 0); push(code, x86_64.rax);
+        }
+        moshi (opcode == 53) {
+            pop(code, x86_64.rax); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rax); x86_64.movq_xmm_r(code, 0, x86_64.rax); x86_64.cvtsd2ss(code, 0, 0); x86_64.movd_r_xmm(code, x86_64.rax, 0); push(code, x86_64.rax);
+        }
+        moshi ((opcode == 2 || opcode == 4 || opcode == 5 || (opcode >= 11 && opcode <= 16 && !operand_is_string(analysis, function_id, offset))) && float_kind(analysis, stack_node(analysis, function_id, offset, 0)) == 0 && !nil_equality(analysis, function_id, offset, opcode)) {
+            pop(code, x86_64.rcx); pop(code, x86_64.rax);
+            unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rcx); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 1), x86_64.rax);
+            moshi (opcode == 2) { x86_64.add_rr(code, x86_64.rax, x86_64.rcx); }
+            moshi (opcode == 4) { x86_64.sub_rr(code, x86_64.rax, x86_64.rcx); }
+            moshi (opcode == 5) { x86_64.imul_rr(code, x86_64.rax, x86_64.rcx); }
+            moshi (opcode >= 11) { x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx); x86_64.setcc_rax(code, condition_for(opcode)); }
+            moshi (opcode < 11) { emit_normalize(code, types.integer_descriptor(analysis, stack_node(analysis, function_id, offset, 0))); }
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 6 && float_kind(analysis, stack_node(analysis, function_id, offset, 0)) == 0) {
+            kaku done = block_label(string.concat(prefix, ".div"), offset);
+            kaku wrapped = block_label(string.concat(prefix, ".neg"), offset);
+            pop(code, x86_64.rcx); pop(code, x86_64.rax);
+            unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rcx); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 1), x86_64.rax);
+            x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+            x86_64.jcc(code, x86_64.cc_e, "rt.trap.divide");
+            x86_64.mov_ri(code, x86_64.rdx, -1);
+            x86_64.cmp_rr(code, x86_64.rcx, x86_64.rdx);
+            x86_64.jcc(code, x86_64.cc_e, wrapped);
+            x86_64.cqo(code);
+            x86_64.idiv_r(code, x86_64.rcx);
+            x86_64.jmp(code, done);
+            x86_64.label(code, wrapped);
+            x86_64.neg_r(code, x86_64.rax);
+            x86_64.label(code, done);
+            emit_normalize(code, types.integer_descriptor(analysis, stack_node(analysis, function_id, offset, 0)));
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 3) { pop(code, x86_64.rax); }
+        moshi (opcode == 7 && float_kind(analysis, stack_node(analysis, function_id, offset, 0)) == 0) {
+            pop(code, x86_64.rax); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rax); x86_64.neg_r(code, x86_64.rax);
+            emit_normalize(code, types.integer_descriptor(analysis, stack_node(analysis, function_id, offset, 0)));
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 8 || opcode == 9) {
+            x86_64.mov_ri(code, x86_64.rax, 9 - opcode);
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 10) {
+            pop(code, x86_64.rax); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rax); x86_64.mov_ri(code, x86_64.rcx, 1); x86_64.xor_rr(code, x86_64.rax, x86_64.rcx); push(code, x86_64.rax);
+        }
+        moshi (opcode == 17) {
+            moshi (operand <= offset) {
+                kaku poll = emit_poll(code, file, analysis, function_id, offset, parameters);
+                moshi (poll != "") { kaesu poll; }
+            }
+            x86_64.jmp(code, block_label(prefix, operand));
+        }
+        moshi (opcode == 18) {
+            pop(code, x86_64.rax); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rax); x86_64.test_rr(code, x86_64.rax, x86_64.rax); x86_64.jcc(code, x86_64.cc_e, block_label(prefix, operand));
+        }
+        moshi (opcode == 19 || opcode == 20) {
+            moshi (operand < 0 || operand >= file.global_count) { kaesu "INVALID_GLOBAL_INDEX"; }
+            global_address(code, operand);
+            moshi (opcode == 19) { pop(code, x86_64.rax); x86_64.mov_store(code, x86_64.rcx, 0, x86_64.rax); }
+            moshi (opcode == 20) { x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 0); push(code, x86_64.rax); }
+        }
+        moshi (opcode == 32) {
+            kaku entries = analysis.blocks[function_id + 1].entry[offset];
+            moshi (len(entries) < 1) { kaesu "MISSING_TYPE_INFO"; }
+            kaku kind = types.type_kind(analysis, entries[len(entries) - 1]);
+            moshi (kind != types.type_string_id && kind != types.type_array_ref) { kaesu string.concat("UNSUPPORTED_LEN_TYPE ", convert.format_int(kind)); }
+            pop(code, x86_64.rax);
+            x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+            x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+            x86_64.mov_load(code, x86_64.rax, x86_64.rax, 16);
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 21) { x86_64.mov_ri(code, x86_64.rax, 0); push(code, x86_64.rax); }
+        moshi (opcode == 34) {
+            // Only values the analysis types as nullable (or nil itself) can be nil, whatever bits a raw scalar holds.
+            kaku node = stack_node(analysis, function_id, offset, 0);
+            moshi (node < 0) { kaesu "MISSING_TYPE_INFO"; }
+            pop(code, x86_64.rax);
+            moshi (types.type_kind(analysis, node) == types.type_nil) { x86_64.mov_ri(code, x86_64.rax, 1); }
+            moshi (types.type_kind(analysis, node) != types.type_nil && types.type_nullable(analysis, node)) {
+                x86_64.test_rr(code, x86_64.rax, x86_64.rax); x86_64.setcc_rax(code, x86_64.cc_e);
+            }
+            moshi (types.type_kind(analysis, node) != types.type_nil && !types.type_nullable(analysis, node)) { x86_64.mov_ri(code, x86_64.rax, 0); }
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 55) {
+            kaku target = int64(data[offset + 1]);
+            moshi (target < 1 || target > 7) { kaesu "INVALID_INTEGER_TARGET"; }
+            pop(code, x86_64.rax); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rax);
+            moshi (target != 4) {
+                kaku minimum = -128; kaku maximum = 127;
+                moshi (target == 2) { minimum = -32768; maximum = 32767; }
+                moshi (target == 3) { minimum = -2147483648; maximum = 2147483647; }
+                moshi (target == 5) { minimum = 0; maximum = 255; }
+                moshi (target == 6) { minimum = 0; maximum = 65535; }
+                moshi (target == 7) { minimum = 0; maximum = 4294967295; }
+                x86_64.mov_ri(code, x86_64.rcx, minimum); x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx); x86_64.jcc(code, x86_64.cc_l, "rt.trap.convert");
+                x86_64.mov_ri(code, x86_64.rcx, maximum); x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx); x86_64.jcc(code, x86_64.cc_g, "rt.trap.convert");
+            }
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 30 || opcode == 56) {
+            kaku count = operand;
+            kaku descriptor = -1;
+            moshi (opcode == 56) { descriptor = int64(data[offset + 3]); }
+            moshi (opcode == 30) {
+                kaku result_node = stack_node(analysis, function_id, offset + step, 0);
+                moshi (result_node < 0) { kaesu "MISSING_TYPE_INFO"; }
+                descriptor = inferred_descriptor(analysis, result_node);
+            }
+            moshi (descriptor < 0 || descriptor > 255) { kaesu "UNSUPPORTED_ARRAY_ELEMENT"; }
+            kaku array_result = stack_node(analysis, function_id, offset + step, 0);
+            kaku wanted = element_node(analysis, array_result);
+            kaku slot = 0;
+            aida (slot < count && wanted >= 0) {
+                kaku held = stack_node(analysis, function_id, offset, count - 1 - slot);
+                moshi (held >= 0 && nullable_scalar(analysis, held) != nullable_scalar(analysis, wanted) && types.type_kind(analysis, held) != types.type_nil) {
+                    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 8 * (count - 1 - slot));
+                    convert_scalar(code, analysis, held, wanted);
+                    x86_64.mov_store(code, x86_64.rsp, 8 * (count - 1 - slot), x86_64.rax);
+                }
+                slot = slot + 1;
+            }
+            x86_64.mov_ri(code, x86_64.rdi, count); x86_64.mov_ri(code, x86_64.rsi, count);
+            emit_array_new_call(code, descriptor);
+            moshi (count > 0) {
+                x86_64.mov_load(code, x86_64.rdi, x86_64.rax, 40);
+                x86_64.lea(code, x86_64.rsi, x86_64.rsp, 8 * (count - 1));
+                x86_64.mov_ri(code, x86_64.rcx, count);
+                kaku loop = block_label(string.concat(prefix, ".arr"), offset);
+                x86_64.label(code, loop);
+                x86_64.mov_load(code, x86_64.rdx, x86_64.rsi, 0);
+                moshi (array_width(descriptor) == 1) { x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rdx); x86_64.add_ri(code, x86_64.rdi, 1); }
+                moshi (array_width(descriptor) != 1) { x86_64.mov_store(code, x86_64.rdi, 0, x86_64.rdx); x86_64.add_ri(code, x86_64.rdi, 8); }
+                x86_64.sub_ri(code, x86_64.rsi, 8);
+                x86_64.sub_ri(code, x86_64.rcx, 1);
+                x86_64.jcc(code, x86_64.cc_ne, loop);
+                x86_64.add_ri(code, x86_64.rsp, 8 * count);
+            }
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 57) {
+            kaku descriptor = int64(data[offset + 1]);
+            moshi (descriptor == 0) { kaesu "UNSUPPORTED_ARRAY_ELEMENT"; }
+            kaku made = stack_node(analysis, function_id, offset + step, 0);
+            pop(code, x86_64.rax);
+            convert_scalar(code, analysis, stack_node(analysis, function_id, offset, 0), element_node(analysis, made));
+            x86_64.mov_rr(code, x86_64.rdx, x86_64.rax);
+            pop(code, x86_64.rdi);
+            unbox_node(code, analysis, stack_node(analysis, function_id, offset, 1), x86_64.rdi);
+            x86_64.mov_rr(code, x86_64.rsi, x86_64.rdi);
+            x86_64.push_r(code, x86_64.rdx);
+            emit_array_new_call(code, descriptor);
+            x86_64.pop_r(code, x86_64.rdx);
+            x86_64.push_r(code, x86_64.rax);
+            x86_64.call(code, "rt.array_fill");
+            x86_64.pop_r(code, x86_64.rax);
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 58) {
+            kaku descriptor = int64(data[offset + 1]);
+            moshi (descriptor == 0) { kaesu "UNSUPPORTED_ARRAY_ELEMENT"; }
+            pop(code, x86_64.rsi);
+            unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rsi);
+            x86_64.mov_ri(code, x86_64.rdi, 0);
+            emit_array_new_call(code, descriptor);
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 59) {
+            pop(code, x86_64.rax);
+            convert_scalar(code, analysis, stack_node(analysis, function_id, offset, 0), element_node(analysis, stack_node(analysis, function_id, offset, 1)));
+            x86_64.mov_rr(code, x86_64.r10, x86_64.rax);
+            pop(code, x86_64.rdi);
+            x86_64.mov_rr(code, x86_64.rdx, x86_64.r10);
+            x86_64.call(code, "rt.array_push");
+        }
+        moshi (opcode == 60) {
+            pop(code, x86_64.rax); x86_64.test_rr(code, x86_64.rax, x86_64.rax); x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+            x86_64.mov_load(code, x86_64.rax, x86_64.rax, 24); push(code, x86_64.rax);
+        }
+        moshi (opcode == 61) { pop(code, x86_64.rsi); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rsi); pop(code, x86_64.rdi); x86_64.call(code, "rt.array_reserve"); }
+        moshi (opcode == 62) { pop(code, x86_64.rdi); x86_64.call(code, "rt.array_clone"); push(code, x86_64.rax); }
+        moshi (opcode == 63) { pop(code, x86_64.rsi); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rsi); pop(code, x86_64.rdi); x86_64.call(code, "rt.array_truncate"); }
+        moshi (opcode == 64) { pop(code, x86_64.rsi); pop(code, x86_64.rdi); x86_64.call(code, "rt.array_append_all"); }
+        moshi (opcode == 31) {
+            kaku problem = emit_array_op_check(analysis, function_id, offset, 1);
+            moshi (problem != "") { kaesu problem; }
+            kaku result_node = stack_node(analysis, function_id, offset + step, 0);
+            pop(code, x86_64.rsi); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rsi);
+            pop(code, x86_64.rdi); x86_64.call(code, "rt.array_get");
+            convert_scalar(code, analysis, element_node(analysis, stack_node(analysis, function_id, offset, 1)), result_node);
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 33 || opcode == 35) {
+            kaku problem = emit_array_op_check(analysis, function_id, offset, 2);
+            moshi (problem != "") { kaesu problem; }
+            pop(code, x86_64.rax);
+            convert_scalar(code, analysis, stack_node(analysis, function_id, offset, 0), element_node(analysis, stack_node(analysis, function_id, offset, 2)));
+            x86_64.mov_rr(code, x86_64.r10, x86_64.rax);
+            pop(code, x86_64.rsi); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 1), x86_64.rsi);
+            pop(code, x86_64.rdi);
+            x86_64.mov_rr(code, x86_64.rdx, x86_64.r10);
+            x86_64.call(code, "rt.array_set");
+        }
+        moshi (opcode == 36) {
+            kaku problem = emit_record(code, analysis, function_id, offset, 1, 0, operand);
+            moshi (problem != "") { kaesu problem; }
+        }
+        moshi (opcode == 38) {
+            kaku count = int64(data[offset + 3]) * 256 + int64(data[offset + 4]);
+            kaku problem = emit_record(code, analysis, function_id, offset, 2, operand, count);
+            moshi (problem != "") { kaesu problem; }
+        }
+        moshi (opcode == 37 || opcode == 40) {
+            pop(code, x86_64.rax); emit_record_load(code, operand); push(code, x86_64.rax);
+        }
+        moshi (opcode == 39) {
+            pop(code, x86_64.rax); x86_64.test_rr(code, x86_64.rax, x86_64.rax); x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+            x86_64.mov_load(code, x86_64.rax, x86_64.rax, 32); push(code, x86_64.rax);
+        }
+        moshi (opcode == 65) {
+            moshi (operand != 1 && operand != 2) { kaesu "UNSUPPORTED_DATA_CONVERT"; }
+            pop(code, x86_64.rax);
+            moshi (operand == 1) { x86_64.call(code, "rt.string_to_bytes"); }
+            moshi (operand == 2) { x86_64.call(code, "rt.string_from_bytes"); }
+            push(code, x86_64.rax);
+        }
+        moshi (opcode == 54) {
+            kaku primitive = int64(data[offset + 1]);
+            kaku argument_count = int64(data[offset + 2]);
+            moshi (primitive == 10 && argument_count == 2) {
+                pop(code, x86_64.rcx); pop(code, x86_64.rax);
+                unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rcx); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 1), x86_64.rax);
+                x86_64.add_rr(code, x86_64.rax, x86_64.rcx);
+                x86_64.setcc_rax(code, 0);
+                push(code, x86_64.rax);
+            }
+            moshi ((primitive == 11 || primitive == 12) && argument_count == 1) {
+                kaku node = stack_node(analysis, function_id, offset, 0);
+                kaku fk = float_kind(analysis, node);
+                moshi (fk == 0 && (node < 0 || types.type_kind(analysis, node) != types.type_integer)) { kaesu "UNSUPPORTED_MATH_OPERAND"; }
+                pop(code, x86_64.rax); unbox_node(code, analysis, node, x86_64.rax);
+                moshi (primitive == 11 && fk == 2) { x86_64.shr_ri(code, x86_64.rax, 63); }
+                moshi (primitive == 11 && fk == 1) { x86_64.shr_ri(code, x86_64.rax, 31); x86_64.and_ri(code, x86_64.rax, 1); }
+                moshi (primitive == 12 && fk != 0) { x86_64.mov_ri(code, x86_64.rax, 0); }
+                moshi (primitive == 11 && fk == 0) {
+                    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+                    x86_64.setcc_rax(code, x86_64.cc_l);
+                }
+                moshi (primitive == 12 && fk == 0) {
+                    kaku descriptor = types.integer_descriptor(analysis, node);
+                    kaku minimum = 0;
+                    moshi (descriptor < 15) {
+                        minimum = -9223372036854775807 - 1;
+                        moshi (descriptor == 12) { minimum = -128; }
+                        moshi (descriptor == 13) { minimum = -32768; }
+                        moshi (descriptor == 14) { minimum = -2147483648; }
+                        x86_64.mov_ri(code, x86_64.rcx, minimum);
+                        x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+                        x86_64.setcc_rax(code, x86_64.cc_e);
+                    }
+                    moshi (descriptor >= 15) { x86_64.mov_ri(code, x86_64.rax, 0); }
+                }
+                push(code, x86_64.rax);
+            }
+            moshi (primitive >= 1 && primitive <= 9 && argument_count == 1) {
+                kaku fk = float_kind(analysis, stack_node(analysis, function_id, offset, 0));
+                moshi (fk == 0) { kaesu "UNSUPPORTED_MATH_OPERAND"; }
+                kaku double = fk == 2;
+                pop(code, x86_64.rax); unbox_node(code, analysis, stack_node(analysis, function_id, offset, 0), x86_64.rax);
+                moshi (primitive == 1) { emit_float_load(code, fk, 0, x86_64.rax); x86_64.sse_arith(code, double, 81, 0, 0); emit_float_store(code, fk, x86_64.rax, 0); }
+                moshi (primitive >= 2 && primitive <= 5) {
+                    kaku mode = 9;
+                    moshi (primitive == 3) { mode = 10; }
+                    moshi (primitive == 4) { mode = 8; }
+                    moshi (primitive == 5) { mode = 11; }
+                    emit_float_load(code, fk, 0, x86_64.rax); x86_64.rounds(code, double, 0, 0, mode); emit_float_store(code, fk, x86_64.rax, 0);
+                }
+                moshi (primitive == 6) {
+                    emit_float_load(code, fk, 0, x86_64.rax); x86_64.ucomis(code, double, 0, 0); x86_64.setcc_rax(code, 10);
+                }
+                moshi (primitive == 7 || primitive == 8) {
+                    // exponent field all ones: infinity or NaN; infinity has a zero fraction
+                    kaku bits = 52; kaku mask = 2047; kaku infinity = 9218868437227405312;
+                    moshi (fk == 1) { bits = 23; mask = 255; infinity = 2139095040; }
+                    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+                    x86_64.shr_ri(code, x86_64.rcx, bits);
+                    x86_64.and_ri(code, x86_64.rcx, mask);
+                    x86_64.cmp_ri(code, x86_64.rcx, mask);
+                    moshi (primitive == 8) { x86_64.setcc_rax(code, x86_64.cc_ne); }
+                    moshi (primitive == 7) {
+                        x86_64.setcc_rcx(code, x86_64.cc_e);
+                        x86_64.mov_ri(code, x86_64.rdx, infinity);
+                        moshi (fk == 1) { x86_64.and_ri(code, x86_64.rax, 2147483647); }
+                        moshi (fk == 2) { x86_64.shl_ri(code, x86_64.rax, 1); x86_64.shr_ri(code, x86_64.rax, 1); }
+                        x86_64.cmp_rr(code, x86_64.rax, x86_64.rdx);
+                        x86_64.setcc_rax(code, x86_64.cc_e);
+                        x86_64.and_rr(code, x86_64.rax, x86_64.rcx);
+                    }
+                }
+                moshi (primitive == 9) {
+                    moshi (fk == 2) { x86_64.mov_ri(code, x86_64.rcx, -9223372036854775807 - 1); }
+                    moshi (fk == 1) { x86_64.mov_ri(code, x86_64.rcx, 2147483648); }
+                    x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+                    x86_64.setcc_rax(code, x86_64.cc_e);
+                }
+                push(code, x86_64.rax);
+            }
+            moshi (primitive == 13 && argument_count == 1) {
+                pop(code, x86_64.rax);
+                x86_64.call(code, "rt.fail_string");
+            }
+            moshi (primitive < 1 || primitive > 13 || (primitive == 10 && argument_count != 2) || (primitive != 10 && argument_count != 1)) {
+                kaesu string.concat("UNSUPPORTED_MATH_PRIMITIVE ", convert.format_int(primitive));
+            }
+        }
+        moshi (opcode == 22) {
+            moshi (function_id < -1 || offset >= len(analysis.blocks[function_id + 1].entry)) { kaesu "MISSING_TYPE_INFO"; }
+            kaku entries = analysis.blocks[function_id + 1].entry[offset];
+            moshi (len(entries) == 0) { kaesu "MISSING_TYPE_INFO"; }
+            kaku kind = types.type_kind(analysis, entries[len(entries) - 1]);
+            pop(code, x86_64.rax);
+            unbox_node(code, analysis, entries[len(entries) - 1], x86_64.rax);
+            kaku nullable = types.type_nullable(analysis, entries[len(entries) - 1]) && !nullable_scalar(analysis, entries[len(entries) - 1]);
+            moshi ((nullable && kind != types.type_string_id) || (kind != types.type_integer && kind != types.type_bool && kind != types.type_string_id)) { kaesu string.concat("UNSUPPORTED_CHANT_TYPE ", convert.format_int(kind)); }
+            moshi (kind == types.type_integer) { x86_64.call(code, "rt.print_int"); }
+            moshi (kind == types.type_bool) { x86_64.call(code, "rt.print_bool"); }
+            moshi (kind == types.type_string_id) { x86_64.call(code, "rt.print_string"); }
+        }
+        moshi (opcode == 23 || opcode == 49 || opcode == 24) {
+            moshi (function_id < 0) { kaesu "LOCAL_OUTSIDE_FUNCTION"; }
+            moshi (operand < 0 || operand >= file.functions[function_id].local_count) { kaesu "INVALID_LOCAL_INDEX"; }
+            kaku disp = local_disp(parameters, operand);
+            kaku captured = operand < len(analysis.cells[function_id]) && analysis.cells[function_id][operand];
+            moshi (!captured) {
+                moshi (opcode == 24) {
+                    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, disp);
+                    convert_scalar(code, analysis, analysis.locals[function_id][operand], stack_node(analysis, function_id, offset + step, 0));
+                    push(code, x86_64.rax);
+                }
+                moshi (opcode != 24) { pop(code, x86_64.rax); x86_64.mov_store(code, x86_64.rbp, disp, x86_64.rax); }
+            }
+            moshi (captured) {
+                kaku node = analysis.locals[function_id][operand];
+                    kaku reference = is_reference_node(analysis, node);
+                moshi (opcode == 49) {
+                    pop(code, x86_64.r9);
+                    emit_new_cell(code, reference);
+                    x86_64.mov_store(code, x86_64.rax, 16, x86_64.r9);
+                    x86_64.mov_store(code, x86_64.rbp, disp, x86_64.rax);
+                }
+                moshi (opcode == 23) {
+                    pop(code, x86_64.r9);
+                    emit_cell_pointer(code, disp, reference);
+                    x86_64.mov_store(code, x86_64.rax, 16, x86_64.r9);
+                }
+                moshi (opcode == 24) {
+                    emit_cell_pointer(code, disp, reference);
+                    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 16);
+                    convert_scalar(code, analysis, node, stack_node(analysis, function_id, offset + step, 0));
+                    push(code, x86_64.rax);
+                }
+            }
+        }
+        moshi (opcode == 44 || opcode == 46) {
+            moshi (operand < 0 || operand >= len(file.functions)) { kaesu "INVALID_FUNCTION_INDEX"; }
+            kaku problem = emit_closure(code, file, analysis, function_id, parameters, operand, opcode == 46);
+            moshi (problem != "") { kaesu problem; }
+        }
+        moshi (opcode == 47 || opcode == 48) {
+            moshi (function_id < 0 || operand >= len(analysis.upvalues[function_id])) { kaesu "INVALID_UPVALUE"; }
+            kaku node = analysis.upvalues[function_id][operand];
+            x86_64.mov_load(code, x86_64.rax, x86_64.rbp, 16 + 8 * parameters);
+            x86_64.mov_load(code, x86_64.rax, x86_64.rax, 40);
+            x86_64.mov_load(code, x86_64.rax, x86_64.rax, 24 + 8 * operand);
+            moshi (opcode == 47) { x86_64.mov_load(code, x86_64.rax, x86_64.rax, 16); push(code, x86_64.rax); }
+            moshi (opcode == 48) { pop(code, x86_64.rcx); x86_64.mov_store(code, x86_64.rax, 16, x86_64.rcx); }
+        }
+        moshi (opcode >= 41 && opcode <= 43) {
+            kaku map_problem = emit_map_op(code, analysis, function_id, offset, step, opcode);
+            moshi (map_problem != "") { kaesu map_problem; }
+        }
+        moshi (opcode == 66) {
+            // declared representation of the value on top of the stack: enforced by the analysis, no code
+        }
+        moshi (opcode == 45 || opcode == 67) {
+            kaku entries = analysis.blocks[function_id + 1].entry[offset];
+            kaku after = analysis.blocks[function_id + 1].entry[offset + step];
+            kaku returns = 0;
+            moshi (len(after) == len(entries) - operand) { returns = 1; }
+            moshi (opcode == 67) { returns = int64(data[offset + 3]); }
+            x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 8 * operand);
+            x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+            x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+            x86_64.mov_load(code, x86_64.rcx, x86_64.rax, 24);
+            x86_64.cmp_ri(code, x86_64.rcx, operand);
+            x86_64.jcc(code, x86_64.cc_ne, "rt.trap.call");
+            x86_64.mov_load(code, x86_64.rcx, x86_64.rax, 32);
+            x86_64.cmp_ri(code, x86_64.rcx, returns);
+            x86_64.jcc(code, x86_64.cc_ne, "rt.trap.call");
+            x86_64.call_memory(code, x86_64.rax, 48);
+            kaku site = emit_frame_descriptor(code, file, analysis, function_id, offset, parameters);
+            moshi (site != "") { kaesu site; }
+            x86_64.add_ri(code, x86_64.rsp, 8 * (operand + 1));
+            moshi (returns == 1) { push(code, x86_64.rax); }
+        }
+        moshi (opcode == 25) {
+            moshi (operand < 0 || operand >= len(file.functions)) { kaesu "INVALID_FUNCTION_INDEX"; }
+            kaku callee = file.functions[operand];
+            x86_64.call(code, function_label(operand));
+            kaku site = emit_frame_descriptor(code, file, analysis, function_id, offset, parameters);
+            moshi (site != "") { kaesu site; }
+            moshi (callee.parameter_count > 0) { x86_64.add_ri(code, x86_64.rsp, 8 * callee.parameter_count); }
+            moshi (callee.returns_value) { push(code, x86_64.rax); }
+        }
+        moshi (opcode == 26 || opcode == 27) {
+            moshi (function_id < 0) { kaesu "RETURN_OUTSIDE_FUNCTION"; }
+            moshi (opcode == 27) { pop(code, x86_64.rax); }
+            x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp); pop(code, x86_64.rbp); x86_64.ret(code);
+        }
+        moshi (!supported(opcode)) { kaesu string.concat("UNSUPPORTED_OPCODE ", convert.format_int(opcode)); }
+        moshi (raw_producer(opcode) && offset + step <= len(data)) {
+            kaku produced = stack_node(analysis, function_id, offset + step, 0);
+            moshi (produced >= 0 && nullable_scalar(analysis, produced)) {
+                pop(code, x86_64.rax);
+                x86_64.call(code, "rt.box_scalar");
+                push(code, x86_64.rax);
+            }
+        }
+        offset = offset + step;
+    }
+    x86_64.label(code, block_label(prefix, offset));
+    kaesu "";
+}
+
+// Fresh cell in rax (kind 9 holds a scalar, kind 10 a reference). Clobbers rcx, rdx, r8.
+waza emit_new_cell(code: x86_64.Assembler, reference: bool) -> unit {
+    x86_64.mov_ri(code, x86_64.rax, 24);
+    x86_64.call(code, "rt.alloc");
+    kaku kind = 9;
+    moshi (reference) { kind = 10; }
+    x86_64.mov_ri(code, x86_64.rcx, 24 * 256 + kind);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rcx);
+}
+
+// rax = the cell stored in the frame slot at `disp`, created on first use.
+waza emit_cell_pointer(code: x86_64.Assembler, disp: int64, reference: bool) -> unit {
+    kaku ready = block_label("cell_ready", len(code.bytes));
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, disp);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ne, ready);
+    emit_new_cell(code, reference);
+    x86_64.mov_store(code, x86_64.rbp, disp, x86_64.rax);
+    x86_64.label(code, ready);
+}
+
+// Closure object (kind 7): [16] target, [24] parameters, [32] returns, [40] environment, [48] code address.
+// Environment (kind 8): [16] count, [24 + 8i] cells of the captured variables.
+waza emit_closure(code: x86_64.Assembler, file: mochi.File, analysis: types.TypeAnalysis, function_id: int64,
+    parameters: int64, target: int64, captures: bool) -> string {
+    kaku callee = file.functions[target];
+    kaku count = len(callee.captures);
+    moshi (!captures && count != 0) { kaesu "CAPTURES_WITHOUT_ENVIRONMENT"; }
+    moshi (count > 0) {
+        x86_64.mov_ri(code, x86_64.rax, 24 + 8 * count);
+        x86_64.call(code, "rt.alloc");
+        x86_64.mov_ri(code, x86_64.rcx, (24 + 8 * count) * 256 + 8);
+        x86_64.mov_store(code, x86_64.rax, 0, x86_64.rcx);
+        x86_64.mov_ri(code, x86_64.rcx, count);
+        x86_64.mov_store(code, x86_64.rax, 16, x86_64.rcx);
+        x86_64.push_r(code, x86_64.rax);
+        kaku index = 0;
+        aida (index < count) {
+            kaku capture = callee.captures[index];
+            moshi (capture.local) {
+                moshi (function_id < 0) { kaesu "CAPTURE_OUTSIDE_FUNCTION"; }
+                kaku node = analysis.locals[function_id][capture.index];
+                    emit_cell_pointer(code, local_disp(parameters, capture.index), is_reference_node(analysis, node));
+            }
+            moshi (!capture.local) {
+                moshi (function_id < 0) { kaesu "CAPTURE_OUTSIDE_FUNCTION"; }
+                x86_64.mov_load(code, x86_64.rax, x86_64.rbp, 16 + 8 * parameters);
+                x86_64.mov_load(code, x86_64.rax, x86_64.rax, 40);
+                x86_64.mov_load(code, x86_64.rax, x86_64.rax, 24 + 8 * capture.index);
+            }
+            x86_64.mov_load(code, x86_64.rcx, x86_64.rsp, 0);
+            x86_64.mov_store(code, x86_64.rcx, 24 + 8 * index, x86_64.rax);
+            index = index + 1;
+        }
+    }
+    moshi (count == 0) { x86_64.mov_ri(code, x86_64.rax, 0); x86_64.push_r(code, x86_64.rax); }
+    x86_64.mov_ri(code, x86_64.rax, 56);
+    x86_64.call(code, "rt.alloc");
+    x86_64.mov_ri(code, x86_64.rcx, 56 * 256 + 7);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rcx);
+    x86_64.mov_ri(code, x86_64.rcx, target);
+    x86_64.mov_store(code, x86_64.rax, 16, x86_64.rcx);
+    x86_64.mov_ri(code, x86_64.rcx, callee.parameter_count);
+    x86_64.mov_store(code, x86_64.rax, 24, x86_64.rcx);
+    kaku returns = 0;
+    moshi (callee.returns_value) { returns = 1; }
+    x86_64.mov_ri(code, x86_64.rcx, returns);
+    x86_64.mov_store(code, x86_64.rax, 32, x86_64.rcx);
+    x86_64.pop_r(code, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rax, 40, x86_64.rcx);
+    x86_64.lea_label(code, x86_64.rcx, function_label(target));
+    x86_64.mov_store(code, x86_64.rax, 48, x86_64.rcx);
+    push(code, x86_64.rax);
+    kaesu "";
+}
+
+// 0 = not a float, 1 = float32, 2 = float64 (an unresolved float literal counts as float64).
+waza float_kind(analysis: types.TypeAnalysis, node: int64) -> int64 {
+    moshi (node < 0) { kaesu 0; }
+    kaku kind = types.type_kind(analysis, node);
+    moshi (kind == types.type_float32) { kaesu 1; }
+    moshi (kind == types.type_float64 || kind == types.type_float_any) { kaesu 2; }
+    kaesu 0;
+}
+
+// xmm0 <- rax, xmm1 <- rcx for the given float kind (1 or 2).
+waza emit_float_load(code: x86_64.Assembler, kind: int64, xmm: int64, reg: int64) -> unit {
+    moshi (kind == 2) { x86_64.movq_xmm_r(code, xmm, reg); }
+    moshi (kind == 1) { x86_64.movd_xmm_r(code, xmm, reg); }
+}
+waza emit_float_store(code: x86_64.Assembler, kind: int64, reg: int64, xmm: int64) -> unit {
+    moshi (kind == 2) { x86_64.movq_r_xmm(code, reg, xmm); }
+    moshi (kind == 1) { x86_64.movd_r_xmm(code, reg, xmm); }
+}
+
+
+// Nullable scalars (int64?, bool?, float64? ...) are boxed: a pointer to a kind-11 object holding the value at
+// [16], or 0 for nil. Every stack/storage slot whose analysis type is a nullable scalar holds such a box.
+waza unbox_node(code: x86_64.Assembler, analysis: types.TypeAnalysis, node: int64, reg: int64) -> unit {
+    moshi (node >= 0 && nullable_scalar(analysis, node)) {
+        x86_64.test_rr(code, reg, reg);
+        x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+        x86_64.mov_load(code, reg, reg, 16);
+    }
+}
+
+waza nilish(analysis: types.TypeAnalysis, node: int64) -> bool {
+    kaesu node >= 0 && (types.type_nullable(analysis, node) || types.type_kind(analysis, node) == types.type_nil);
+}
+
+// Convert the value in rax between the representation of `source` and of `target` (box <-> raw).
+// Clobbers rcx, rdx, r8, r9 when it boxes.
+waza convert_scalar(code: x86_64.Assembler, analysis: types.TypeAnalysis, source: int64, target: int64) -> unit {
+    moshi (source < 0 || target < 0) { kaesu; }
+    moshi (types.type_kind(analysis, source) == types.type_nil) { kaesu; }
+    kaku source_box = nullable_scalar(analysis, source);
+    kaku target_box = nullable_scalar(analysis, target);
+    moshi (source_box && !target_box) { unbox_node(code, analysis, source, x86_64.rax); }
+    moshi (!source_box && target_box) { x86_64.call(code, "rt.box_scalar"); }
+}
+
+waza nil_equality(analysis: types.TypeAnalysis, function_id: int64, offset: int64, opcode: int64) -> bool {
+    moshi (opcode != 11 && opcode != 12) { kaesu iie; }
+    kaesu (nilish(analysis, stack_node(analysis, function_id, offset, 0)) || nilish(analysis, stack_node(analysis, function_id, offset, 1))) && !operand_is_string(analysis, function_id, offset);
+}
+
+// Element node of the array whose analysis node is `array_node` (-1 when unknown).
+waza element_node(analysis: types.TypeAnalysis, array_node: int64) -> int64 {
+    moshi (array_node < 0 || types.type_kind(analysis, array_node) != types.type_array_ref) { kaesu -1; }
+    kaesu types.type_array_element(analysis.arena, array_node);
+}
+
+waza raw_producer(opcode: int64) -> bool {
+    kaesu opcode == 1 || opcode == 8 || opcode == 9 || opcode == 10 || opcode == 34 || opcode == 7 || opcode == 2 ||
+        (opcode >= 4 && opcode <= 6) || (opcode >= 11 && opcode <= 16) || (opcode >= 28 && opcode <= 29) ||
+        (opcode >= 50 && opcode <= 55) || opcode == 32 || opcode == 60;
+}
+
+waza emit_box_runtime(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.box_scalar");
+    x86_64.mov_rr(code, x86_64.r9, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 24);
+    x86_64.call(code, "rt.alloc");
+    x86_64.mov_ri(code, x86_64.rcx, 24 * 256 + 11);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rax, 16, x86_64.r9);
+    x86_64.ret(code);
+}
+
+waza nullable_scalar_descriptor(descriptor: int64) -> bool {
+    kaku kind = descriptor - (descriptor / 128) * 128;
+    kaesu descriptor >= 128 && (kind == 1 || kind == 4 || kind == 2 || kind == 3 || (kind >= 12 && kind <= 17));
+}
+
+waza supported(opcode: int64) -> bool {
+    kaesu (opcode >= 1 && opcode <= 20) || opcode == 22 || (opcode >= 23 && opcode <= 27) || (opcode >= 30 && opcode <= 40) || opcode == 28 || opcode == 29 || (opcode >= 50 && opcode <= 53) || opcode == 49 || (opcode >= 44 && opcode <= 48) || opcode == 66 || opcode == 67 || (opcode >= 41 && opcode <= 43) || opcode == 54 || opcode == 55 || (opcode >= 56 && opcode <= 65) || opcode == 21;
+}
+
+
+waza stack_node(analysis: types.TypeAnalysis, function_id: int64, offset: int64, depth: int64) -> int64 {
+    kaku entries = analysis.blocks[function_id + 1].entry[offset];
+    moshi (depth >= len(entries)) { kaesu -1; }
+    kaesu entries[len(entries) - 1 - depth];
+}
+
+waza scalar_kind(kind: int64) -> bool {
+    kaesu kind == types.type_integer || kind == types.type_bool || kind == types.type_float32 || kind == types.type_float64 || kind == types.type_float_any;
+}
+
+// Nullable scalars are boxed by the ARM64 backend; this backend does not support them yet.
+waza nullable_scalar(analysis: types.TypeAnalysis, node: int64) -> bool {
+    kaesu types.type_nullable(analysis, node) && scalar_kind(types.type_kind(analysis, node));
+}
+
+waza is_reference_node(analysis: types.TypeAnalysis, node: int64) -> bool {
+    kaesu types.type_is_heap_reference(analysis, node);
+}
+
+// Wrap rax to the fixed-width integer type described by `descriptor` (12..17 = int8..uint32 as in the analysis).
+waza emit_normalize(code: x86_64.Assembler, descriptor: int64) -> unit {
+    moshi (descriptor < 12 || descriptor > 17) { kaesu; }
+    kaku width = 8;
+    moshi (descriptor == 13 || descriptor == 16) { width = 16; }
+    moshi (descriptor == 14 || descriptor == 17) { width = 32; }
+    x86_64.shl_ri(code, x86_64.rax, 64 - width);
+    moshi (descriptor <= 14) { x86_64.sar_ri(code, x86_64.rax, 64 - width); }
+    moshi (descriptor > 14) { x86_64.shr_ri(code, x86_64.rax, 64 - width); }
+}
+
+waza array_width(descriptor: int64) -> int64 {
+    moshi (descriptor == 15) { kaesu 1; }
+    kaesu 8;
+}
+waza array_is_reference(descriptor: int64) -> bool {
+    kaku nullable = descriptor >= 128;
+    kaku kind = descriptor - (descriptor / 128) * 128;
+    kaesu nullable || kind == 5 || kind == 7 || kind == 8 || kind == 9 || kind == 10 || kind == 11;
+}
+waza inferred_descriptor(analysis: types.TypeAnalysis, node: int64) -> int64 {
+    kaku root = node;
+    aida (analysis.arena.parent[root] != root) { root = analysis.arena.parent[root]; }
+    kaku fields = analysis.arena.fields[root];
+    moshi (len(fields) == 0) { kaesu -1; }
+    kaku element = fields[0];
+    kaku kind = types.type_kind(analysis, element);
+    moshi (kind == types.type_unknown) { kaesu -1; }
+    kaku descriptor = 1;
+    moshi (analysis.arena.array_width[root] == 1) { descriptor = 15; }
+    moshi (kind == types.type_string_id) { descriptor = 5; }
+    moshi (kind == types.type_array_ref) { descriptor = 7; }
+    moshi (kind == types.type_struct_ref) { descriptor = 8; }
+    moshi (kind == types.type_enum_ref) { descriptor = 9; }
+    moshi (kind == types.type_map_ref) { descriptor = 10; }
+    moshi (kind == types.type_function_ref) { descriptor = 11; }
+    moshi (types.type_nullable(analysis, element)) { descriptor = descriptor + 128; }
+    kaesu descriptor;
+}
+
+// rdi = length, rsi = capacity are set by the caller; this loads width/reference and calls rt.array_new.
+waza emit_array_new_call(code: x86_64.Assembler, descriptor: int64) -> unit {
+    x86_64.mov_ri(code, x86_64.rdx, array_width(descriptor));
+    kaku reference = 0;
+    moshi (array_is_reference(descriptor)) { reference = 1; }
+    x86_64.mov_ri(code, x86_64.r8, reference);
+    x86_64.call(code, "rt.array_new");
+}
+
+// Allocates a struct (kind 1) or enum (kind 2) with `count` payload words taken from the stack.
+waza emit_record(code: x86_64.Assembler, analysis: types.TypeAnalysis, function_id: int64, offset: int64,
+    kind: int64, tag: int64, count: int64) -> string {
+    moshi (count > 62) { kaesu "UNSUPPORTED_LARGE_RECORD"; }
+    kaku bitmap = 0;
+    kaku power = 1;
+    kaku field = 0;
+    aida (field < count) {
+        kaku node = stack_node(analysis, function_id, offset, count - 1 - field);
+        moshi (node < 0) { kaesu "MISSING_TYPE_INFO"; }
+        moshi (types.type_kind(analysis, node) == types.type_unknown) { kaesu "UNSUPPORTED_UNKNOWN_FIELD"; }
+        moshi (is_reference_node(analysis, node)) { bitmap = bitmap + power; }
+        power = power * 2;
+        field = field + 1;
+    }
+    kaku size = 40 + 8 * count;
+    x86_64.mov_ri(code, x86_64.rax, size);
+    x86_64.call(code, "rt.alloc");
+    x86_64.mov_ri(code, x86_64.rcx, size * 256 + kind);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rcx);
+    x86_64.mov_ri(code, x86_64.rcx, count);
+    x86_64.mov_store(code, x86_64.rax, 16, x86_64.rcx);
+    x86_64.mov_ri(code, x86_64.rcx, bitmap);
+    x86_64.mov_store(code, x86_64.rax, 24, x86_64.rcx);
+    x86_64.mov_ri(code, x86_64.rcx, tag);
+    x86_64.mov_store(code, x86_64.rax, 32, x86_64.rcx);
+    field = count;
+    aida (field > 0) {
+        field = field - 1;
+        pop(code, x86_64.rcx);
+        x86_64.mov_store(code, x86_64.rax, 40 + 8 * field, x86_64.rcx);
+    }
+    push(code, x86_64.rax);
+    kaesu "";
+}
+
+// Dereference a record in rax and load payload word `index` (null checked).
+waza emit_record_load(code: x86_64.Assembler, index: int64) -> unit {
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 40 + 8 * index);
+}
+
+waza emit_array_op_check(analysis: types.TypeAnalysis, function_id: int64, offset: int64, depth: int64) -> string {
+    kaku node = stack_node(analysis, function_id, offset, depth);
+    moshi (node < 0) { kaesu "MISSING_TYPE_INFO"; }
+    moshi (types.type_kind(analysis, node) != types.type_array_ref) { kaesu "UNSUPPORTED_ARRAY_OPERAND"; }
+    kaesu "";
+}
+
+// True when the two operands on top of the stack at `offset` are strings.
+waza operand_is_string(analysis: types.TypeAnalysis, function_id: int64, offset: int64) -> bool {
+    kaku entries = analysis.blocks[function_id + 1].entry[offset];
+    moshi (len(entries) < 2) { kaesu iie; }
+    kaesu types.type_kind(analysis, entries[len(entries) - 1]) == types.type_string_id && types.type_kind(analysis, entries[len(entries) - 2]) == types.type_string_id;
+}
+
+waza emit_function(code: x86_64.Assembler, file: mochi.File, analysis: types.TypeAnalysis, index: int64, reachable: bool) -> string {
+    kaku function = file.functions[index];
+    x86_64.label(code, function_label(index));
+    moshi (!reachable) { x86_64.call(code, "rt.trap.unreachable"); kaesu ""; }
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    moshi (len(function.instructions) == 0 && (types.is_testing_report(function.name) || types.is_testing_packet(function.name))) {
+        moshi (function.parameter_count != 2 || function.returns_value || len(function.captures) != 0) { kaesu "INVALID_TESTING_REPORT"; }
+        x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, local_disp(2, 0));
+        unbox_node(code, analysis, analysis.locals[index][0], x86_64.rdi);
+        x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, local_disp(2, 1));
+        x86_64.mov_ri(code, x86_64.rdx, 0);
+        moshi (types.is_testing_packet(function.name)) { x86_64.mov_ri(code, x86_64.rdx, 1); }
+        x86_64.call(code, "rt.testing_report");
+        x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp); x86_64.pop_r(code, x86_64.rbp); x86_64.ret(code);
+        kaesu "";
+    }
+    moshi (len(function.instructions) == 0) {
+        kaku operation = native_operation(function.name);
+        kaku routine = native_routine(operation);
+        moshi (routine == "") { routine = socket_routine(function.name); }
+        moshi (routine == "") { routine = "rt.os_unsupported"; }
+        moshi (routine != "rt.os_unsupported" && function.parameter_count > 6) { kaesu "UNSUPPORTED_NATIVE_ARITY"; }
+        kaku registers: []int64 = [x86_64.rdi, x86_64.rsi, x86_64.rdx, x86_64.rcx, x86_64.r8, x86_64.r9];
+        kaku arg = 0;
+        aida (arg < function.parameter_count && routine != "rt.os_unsupported") {
+            x86_64.mov_load(code, registers[arg], x86_64.rbp, local_disp(function.parameter_count, arg));
+            arg = arg + 1;
+        }
+        x86_64.call(code, routine);
+        x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp); x86_64.pop_r(code, x86_64.rbp); x86_64.ret(code);
+        kaesu "";
+    }
+    kaku locals = function.local_count - function.parameter_count;
+    moshi (locals < 0) { kaesu "INVALID_LOCAL_COUNT"; }
+    moshi (locals > 0) {
+        x86_64.mov_ri(code, x86_64.rax, 0);
+        kaku slot = 0;
+        aida (slot < locals) { x86_64.push_r(code, x86_64.rax); slot = slot + 1; }
+    }
+    kaku param = 0;
+    aida (param < function.parameter_count) {
+        moshi (param < len(analysis.cells[index]) && analysis.cells[index][param]) {
+            kaku node = analysis.locals[index][param];
+            emit_new_cell(code, is_reference_node(analysis, node));
+            x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, local_disp(function.parameter_count, param));
+            x86_64.mov_store(code, x86_64.rax, 16, x86_64.rcx);
+            x86_64.mov_store(code, x86_64.rbp, local_disp(function.parameter_count, param), x86_64.rax);
+        }
+        param = param + 1;
+    }
+    kaku entry_poll = emit_poll(code, file, analysis, index, 0, function.parameter_count);
+    moshi (entry_poll != "") { kaesu string.concat(function.name, string.concat(": ", entry_poll)); }
+    kaku body = emit_block(code, file, analysis, function.instructions, string.concat("f", convert.format_int(index)), index, function.parameter_count);
+    moshi (body != "") { kaesu string.concat(function.name, string.concat(": ", body)); }
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp); x86_64.pop_r(code, x86_64.rbp); x86_64.ret(code);
+    kaesu "";
+}
+
+// First-collection threshold in bytes allocated; the default is 32 MiB. Tests use tiny values to force frequent collections.
+koukai waza compile(file: mochi.File) -> LowerResult { kaesu compile_with_gc_threshold(file, 33554432); }
+
+koukai waza compile_with_gc_threshold(file: mochi.File, gc_threshold: int64) -> LowerResult {
+    moshi (gc_threshold < 4096) { kaesu failed("INVALID_GC_THRESHOLD"); }
+    kaku analysis = types.analyze_types(file);
+    kaku code = x86_64.assembler();
+    x86_64.mov_ri(code, x86_64.rcx, initial_sp_cell());
+    x86_64.mov_store(code, x86_64.rcx, 0, x86_64.rsp);
+    x86_64.call(code, "rt.init");
+    x86_64.mov_ri(code, x86_64.rcx, gc_state());
+    x86_64.mov_ri(code, x86_64.rax, gc_threshold);
+    x86_64.mov_store(code, x86_64.rcx, 16, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rcx, 64, x86_64.rax);
+    // The main program runs in a frame of its own so that its operand stack is a scannable frame; its saved rbp is 0.
+    x86_64.mov_ri(code, x86_64.rbp, 0);
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    kaku problem = emit_block(code, file, analysis, file.instructions, "main", -1, 0);
+    moshi (problem != "") { kaesu failed(problem); }
+    moshi (uses_testing(file)) {
+        x86_64.mov_ri(code, x86_64.rdi, 0);
+        moshi (uses_testing_packet(file)) { x86_64.mov_ri(code, x86_64.rdi, 1); }
+        x86_64.call(code, "rt.testing_finish");
+    }
+    emit_exit(code, 0);
+    kaku reached = types.reachable_functions(file);
+    kaku index = 0;
+    aida (index < len(file.functions)) {
+        kaku problem = emit_function(code, file, analysis, index, reached[index]);
+        moshi (problem != "") { kaesu failed(problem); }
+        index = index + 1;
+    }
+    emit_runtime(code);
+    emit_globals_map(code, file, analysis);
+    emit_string_constants(code, file);
+    kaku assembled = x86_64.assemble(code);
+    moshi (assembled.error != "") { kaesu failed(assembled.error); }
+    kaku image = elf.executable(elf.ImageSpec { code: assembled.bytes, entry_offset: 0, bss_size: 8192 + 2097152 + 8 * file.global_count + 32 });
+    moshi (image.error != "") { kaesu failed(image.error); }
+    kaesu LowerResult { bytes: image.bytes, error: "" };
+}

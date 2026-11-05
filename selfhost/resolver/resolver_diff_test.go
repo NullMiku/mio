@@ -417,7 +417,7 @@ func TestMioResolverSelfAndBunkoSources(t *testing.T) {
 		{path: "kiso/array", directory: "bunko/kiso/array"},
 		{path: "kiso/bytes", directory: "bunko/kiso/bytes", dependencies: []string{"kiso/array"}},
 		{path: "kiso/utf8", directory: "bunko/kiso/utf8", dependencies: []string{"kiso/array", "kiso/bytes"}},
-		{path: "kiso/string", directory: "bunko/kiso/string", dependencies: []string{"kiso/bytes", "kiso/utf8"}},
+		{path: "kiso/string", directory: "bunko/kiso/string", dependencies: []string{"kiso/array", "kiso/bytes", "kiso/utf8"}},
 		{path: "kiso/math", directory: "bunko/kiso/math"},
 		{path: "kiso/convert", directory: "bunko/kiso/convert", dependencies: []string{"kiso/array", "kiso/bytes", "kiso/math", "kiso/string"}},
 		{path: "kiso/io", directory: "bunko/kiso/io", dependencies: []string{"kiso/array", "kiso/bytes"}},
@@ -425,9 +425,10 @@ func TestMioResolverSelfAndBunkoSources(t *testing.T) {
 		{path: "kiso/path", directory: "bunko/kiso/path", dependencies: []string{"kiso/array", "kiso/string"}},
 		{path: "kiso/encoding/binary", directory: "bunko/kiso/encoding/binary", dependencies: []string{"kiso/array"}},
 		{path: "kiso/testing", directory: "bunko/kiso/testing"},
-		{path: "selfhost/lexer", directory: "selfhost/lexer", dependencies: []string{"kiso/array", "kiso/string", "kiso/utf8"}},
-		{path: "selfhost/parser", directory: "selfhost/parser", dependencies: []string{"kiso/array", "kiso/convert", "kiso/string", "kiso/utf8", "selfhost/lexer"}},
-		{path: "selfhost/resolver", directory: "selfhost/resolver", dependencies: []string{"kiso/array", "kiso/string", "selfhost/parser"}},
+		{path: "selfhost/progress", directory: "selfhost/progress"},
+		{path: "selfhost/lexer", directory: "selfhost/lexer", dependencies: []string{"kiso/array", "kiso/string", "kiso/utf8", "selfhost/progress"}},
+		{path: "selfhost/parser", directory: "selfhost/parser", dependencies: []string{"kiso/array", "kiso/convert", "kiso/string", "kiso/utf8", "selfhost/lexer", "selfhost/progress"}},
+		{path: "selfhost/resolver", directory: "selfhost/resolver", dependencies: []string{"kiso/array", "kiso/string", "selfhost/parser", "selfhost/progress"}},
 	}
 	root := resolverRoot(t)
 	directory := t.TempDir()

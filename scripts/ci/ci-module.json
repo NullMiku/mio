@@ -1,1 +1,21 @@
-{"module":"quality","engine":"infrastructure","targets":["linux-amd64","macos-arm64"],"suites":["quick","full"]}
+{
+  "module": "quality",
+  "engine": "infrastructure",
+  "targets": [
+    "linux-amd64",
+    "macos-arm64"
+  ],
+  "suites": [
+    "quick",
+    "full"
+  ],
+  "requires": [
+    "go",
+    "gofmt"
+  ],
+  "required_checks": [
+    "quality",
+    "infrastructure",
+    "release-isolation"
+  ]
+}

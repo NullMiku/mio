@@ -43,6 +43,9 @@ kata CompilerState {
     active_types: []int64;
     emitting_template: []bool;
     enum_names: []string;
+    bindings: resolver.BindingTable;
+    node_type_nodes: resolver.NodeTable;
+    node_type_slots: []int64;
 }
 
 kata GenericInstance {
@@ -75,16 +78,30 @@ waza new_context(in_function: bool, function_symbol: int64) -> CompileContext {
 }
 
 waza binding_of(state: CompilerState, file_id: int64, node_id: int64) -> int64 {
+    kaesu resolver.lookup_binding(state.resolved, state.bindings, file_id, node_id);
+}
+
+// Positions of the first node_types entry of every node (-1: none), built once from the finished type check.
+// An empty result means some entry lies outside the node table; node_type then keeps the original scan.
+waza build_node_type_slots(nodes: resolver.NodeTable, checked: typecheck.TypeCheckResult) -> []int64 {
+    kaku slots = array.make[int64](nodes.total, -1);
     kaku index = 0;
-    aida (index < len(state.resolved.bindings)) {
-        kaku binding = state.resolved.bindings[index];
-        moshi (binding.reference.file_id == file_id && binding.reference.node_id == node_id) { kaesu binding.symbol_id; }
+    aida (index < len(checked.node_types)) {
+        kaku slot = resolver.node_slot(nodes, checked.node_types[index].node.file_id, checked.node_types[index].node.node_id);
+        moshi (slot < 0) { kaesu array.with_capacity[int64](0); }
+        moshi (slots[slot] < 0) { slots[slot] = index; }
         index = index + 1;
     }
-    kaesu -1;
+    kaesu slots;
 }
 
 waza node_type(state: CompilerState, file_id: int64, node_id: int64) -> int64 {
+    kaku slot = resolver.node_slot(state.node_type_nodes, file_id, node_id);
+    moshi (slot >= 0 && len(state.node_type_slots) == state.node_type_nodes.total) {
+        kaku position = state.node_type_slots[slot];
+        moshi (position < 0) { kaesu 0; }
+        kaesu materialized_type(state, state.checked.node_types[position].type_id);
+    }
     kaku index = 0;
     aida (index < len(state.checked.node_types)) {
         kaku item = state.checked.node_types[index];
@@ -434,7 +451,7 @@ waza struct_definition(state: CompilerState, type_id: int64) -> int64 {
     kaku name = state.checked.types[type_id].name; kaku index = 0;
     aida (index < len(state.checked.structs)) {
         kaku definition = state.checked.structs[index];
-        moshi (name == definition.name || name == string.concat(string.concat(definition.package_path, "."), definition.name)) { kaesu index; }
+        moshi (name == definition.name || typecheck.qualified_name_matches(definition.package_path, definition.name, name)) { kaesu index; }
         index = index + 1;
     }
     kaesu -1;
@@ -553,7 +570,7 @@ waza get_slot(context: CompileContext, slot: int64) -> unit { moshi (context.in_
 waza enum_definition(state: CompilerState, type_id: int64) -> int64 {
     moshi (type_id < 0 || type_id >= len(state.checked.types)) { kaesu -1; }
     kaku name = state.checked.types[type_id].name; kaku index = 0;
-    aida (index < len(state.checked.enums)) { kaku definition = state.checked.enums[index]; moshi (name == definition.name || name == string.concat(string.concat(definition.package_path, "."), definition.name)) { kaesu index; } index = index + 1; }
+    aida (index < len(state.checked.enums)) { kaku definition = state.checked.enums[index]; moshi (name == definition.name || typecheck.qualified_name_matches(definition.package_path, definition.name, name)) { kaesu index; } index = index + 1; }
     kaesu -1;
 }
 
@@ -693,7 +710,8 @@ waza compile_function_body(state: CompilerState, reference: resolver.NodeRef, id
         aida (parameter < node.operator) { kaku parameter_id = node.children[node.integer + parameter]; array.push(context.local_symbols, binding_of(state, reference.file_id, parameter_id)); array.push(context.local_slots, parameter); parameter = parameter + 1; }
         emit_statement(state, context, reference.file_id, node.children[len(node.children) - 1]);
         kaku returns_value = iie; kaku signature = 0;
-        aida (signature < len(state.checked.signatures)) { moshi (state.checked.signatures[signature].symbol_id == binding_of(state, reference.file_id, reference.node_id)) { returns_value = typecheck.type_kind_code(state.checked.types[materialized_type(state,state.checked.signatures[signature].result)].kind) != 13; } signature = signature + 1; }
+        kaku function_symbol = binding_of(state, reference.file_id, reference.node_id);
+        aida (signature < len(state.checked.signatures)) { moshi (state.checked.signatures[signature].symbol_id == function_symbol) { returns_value = typecheck.type_kind_code(state.checked.types[materialized_type(state,state.checked.signatures[signature].result)].kind) != 13; } signature = signature + 1; }
         moshi (!returns_value) { emit0(context.emitter, OP_RETURN); }
         patch_labels(context.emitter);
         state.layout.functions[id] = FunctionLayout { id: id, name: name, parameter_count: node.operator, local_count: len(context.local_symbols), returns_value: returns_value, captures: array.with_capacity[CaptureLayout](0), instructions: context.emitter.bytes };
@@ -713,12 +731,14 @@ waza compile_functions(state: CompilerState) -> unit {
 koukai waza compile_package(resolved: resolver.ResolvedPackage, checked: typecheck.TypeCheckResult) -> CompileResult {
     kaku layout = empty_layout();
     kaku function_nodes: []resolver.NodeRef = [];
+    kaku bindings = resolver.build_binding_table(resolved);
     kaku state = CompilerState {
         resolved: resolved, checked: checked, layout: layout, errors: empty_errors(),
         global_symbols: array.with_capacity[int64](16), global_slots: array.with_capacity[int64](16),
         function_symbols: array.with_capacity[int64](16), function_ids: array.with_capacity[int64](16), function_nodes: function_nodes, function_layout_ids: array.with_capacity[int64](16),
         registry_packages: array.with_capacity[string](16), registry_names: array.with_capacity[string](16), registry_ids: array.with_capacity[int64](16), next_global: [0], typed: iie,
-        instances:[],active_names:[],active_types:[],emitting_template:[iie],enum_names:[]
+        instances:[],active_names:[],active_types:[],emitting_template:[iie],enum_names:[],
+        bindings: bindings, node_type_nodes: bindings.nodes, node_type_slots: build_node_type_slots(bindings.nodes, checked)
     };
     moshi (len(resolved.errors) != 0 || len(checked.errors) != 0) { kaesu compile_failure(CompileErrorKind.InvalidInput(), resolver.NodeRef { file_id: -1, node_id: -1 }, empty_span(), "front-end errors prevent code generation"); }
     register_layout(state); compile_functions(state);
@@ -764,12 +784,14 @@ waza compile_modules_mode(packages: []resolver.ResolvedPackage, checked_packages
         kaku resolved = packages[package_index]; kaku checked = checked_packages[package_index];
         moshi (len(resolved.errors) != 0 || len(checked.errors) != 0) { array.push(errors, CompileError { kind: CompileErrorKind.InvalidInput(), node: resolver.NodeRef { file_id: -1, node_id: -1 }, span: empty_span(), detail: "front-end errors prevent module code generation" }); package_index = package_index + 1; tsuzuku; }
         kaku function_nodes: []resolver.NodeRef = [];
+        kaku bindings = resolver.build_binding_table(resolved);
         kaku state = CompilerState {
             resolved: resolved, checked: checked, layout: layout, errors: errors,
             global_symbols: array.with_capacity[int64](16), global_slots: array.with_capacity[int64](16),
             function_symbols: array.with_capacity[int64](16), function_ids: array.with_capacity[int64](16), function_nodes: function_nodes, function_layout_ids: array.with_capacity[int64](16),
             registry_packages: registry_packages, registry_names: registry_names, registry_ids: registry_ids, next_global: next_global, typed: typed,
-            instances:instances,active_names:[],active_types:[],emitting_template:[iie],enum_names:enum_names
+            instances:instances,active_names:[],active_types:[],emitting_template:[iie],enum_names:enum_names,
+            bindings: bindings, node_type_nodes: bindings.nodes, node_type_slots: build_node_type_slots(bindings.nodes, checked)
         };
         register_layout(state); compile_functions(state);
         kaku file_id = 0;

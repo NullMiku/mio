@@ -1,0 +1,129 @@
+yobu "kiso/runtime/ir";
+yobu "kiso/runtime/target";
+// Linux x86-64 (System V) OS adapter. There is no dynamic loader and no libc:
+// every OS service is a raw system call reached through a tiny in-image stub
+// (`mov eax,N; mov r10,rcx; syscall; ret`). Stub addresses fill the import table
+// that cpu/amd64 calls through (the same Binding/slot mechanism as os/darwin), so
+// the portable runtime-IR functions are lowered identically for the two targets.
+// Raw system calls return -errno; this adapter confines Linux errno values.
+//
+// What is NOT the same as os/darwin. Darwin's platform_wait(condition, mutex, timeout_ns),
+// platform_wake_all(condition) and platform_trylock(mutex) are pthread-condition/mutex
+// operations: the caller holds the mutex, which is released atomically while waiting. Linux has
+// no such layer yet (it would be built on futex words and is not implemented), so these three
+// functions are deliberately NOT defined here: portable code that calls them fails validation
+// (UNDEFINED_RUNTIME_FUNCTION / NOT_SUPPORTED_RUNTIME_OPERATION) instead of silently passing a
+// mutex pointer where a futex value is expected. Only the raw futex wait/wake below exist, under
+// their own names (platform_futex_*), and `capabilities().park_wake` is therefore false.
+//
+// Slot -> system call number. Slot order is part of the image contract.
+koukai teisu slot_write = 0;
+koukai teisu slot_exit = 1;
+koukai teisu slot_mmap = 2;
+koukai teisu slot_munmap = 3;
+koukai teisu slot_mprotect = 4;
+koukai teisu slot_madvise = 5;
+koukai teisu slot_clock_gettime = 6;
+koukai teisu slot_futex = 7;
+koukai teisu slot_count = 8;
+koukai waza syscall_numbers() -> []int64 { kaesu [1, 231, 9, 11, 10, 28, 228, 202]; }
+
+koukai teisu clock_monotonic = 1;
+koukai teisu futex_wait_private = 128;
+koukai teisu futex_wake_private = 129;
+koukai teisu page_bytes = 4096;
+
+// Operation numbers. 31 (abort), 101 (clock_gettime(CLOCK_MONOTONIC) into a timespec, 0 on success),
+// 102 (exit) and 103 (write(1, buffer, length)) mean the same as in os/darwin. Darwin's 12, 100, 104
+// and 105 are pthread condition/mutex calls with no Linux equivalent here, so they are not bound.
+// 200..203 are Linux-private virtual-memory calls whose six arguments all come from virtual registers
+// (a literal fd = -1 is not encodable in a Binding); 204/205 are the Linux-private futex wait/wake.
+koukai waza bindings() -> []ir.Binding {
+    kaesu [
+        ir.Binding { operation: 31, slot: 1, arguments: [0], result_bits: 64 },
+        ir.Binding { operation: 101, slot: 6, arguments: [-2, 0], result_bits: 64 },
+        ir.Binding { operation: 102, slot: 1, arguments: [0], result_bits: 64 },
+        ir.Binding { operation: 103, slot: 0, arguments: [-2, 0, 1], result_bits: 64 },
+        ir.Binding { operation: 200, slot: 2, arguments: [0, 1, 2, 3, 4, 5], result_bits: 64 },
+        ir.Binding { operation: 201, slot: 3, arguments: [0, 1], result_bits: 64 },
+        ir.Binding { operation: 202, slot: 4, arguments: [0, 1, 2], result_bits: 64 },
+        ir.Binding { operation: 203, slot: 5, arguments: [0, 1, 2], result_bits: 64 },
+        ir.Binding { operation: 204, slot: 7, arguments: [0, -129, 1, 2], result_bits: 64 },
+        ir.Binding { operation: 205, slot: 7, arguments: [0, -130, 1], result_bits: 64 }
+    ];
+}
+
+// What this adapter really provides. Threads, TLS and precise roots are NOT claimed (no clone, no TLS
+// register, no root registry), and neither is park_wake: that capability means the portable condition/
+// mutex protocol (see above), of which only raw futex wait/wake exist. So the target still fails closed
+// for the concurrent collector (target.concurrent_error != "") and for mutex/condition/park/wake operations.
+koukai waza capabilities() -> target.TargetInfo {
+    kaesu target.TargetInfo { os: "linux", arch: "amd64", abi: "sysv", pointer_bits: 64, little_endian: hai,
+        page_size_query: hai, atomic64: hai, threads: iie, tls: iie, park_wake: iie,
+        monotonic_clock: hai, virtual_memory: hai, precise_roots: iie, stack_alignment: 16,
+        concurrent_collector: iie, executable: hai };
+}
+
+// platform_now() -> monotonic nanoseconds, 0 on failure: the same contract as os/darwin.
+//
+// platform_futex_wait(address, expected, timeout_ns) -> 0, 1 or a negative errno:
+//   0  woken, or the word no longer matched (EAGAIN) or the call was interrupted (EINTR): the portable
+//      contract allows spurious wake-ups, so callers must re-check their predicate;
+//   1  the relative timeout elapsed (ETIMEDOUT); a timeout of 0 returns 1 at once when the word still
+//      matches (it never waits forever);
+//   <0 any other failure, as -errno.
+//   Linux compares a 32-bit word: only the low 32 bits (little endian) of the 64-bit word at `address`
+//   are compared with the low 32 bits of `expected`; callers must keep the state they wait on in those
+//   bits. `address` is a process-private futex word (FUTEX_WAIT_PRIVATE), 4-byte aligned.
+// platform_futex_wake(address, count) -> number of waiters woken, or -errno.
+// platform_futex_wake_all(address) -> platform_futex_wake(address, INT_MAX).
+// platform_reserve(length) -> the mapping address, or -errno; every other memory function returns 0 or
+//   -errno. An error is a value in [2^64 - 4095, 2^64 - 1] viewed unsigned, which is never a user address.
+koukai waza platform_program() -> []ir.Function {
+    kaku wait = ir.function("platform_futex_wait");
+    // (address, expected, timeout_ns): build the relative timespec {sec, nsec} in scratch.
+    ir.put(wait, ir.scratch_address, 3, 0, 0, 0); ir.put(wait, ir.constant, 4, 0, 0, 1000000000);
+    ir.put(wait, ir.divide_unsigned, 5, 2, 4, 0); ir.put(wait, ir.multiply, 6, 5, 4, 0); ir.put(wait, ir.subtract, 6, 2, 6, 0);
+    ir.put(wait, ir.store, 0, 3, 5, 0); ir.put(wait, ir.store, 0, 3, 6, 8);
+    ir.call(wait, 204, 4, [0, 1, 3]); ir.branch(wait, ir.zero, 4, "return");
+    // ETIMEDOUT=110 -> timeout(1). EAGAIN=11 (value changed) and EINTR=4 are
+    // legitimate wakeups from the portable point of view -> 0. Other errors are negative errno.
+    ir.put(wait, ir.constant, 5, 0, 0, -110); ir.put(wait, ir.equal, 5, 4, 5, 0); ir.branch(wait, ir.zero, 5, "again");
+    ir.put(wait, ir.constant, 4, 0, 0, 1); ir.branch(wait, ir.jump, 0, "return");
+    ir.branch(wait, ir.label, 0, "again");
+    ir.put(wait, ir.constant, 5, 0, 0, -11); ir.put(wait, ir.equal, 5, 4, 5, 0); ir.branch(wait, ir.nonzero, 5, "woken");
+    ir.put(wait, ir.constant, 5, 0, 0, -4); ir.put(wait, ir.equal, 5, 4, 5, 0); ir.branch(wait, ir.zero, 5, "return");
+    ir.branch(wait, ir.label, 0, "woken"); ir.put(wait, ir.constant, 4, 0, 0, 0);
+    ir.branch(wait, ir.label, 0, "return"); ir.put(wait, ir.result, 0, 4, 0, 0);
+
+    kaku clock = ir.function("platform_now");
+    ir.put(clock, ir.scratch_address, 1, 0, 0, 0); ir.call(clock, 101, 2, [1]); ir.branch(clock, ir.nonzero, 2, "error");
+    ir.put(clock, ir.load, 2, 1, 0, 0); ir.put(clock, ir.load, 3, 1, 0, 8); ir.put(clock, ir.constant, 4, 0, 0, 1000000000);
+    ir.put(clock, ir.multiply, 2, 2, 4, 0); ir.put(clock, ir.add, 2, 2, 3, 0); ir.put(clock, ir.result, 0, 2, 0, 0);
+    ir.branch(clock, ir.label, 0, "error"); ir.put(clock, ir.constant, 2, 0, 0, 0); ir.put(clock, ir.result, 0, 2, 0, 0);
+
+    kaku wake = ir.function("platform_futex_wake");
+    ir.call(wake, 205, 2, [0, 1]); ir.put(wake, ir.result, 0, 2, 0, 0);
+    kaku wake_all = ir.function("platform_futex_wake_all");
+    ir.put(wake_all, ir.constant, 1, 0, 0, 2147483647); ir.call(wake_all, 205, 2, [0, 1]); ir.put(wake_all, ir.result, 0, 2, 0, 0);
+
+    // Virtual memory. reserve: PROT_NONE private anonymous NORESERVE mapping.
+    kaku reserve = ir.function("platform_reserve");
+    // virtual registers: 0=length (argument) 1=addr(NULL) 2=PROT_NONE 3=flags 4=fd(-1) 5=offset
+    ir.put(reserve, ir.constant, 1, 0, 0, 0); ir.put(reserve, ir.constant, 2, 0, 0, 0); ir.put(reserve, ir.constant, 3, 0, 0, 16418);
+    ir.put(reserve, ir.constant, 4, 0, 0, -1); ir.put(reserve, ir.constant, 5, 0, 0, 0);
+    ir.call(reserve, 200, 7, [1, 0, 2, 3, 4, 5]); ir.put(reserve, ir.result, 0, 7, 0, 0);
+    // commit(addr,len): PROT_READ|PROT_WRITE (3)
+    kaku commit = ir.function("platform_commit");
+    ir.put(commit, ir.constant, 2, 0, 0, 3); ir.call(commit, 202, 3, [0, 1, 2]); ir.put(commit, ir.result, 0, 3, 0, 0);
+    // decommit(addr,len): MADV_DONTNEED (4) drops pages; then PROT_NONE (0)
+    kaku decommit = ir.function("platform_decommit");
+    ir.put(decommit, ir.constant, 2, 0, 0, 4); ir.call(decommit, 203, 3, [0, 1, 2]); ir.branch(decommit, ir.nonzero, 3, "done");
+    ir.put(decommit, ir.constant, 2, 0, 0, 0); ir.call(decommit, 202, 3, [0, 1, 2]);
+    ir.branch(decommit, ir.label, 0, "done"); ir.put(decommit, ir.result, 0, 3, 0, 0);
+    kaku release = ir.function("platform_release");
+    ir.call(release, 201, 2, [0, 1]); ir.put(release, ir.result, 0, 2, 0, 0);
+    kaku protect = ir.function("platform_protect");
+    ir.call(protect, 202, 3, [0, 1, 2]); ir.put(protect, ir.result, 0, 3, 0, 0);
+    kaesu [wait, clock, wake, wake_all, reserve, commit, decommit, release, protect];
+}

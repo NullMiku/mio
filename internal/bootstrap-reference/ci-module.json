@@ -1,0 +1,17 @@
+{
+  "module": "go-bootstrap-reference",
+  "engine": "reference",
+  "reference_tools": [],
+  "targets": [
+    "linux-amd64",
+    "macos-arm64"
+  ],
+  "suites": [
+    "full"
+  ],
+  "required_checks": [
+    "bootstrap-selfcompile"
+  ],
+  "standalone": true,
+  "module_timeout": 11400
+}

@@ -376,3 +376,25 @@ koukai waza type_name(result: TypeCheckResult, id: int64) -> string {
     }
     kaesu "invalid";
 }
+
+// package_path + "." + name == qualified, without building the concatenated string (a concatenation allocates and
+// re-validates UTF-8). Strings are equal exactly when their bytes are, and the length test rejects almost every
+// candidate before any byte is read.
+koukai waza qualified_name_matches(package_path: string, name: string, qualified: string) -> bool {
+    moshi (string.byte_len(qualified) != string.byte_len(package_path) + 1 + string.byte_len(name)) { kaesu iie; }
+    kaku whole = string.to_bytes(qualified);
+    kaku head = string.to_bytes(package_path);
+    kaku tail = string.to_bytes(name);
+    kaku at = 0;
+    aida (at < len(head)) {
+        moshi (whole[at] != head[at]) { kaesu iie; }
+        at = at + 1;
+    }
+    moshi (whole[len(head)] != uint8(46)) { kaesu iie; }
+    at = 0;
+    aida (at < len(tail)) {
+        moshi (whole[len(head) + 1 + at] != tail[at]) { kaesu iie; }
+        at = at + 1;
+    }
+    kaesu hai;
+}
