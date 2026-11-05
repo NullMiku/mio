@@ -27,11 +27,17 @@ func runM12VM(t *testing.T, program *compiler.Bytecode) []byte {
 
 func runM12Native(t *testing.T, program *compiler.Bytecode) ([]byte, error) {
 	t.Helper()
+	if isLinuxAMD64() {
+		return runLinuxAMD64Differential(t, program)
+	}
 	return runM12NativeCompile(t, program, CompileDarwinARM64)
 }
 
 func runM12NativeStress(t *testing.T, program *compiler.Bytecode) ([]byte, error) {
 	t.Helper()
+	if isLinuxAMD64() {
+		return runLinuxAMD64Options(t, program, LinuxAMD64Options{GCStress: true})
+	}
 	return runM12NativeCompile(t, program, CompileDarwinARM64WithGCStress)
 }
 
@@ -97,7 +103,7 @@ func runM12NativeCompile(t *testing.T, program *compiler.Bytecode, compile func(
 
 func requireM12StressDifferential(t *testing.T, program *compiler.Bytecode) {
 	t.Helper()
-	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+	if !isLinuxAMD64() && (runtime.GOOS != "darwin" || runtime.GOARCH != "arm64") {
 		t.Skip("requires macOS ARM64")
 	}
 	want := runM12VM(t, program)
@@ -119,7 +125,7 @@ func (e *m12CommandError) Error() string { return e.err.Error() + ": " + string(
 
 func requireM12Differential(t *testing.T, program *compiler.Bytecode) {
 	t.Helper()
-	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+	if !isLinuxAMD64() && (runtime.GOOS != "darwin" || runtime.GOARCH != "arm64") {
 		t.Skip("requires macOS ARM64")
 	}
 	want := runM12VM(t, program)
