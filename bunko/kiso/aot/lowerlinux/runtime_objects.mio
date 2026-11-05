@@ -1,0 +1,495 @@
+yobu "kiso/aot/elf";
+yobu "kiso/aot/x86_64";
+
+// Linux object model (all words are 64-bit; every heap object starts with
+// [0] header = kind | total_bytes << 8, [8] GC word).
+//   kind 1 struct, kind 2 enum:  [16] payload count, [24] reference bitmap, [32] enum tag, [40 + 8i] payload i
+//   kind 3 array:                [16] length, [24] capacity, [32] width | reference << 8, [40] data pointer
+//   kind 4 byte backing, kind 5 word backing (data starts at +16 of the backing object)
+//   kind 6 string:               [16] byte length, [24 ...] bytes
+waza object_kind_struct() -> int64 { kaesu 1; }
+waza object_kind_enum() -> int64 { kaesu 2; }
+waza object_kind_array() -> int64 { kaesu 3; }
+
+waza trap_check(code: x86_64.Assembler, condition: int64, label: string) -> unit { x86_64.jcc(code, condition, label); }
+
+// round rax up to a multiple of 8
+waza round8(code: x86_64.Assembler, reg: int64) -> unit {
+    x86_64.add_ri(code, reg, 7);
+    x86_64.and_ri(code, reg, -8);
+}
+
+// rt.array_new: rdi = length, rsi = capacity, rdx = element width (1 or 8), r8 = 1 when elements are references.
+// Returns the array in rax. Negative or too large sizes trap.
+waza emit_array_new(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.array_new");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_l, "rt.trap.index");
+    x86_64.cmp_rr(code, x86_64.rsi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_l, "rt.trap.index");
+    x86_64.mov_ri(code, x86_64.rax, 134217728);
+    x86_64.cmp_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_g, "rt.trap.memory");
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.push_r(code, x86_64.rdx);
+    x86_64.push_r(code, x86_64.r8);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.imul_rr(code, x86_64.rax, x86_64.rdx);
+    round8(code, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rax, 16);
+    x86_64.call(code, "rt.alloc");
+    // backing header = kind | size << 8
+    x86_64.mov_load(code, x86_64.r8, x86_64.rsp, 0);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsp, 8);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rsp, 16);
+    x86_64.mov_rr(code, x86_64.r9, x86_64.rcx);
+    x86_64.imul_rr(code, x86_64.r9, x86_64.rdx);
+    round8(code, x86_64.r9);
+    x86_64.add_ri(code, x86_64.r9, 16);
+    x86_64.shl_ri(code, x86_64.r9, 8);
+    x86_64.add_rr(code, x86_64.r9, x86_64.r8);
+    x86_64.add_ri(code, x86_64.r9, 4);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.r9);
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 48);
+    x86_64.call(code, "rt.alloc");
+    x86_64.mov_ri(code, x86_64.rcx, 48 * 256 + 3);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rsp, 32);
+    x86_64.mov_store(code, x86_64.rax, 16, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rsp, 24);
+    x86_64.mov_store(code, x86_64.rax, 24, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rsp, 8);
+    x86_64.shl_ri(code, x86_64.rcx, 8);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsp, 16);
+    x86_64.add_rr(code, x86_64.rcx, x86_64.rdx);
+    x86_64.mov_store(code, x86_64.rax, 32, x86_64.rcx);
+    x86_64.pop_r(code, x86_64.rcx);
+    x86_64.add_ri(code, x86_64.rcx, 16);
+    x86_64.mov_store(code, x86_64.rax, 40, x86_64.rcx);
+    x86_64.add_ri(code, x86_64.rsp, 32);
+    x86_64.ret(code);
+}
+
+// rt.array_grow: rdi = array, rsi = minimum capacity.
+waza emit_array_grow(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.array_grow");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 24);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_ge, "rt.array_grow.done");
+    x86_64.add_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_ge, "rt.array_grow.big");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.label(code, "rt.array_grow.big");
+    x86_64.cmp_ri(code, x86_64.rax, 4);
+    x86_64.jcc(code, x86_64.cc_ge, "rt.array_grow.sized");
+    x86_64.mov_ri(code, x86_64.rax, 4);
+    x86_64.label(code, "rt.array_grow.sized");
+    x86_64.mov_ri(code, x86_64.rcx, 134217728);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_g, "rt.trap.memory");
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 32);
+    x86_64.mov_rr(code, x86_64.rdx, x86_64.rcx);
+    x86_64.and_ri(code, x86_64.rdx, 255);
+    x86_64.imul_rr(code, x86_64.rax, x86_64.rdx);
+    round8(code, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rax, 16);
+    x86_64.call(code, "rt.alloc");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rsp, 8);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 32);
+    x86_64.mov_rr(code, x86_64.rdx, x86_64.rcx);
+    x86_64.and_ri(code, x86_64.rdx, 255);
+    x86_64.shr_ri(code, x86_64.rcx, 8);
+    x86_64.add_ri(code, x86_64.rcx, 4);
+    x86_64.mov_load(code, x86_64.r8, x86_64.rsp, 0);
+    x86_64.imul_rr(code, x86_64.r8, x86_64.rdx);
+    round8(code, x86_64.r8);
+    x86_64.add_ri(code, x86_64.r8, 16);
+    x86_64.shl_ri(code, x86_64.r8, 8);
+    x86_64.add_rr(code, x86_64.r8, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.r8);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rdi, 40);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 16);
+    x86_64.imul_rr(code, x86_64.rcx, x86_64.rdx);
+    x86_64.lea(code, x86_64.r9, x86_64.rax, 16);
+    x86_64.mov_rr(code, x86_64.r10, x86_64.rdi);
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.r9);
+    x86_64.rep_movsb(code);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsp, 0);
+    x86_64.mov_store(code, x86_64.r10, 24, x86_64.rdx);
+    x86_64.mov_store(code, x86_64.r10, 40, x86_64.r9);
+    x86_64.add_ri(code, x86_64.rsp, 16);
+    x86_64.label(code, "rt.array_grow.done");
+    x86_64.ret(code);
+}
+
+// rt.array_get: rdi = array, rsi = index -> rax = element.
+waza emit_array_get(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.array_get");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 16);
+    x86_64.cmp_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.trap.index");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 32);
+    x86_64.and_ri(code, x86_64.rcx, 255);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 40);
+    x86_64.cmp_ri(code, x86_64.rcx, 1);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.array_get.wide");
+    x86_64.add_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rax, 0);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.array_get.wide");
+    x86_64.shl_ri(code, x86_64.rsi, 3);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 0);
+    x86_64.ret(code);
+}
+
+// rt.array_set: rdi = array, rsi = index, rdx = value.
+waza emit_array_set(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.array_set");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 16);
+    x86_64.cmp_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.trap.index");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 32);
+    x86_64.and_ri(code, x86_64.rcx, 255);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 40);
+    x86_64.cmp_ri(code, x86_64.rcx, 1);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.array_set.wide");
+    x86_64.add_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.mov_store8(code, x86_64.rax, 0, x86_64.rdx);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.array_set.wide");
+    x86_64.shl_ri(code, x86_64.rsi, 3);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rdx);
+    x86_64.ret(code);
+}
+
+// rt.array_push: rdi = array, rdx = element.
+waza emit_array_push(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.array_push");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 16);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 24);
+    x86_64.cmp_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.array_push.store");
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.push_r(code, x86_64.rdx);
+    x86_64.lea(code, x86_64.rsi, x86_64.rcx, 1);
+    x86_64.call(code, "rt.array_grow");
+    x86_64.pop_r(code, x86_64.rdx);
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.label(code, "rt.array_push.store");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rdi, 16);
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.array_set_unchecked");
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.mov_store(code, x86_64.rdi, 16, x86_64.rsi);
+    x86_64.ret(code);
+    // the slot at `length` lies inside the capacity, so the bounds check of array_set must not apply
+    x86_64.label(code, "rt.array_set_unchecked");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 32);
+    x86_64.and_ri(code, x86_64.rcx, 255);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 40);
+    x86_64.cmp_ri(code, x86_64.rcx, 1);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.array_set_unchecked.wide");
+    x86_64.add_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.mov_store8(code, x86_64.rax, 0, x86_64.rdx);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.array_set_unchecked.wide");
+    x86_64.shl_ri(code, x86_64.rsi, 3);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rdx);
+    x86_64.ret(code);
+}
+
+// rt.array_truncate: rdi = array, rsi = new length (0 <= new <= length).
+waza emit_array_truncate(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.array_truncate");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 16);
+    x86_64.cmp_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_a, "rt.trap.index");
+    x86_64.mov_store(code, x86_64.rdi, 16, x86_64.rsi);
+    x86_64.ret(code);
+}
+
+// rt.array_reserve: rdi = array, rsi = additional capacity (>= 0).
+waza emit_array_reserve(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.array_reserve");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_l, "rt.trap.index");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 16);
+    x86_64.add_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.call(code, "rt.array_grow");
+    x86_64.ret(code);
+}
+
+// rt.array_clone: rdi = array -> rax = a new array with its own backing store.
+waza emit_array_clone(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.array_clone");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rdi, 16);
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 0);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rax, 32);
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rdx);
+    x86_64.shr_ri(code, x86_64.r8, 8);
+    x86_64.and_ri(code, x86_64.rdx, 255);
+    x86_64.call(code, "rt.array_new");
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rsi, 16);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsi, 32);
+    x86_64.and_ri(code, x86_64.rdx, 255);
+    x86_64.imul_rr(code, x86_64.rcx, x86_64.rdx);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rsi, 40);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rax, 40);
+    x86_64.rep_movsb(code);
+    x86_64.ret(code);
+}
+
+// rt.array_append_all: rdi = destination, rsi = source.
+waza emit_array_append_all(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.array_append_all");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 16);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rsi, 16);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.call(code, "rt.array_grow");
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rdi, 32);
+    x86_64.and_ri(code, x86_64.rdx, 255);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rsi, 16);
+    x86_64.mov_load(code, x86_64.r8, x86_64.rdi, 16);
+    x86_64.mov_load(code, x86_64.r9, x86_64.rdi, 40);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.r8);
+    x86_64.imul_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.add_rr(code, x86_64.r9, x86_64.rax);
+    x86_64.add_rr(code, x86_64.r8, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rdi, 16, x86_64.r8);
+    x86_64.imul_rr(code, x86_64.rcx, x86_64.rdx);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rsi, 40);
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.r9);
+    x86_64.rep_movsb(code);
+    x86_64.ret(code);
+}
+
+// rt.array_fill: rax = array, rdx = value; sets every element below the length.
+waza emit_array_fill(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.array_fill");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rax, 16);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rax, 32);
+    x86_64.and_ri(code, x86_64.rsi, 255);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rax, 40);
+    x86_64.label(code, "rt.array_fill.loop");
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.array_fill.done");
+    x86_64.cmp_ri(code, x86_64.rsi, 1);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.array_fill.wide");
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rdx);
+    x86_64.add_ri(code, x86_64.rdi, 1);
+    x86_64.jmp(code, "rt.array_fill.next");
+    x86_64.label(code, "rt.array_fill.wide");
+    x86_64.mov_store(code, x86_64.rdi, 0, x86_64.rdx);
+    x86_64.add_ri(code, x86_64.rdi, 8);
+    x86_64.label(code, "rt.array_fill.next");
+    x86_64.sub_ri(code, x86_64.rcx, 1);
+    x86_64.jmp(code, "rt.array_fill.loop");
+    x86_64.label(code, "rt.array_fill.done");
+    x86_64.ret(code);
+}
+
+// rt.string_to_bytes: rax = string -> rax = new []uint8.
+waza emit_string_to_bytes(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.string_to_bytes");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rax, 16);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rdi);
+    x86_64.mov_ri(code, x86_64.rdx, 1);
+    x86_64.mov_ri(code, x86_64.r8, 0);
+    x86_64.call(code, "rt.array_new");
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rsi, 16);
+    x86_64.add_ri(code, x86_64.rsi, 24);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rax, 40);
+    x86_64.rep_movsb(code);
+    x86_64.ret(code);
+}
+
+// rt.utf8_valid: rsi = pointer, rcx = byte count -> rax = 1 when the bytes are valid UTF-8
+// (no overlong forms, no surrogates, nothing above U+10FFFF).
+waza emit_utf8_valid(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.utf8_valid");
+    x86_64.label(code, "rt.utf8_valid.next");
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.utf8_valid.yes");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.cmp_ri(code, x86_64.rax, 128);
+    x86_64.jcc(code, x86_64.cc_b, "rt.utf8_valid.one");
+    x86_64.cmp_ri(code, x86_64.rax, 194);
+    x86_64.jcc(code, x86_64.cc_b, "rt.utf8_valid.no");
+    x86_64.cmp_ri(code, x86_64.rax, 224);
+    x86_64.jcc(code, x86_64.cc_b, "rt.utf8_valid.two");
+    x86_64.cmp_ri(code, x86_64.rax, 240);
+    x86_64.jcc(code, x86_64.cc_b, "rt.utf8_valid.three");
+    x86_64.cmp_ri(code, x86_64.rax, 245);
+    x86_64.jcc(code, x86_64.cc_b, "rt.utf8_valid.four");
+    x86_64.jmp(code, "rt.utf8_valid.no");
+    x86_64.label(code, "rt.utf8_valid.one");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.sub_ri(code, x86_64.rcx, 1);
+    x86_64.jmp(code, "rt.utf8_valid.next");
+    // two bytes: C2..DF 80..BF
+    x86_64.label(code, "rt.utf8_valid.two");
+    x86_64.cmp_ri(code, x86_64.rcx, 2);
+    x86_64.jcc(code, x86_64.cc_l, "rt.utf8_valid.no");
+    x86_64.mov_load8(code, x86_64.rdx, x86_64.rsi, 1);
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rdx);
+    x86_64.and_ri(code, x86_64.r8, 192);
+    x86_64.cmp_ri(code, x86_64.r8, 128);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.utf8_valid.no");
+    x86_64.add_ri(code, x86_64.rsi, 2);
+    x86_64.sub_ri(code, x86_64.rcx, 2);
+    x86_64.jmp(code, "rt.utf8_valid.next");
+    // three bytes: E0 A0..BF, ED 80..9F, others 80..BF
+    x86_64.label(code, "rt.utf8_valid.three");
+    x86_64.cmp_ri(code, x86_64.rcx, 3);
+    x86_64.jcc(code, x86_64.cc_l, "rt.utf8_valid.no");
+    x86_64.mov_load8(code, x86_64.rdx, x86_64.rsi, 1);
+    x86_64.mov_load8(code, x86_64.r9, x86_64.rsi, 2);
+    x86_64.mov_rr(code, x86_64.r8, x86_64.r9);
+    x86_64.and_ri(code, x86_64.r8, 192);
+    x86_64.cmp_ri(code, x86_64.r8, 128);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.utf8_valid.no");
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rdx);
+    x86_64.and_ri(code, x86_64.r8, 192);
+    x86_64.cmp_ri(code, x86_64.r8, 128);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.utf8_valid.no");
+    x86_64.cmp_ri(code, x86_64.rax, 224);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.utf8_valid.not_e0");
+    x86_64.cmp_ri(code, x86_64.rdx, 160);
+    x86_64.jcc(code, x86_64.cc_b, "rt.utf8_valid.no");
+    x86_64.label(code, "rt.utf8_valid.not_e0");
+    x86_64.cmp_ri(code, x86_64.rax, 237);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.utf8_valid.three_ok");
+    x86_64.cmp_ri(code, x86_64.rdx, 160);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.utf8_valid.no");
+    x86_64.label(code, "rt.utf8_valid.three_ok");
+    x86_64.add_ri(code, x86_64.rsi, 3);
+    x86_64.sub_ri(code, x86_64.rcx, 3);
+    x86_64.jmp(code, "rt.utf8_valid.next");
+    // four bytes: F0 90..BF, F4 80..8F, F1..F3 80..BF
+    x86_64.label(code, "rt.utf8_valid.four");
+    x86_64.cmp_ri(code, x86_64.rcx, 4);
+    x86_64.jcc(code, x86_64.cc_l, "rt.utf8_valid.no");
+    x86_64.mov_load8(code, x86_64.rdx, x86_64.rsi, 1);
+    x86_64.mov_load8(code, x86_64.r9, x86_64.rsi, 2);
+    x86_64.mov_load8(code, x86_64.r10, x86_64.rsi, 3);
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rdx);
+    x86_64.and_ri(code, x86_64.r8, 192);
+    x86_64.cmp_ri(code, x86_64.r8, 128);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.utf8_valid.no");
+    x86_64.mov_rr(code, x86_64.r8, x86_64.r9);
+    x86_64.and_ri(code, x86_64.r8, 192);
+    x86_64.cmp_ri(code, x86_64.r8, 128);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.utf8_valid.no");
+    x86_64.mov_rr(code, x86_64.r8, x86_64.r10);
+    x86_64.and_ri(code, x86_64.r8, 192);
+    x86_64.cmp_ri(code, x86_64.r8, 128);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.utf8_valid.no");
+    x86_64.cmp_ri(code, x86_64.rax, 240);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.utf8_valid.not_f0");
+    x86_64.cmp_ri(code, x86_64.rdx, 144);
+    x86_64.jcc(code, x86_64.cc_b, "rt.utf8_valid.no");
+    x86_64.label(code, "rt.utf8_valid.not_f0");
+    x86_64.cmp_ri(code, x86_64.rax, 244);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.utf8_valid.four_ok");
+    x86_64.cmp_ri(code, x86_64.rdx, 144);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.utf8_valid.no");
+    x86_64.label(code, "rt.utf8_valid.four_ok");
+    x86_64.add_ri(code, x86_64.rsi, 4);
+    x86_64.sub_ri(code, x86_64.rcx, 4);
+    x86_64.jmp(code, "rt.utf8_valid.next");
+    x86_64.label(code, "rt.utf8_valid.yes");
+    x86_64.mov_ri(code, x86_64.rax, 1);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.utf8_valid.no");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+}
+
+// rt.string_from_bytes: rax = []uint8 -> rax = new string, or 0 when the bytes are not valid UTF-8.
+waza emit_string_from_bytes(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.string_from_bytes");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rax, 16);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rax, 40);
+    x86_64.call(code, "rt.utf8_valid");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.string_from_bytes.invalid");
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsp, 0);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdx, 16);
+    x86_64.add_ri(code, x86_64.rax, 24);
+    round8(code, x86_64.rax);
+    x86_64.call(code, "rt.alloc");
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsp, 0);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdx, 16);
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rcx);
+    x86_64.add_ri(code, x86_64.r8, 24);
+    round8(code, x86_64.r8);
+    x86_64.shl_ri(code, x86_64.r8, 8);
+    x86_64.add_ri(code, x86_64.r8, 6);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.r8);
+    x86_64.mov_store(code, x86_64.rax, 16, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rdx, 40);
+    x86_64.lea(code, x86_64.rdi, x86_64.rax, 24);
+    x86_64.rep_movsb(code);
+    x86_64.add_ri(code, x86_64.rsp, 8);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.string_from_bytes.invalid");
+    x86_64.add_ri(code, x86_64.rsp, 8);
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+}
+
+waza emit_object_runtime(code: x86_64.Assembler) -> unit {
+    emit_array_new(code);
+    emit_array_grow(code);
+    emit_array_get(code);
+    emit_array_set(code);
+    emit_array_push(code);
+    emit_array_truncate(code);
+    emit_array_reserve(code);
+    emit_array_clone(code);
+    emit_array_append_all(code);
+    emit_array_fill(code);
+    emit_string_to_bytes(code);
+    emit_utf8_valid(code);
+    emit_string_from_bytes(code);
+}

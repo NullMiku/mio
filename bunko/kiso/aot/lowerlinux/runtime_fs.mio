@@ -1,0 +1,823 @@
+yobu "kiso/aot/elf";
+yobu "kiso/aot/x86_64";
+yobu "kiso/array";
+yobu "kiso/convert";
+yobu "kiso/string";
+
+// Linux NativeFS bridge for the body-less "mio/fs/runtime" functions of kiso/fs.
+// Resource token = generation << 8 | (slot + 1). The 64-slot handle table lives in the data segment:
+// 3 words per slot: fd, state (0 free, 1 open, 10 + code failed), generation.
+// Status codes follow kiso/fs: 0 ok, 1 not found, 2 permission, 3 closed, 4 invalid argument, 5 I/O, 6 no space, 7 invalid path.
+waza handle_table_base() -> int64 { kaesu elf.data_base + 16; }
+waza handle_slots() -> int64 { kaesu 64; }
+
+waza emit_string_object(code: x86_64.Assembler, label: string, text: string) -> unit {
+    x86_64.label(code, label);
+    kaku bytes = string.to_bytes(text);
+    kaku size = 24 + len(bytes);
+    size = size + 7 - ((size + 7) - ((size + 7) / 8) * 8);
+    emit_word(code, 256 * size + 6);
+    emit_word(code, 0);
+    emit_word(code, len(bytes));
+    kaku at = 0;
+    aida (at < len(bytes)) { x86_64.byte(code, int64(bytes[at])); at = at + 1; }
+}
+
+waza message_for(code: int64) -> string {
+    moshi (code == 1) { kaesu "no such file or directory"; }
+    moshi (code == 2) { kaesu "permission denied"; }
+    moshi (code == 3) { kaesu "file already closed"; }
+    moshi (code == 4) { kaesu "invalid argument"; }
+    moshi (code == 6) { kaesu "no space left on device"; }
+    moshi (code == 7) { kaesu "invalid path"; }
+    kaesu "input/output error";
+}
+
+waza message_label(code: int64) -> string { kaesu string.concat("rt.fs.message.", convert.format_int(code)); }
+
+waza leave_frame(code: x86_64.Assembler) -> unit {
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+}
+
+waza emit_fs_support(code: x86_64.Assembler) -> unit {
+    // rt.fs_classify: rax = errno -> rax = status code
+    x86_64.label(code, "rt.fs_classify");
+    kaku errnos: []int64 = [2, 13, 1, 9, 28, 22];
+    kaku codes: []int64 = [1, 2, 2, 3, 6, 4];
+    kaku at = 0;
+    aida (at < len(errnos)) {
+        kaku next = string.concat("rt.fs_classify.next.", convert.format_int(at));
+        x86_64.cmp_ri(code, x86_64.rax, errnos[at]);
+        x86_64.jcc(code, x86_64.cc_ne, next);
+        x86_64.mov_ri(code, x86_64.rax, codes[at]);
+        x86_64.ret(code);
+        x86_64.label(code, next);
+        at = at + 1;
+    }
+    x86_64.mov_ri(code, x86_64.rax, 5);
+    x86_64.ret(code);
+
+    // rt.fs_message: rax = status code -> rax = message string
+    x86_64.label(code, "rt.fs_message");
+    at = 0;
+    aida (at < 8) {
+        kaku next = string.concat("rt.fs_message.next.", convert.format_int(at));
+        x86_64.cmp_ri(code, x86_64.rax, at);
+        x86_64.jcc(code, x86_64.cc_ne, next);
+        x86_64.lea_label(code, x86_64.rax, message_label(at));
+        x86_64.ret(code);
+        x86_64.label(code, next);
+        at = at + 1;
+    }
+    x86_64.lea_label(code, x86_64.rax, message_label(5));
+    x86_64.ret(code);
+
+    // rt.fs_alloc: rdi = fd, rsi = state -> rax = token (0 when the table is full)
+    x86_64.label(code, "rt.fs_alloc");
+    x86_64.mov_ri(code, x86_64.rcx, handle_table_base());
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.label(code, "rt.fs_alloc.scan");
+    x86_64.cmp_ri(code, x86_64.rdx, handle_slots());
+    x86_64.jcc(code, x86_64.cc_ae, "rt.fs_alloc.full");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.r8, 24);
+    x86_64.imul_rr(code, x86_64.rax, x86_64.r8);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.r9, x86_64.rax, 8);
+    x86_64.test_rr(code, x86_64.r9, x86_64.r9);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_alloc.found");
+    x86_64.add_ri(code, x86_64.rdx, 1);
+    x86_64.jmp(code, "rt.fs_alloc.scan");
+    x86_64.label(code, "rt.fs_alloc.found");
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rdi);
+    x86_64.mov_store(code, x86_64.rax, 8, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.r9, x86_64.rax, 16);
+    x86_64.add_ri(code, x86_64.r9, 1);
+    x86_64.mov_store(code, x86_64.rax, 16, x86_64.r9);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.r9);
+    x86_64.shl_ri(code, x86_64.rax, 8);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.add_ri(code, x86_64.rax, 1);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.fs_alloc.full");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+
+    // rt.fs_lookup: rdi = token -> rax = slot address, or 0 when the token is stale, closed or invalid
+    x86_64.label(code, "rt.fs_lookup");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rdi);
+    x86_64.and_ri(code, x86_64.rax, 255);
+    x86_64.sub_ri(code, x86_64.rax, 1);
+    x86_64.cmp_ri(code, x86_64.rax, handle_slots());
+    x86_64.jcc(code, x86_64.cc_ae, "rt.fs_lookup.none");
+    x86_64.mov_ri(code, x86_64.r8, 24);
+    x86_64.imul_rr(code, x86_64.rax, x86_64.r8);
+    x86_64.mov_ri(code, x86_64.rcx, handle_table_base());
+    x86_64.add_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rax, 8);
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_lookup.none");
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rdi);
+    x86_64.shr_ri(code, x86_64.rcx, 8);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rax, 16);
+    x86_64.cmp_rr(code, x86_64.rcx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.fs_lookup.none");
+    x86_64.ret(code);
+    x86_64.label(code, "rt.fs_lookup.none");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+
+    // rt.fs_entry_code: rax = slot address or 0 -> rax = 0 when open, else the status code
+    x86_64.label(code, "rt.fs_entry_code");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_entry_code.closed");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 8);
+    x86_64.cmp_ri(code, x86_64.rax, 10);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.fs_entry_code.failed");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.fs_entry_code.failed");
+    x86_64.sub_ri(code, x86_64.rax, 10);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.fs_entry_code.closed");
+    x86_64.mov_ri(code, x86_64.rax, 3);
+    x86_64.ret(code);
+
+    // rt.fs_status_one: rdi = status array, rsi = code -> rax = message; stores the code in status[0]
+    x86_64.label(code, "rt.fs_status_one");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 40);
+    x86_64.mov_store8(code, x86_64.rax, 0, x86_64.rsi);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.jmp(code, "rt.fs_message");
+
+    // rt.fs_status_io: rdi = status array, rsi = count, rdx = eof, rcx = code -> rax = message
+    x86_64.label(code, "rt.fs_status_io");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 40);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rsi);
+    x86_64.mov_store8(code, x86_64.rax, 8, x86_64.rdx);
+    x86_64.mov_store8(code, x86_64.rax, 9, x86_64.rcx);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.jmp(code, "rt.fs_message");
+}
+
+waza emit_fs_open(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fs_open");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 48);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rsi);
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rdi);
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.cmp_ri(code, x86_64.rsi, 2);
+    x86_64.jcc(code, x86_64.cc_a, "rt.fs_open.invalid");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 16);
+    x86_64.lea(code, x86_64.rsi, x86_64.rdi, 24);
+    x86_64.label(code, "rt.fs_open.scan");
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_open.scanned");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_open.badpath");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.sub_ri(code, x86_64.rcx, 1);
+    x86_64.jmp(code, "rt.fs_open.scan");
+    x86_64.label(code, "rt.fs_open.scanned");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -16);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 16);
+    x86_64.add_ri(code, x86_64.rax, 1);
+    x86_64.add_ri(code, x86_64.rax, 7);
+    x86_64.and_ri(code, x86_64.rax, -8);
+    x86_64.add_ri(code, x86_64.rax, 16);
+    x86_64.mov_store(code, x86_64.rbp, -32, x86_64.rax);
+    x86_64.call(code, "rt.alloc");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -32);
+    x86_64.shl_ri(code, x86_64.rcx, 8);
+    x86_64.add_ri(code, x86_64.rcx, 4);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rbp, -24, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -16);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rsi, 16);
+    x86_64.add_ri(code, x86_64.rsi, 24);
+    x86_64.lea(code, x86_64.rdi, x86_64.rax, 16);
+    x86_64.rep_movsb(code);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rdx);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -8);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.cmp_ri(code, x86_64.rcx, 0);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_open.flags");
+    x86_64.mov_ri(code, x86_64.rsi, 577);
+    x86_64.cmp_ri(code, x86_64.rcx, 1);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_open.flags");
+    x86_64.mov_ri(code, x86_64.rsi, 1089);
+    x86_64.label(code, "rt.fs_open.flags");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -24);
+    x86_64.add_ri(code, x86_64.rdi, 16);
+    x86_64.mov_ri(code, x86_64.rdx, 438);
+    x86_64.mov_eax_imm(code, 2);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.fs_open.errno");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 1);
+    x86_64.call(code, "rt.fs_alloc");
+    leave_frame(code);
+    x86_64.label(code, "rt.fs_open.errno");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.fs_classify");
+    x86_64.lea(code, x86_64.rsi, x86_64.rax, 10);
+    x86_64.mov_ri(code, x86_64.rdi, -1);
+    x86_64.call(code, "rt.fs_alloc");
+    leave_frame(code);
+    x86_64.label(code, "rt.fs_open.badpath");
+    x86_64.mov_ri(code, x86_64.rsi, 17);
+    x86_64.mov_ri(code, x86_64.rdi, -1);
+    x86_64.call(code, "rt.fs_alloc");
+    leave_frame(code);
+    x86_64.label(code, "rt.fs_open.invalid");
+    x86_64.mov_ri(code, x86_64.rsi, 14);
+    x86_64.mov_ri(code, x86_64.rdi, -1);
+    x86_64.call(code, "rt.fs_alloc");
+    leave_frame(code);
+}
+
+// rt.fs_file_status: rdi = token, rsi = status array -> message
+waza emit_fs_file_status(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fs_file_status");
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.fs_lookup");
+    x86_64.call(code, "rt.fs_entry_code");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.jmp(code, "rt.fs_status_one");
+}
+
+// rt.fs_close: rdi = token, rsi = status array -> message
+waza emit_fs_close(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fs_close");
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.fs_lookup");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_close.closed");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rax, 8);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rax, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store(code, x86_64.rax, 8, x86_64.rdx);
+    x86_64.cmp_ri(code, x86_64.rcx, 1);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.fs_close.done");
+    x86_64.mov_eax_imm(code, 3);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ge, "rt.fs_close.done");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.fs_classify");
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.jmp(code, "rt.fs_status_one");
+    x86_64.label(code, "rt.fs_close.done");
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.jmp(code, "rt.fs_status_one");
+    x86_64.label(code, "rt.fs_close.closed");
+    x86_64.mov_ri(code, x86_64.rsi, 3);
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.jmp(code, "rt.fs_status_one");
+}
+
+// rt.fs_read / rt.fs_write: rdi = token, rsi = byte array, rdx = offset, rcx = length, r8 = status array -> message
+waza emit_fs_transfer(code: x86_64.Assembler, name: string, reading: bool) -> unit {
+    x86_64.label(code, name);
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 64);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rsi);
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rdx);
+    x86_64.mov_store(code, x86_64.rbp, -24, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rbp, -32, x86_64.r8);
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.test_rr(code, x86_64.r8, x86_64.r8);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.call(code, "rt.fs_lookup");
+    x86_64.mov_store(code, x86_64.rbp, -40, x86_64.rax);
+    x86_64.call(code, "rt.fs_entry_code");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ne, string.concat(name, ".fail"));
+    // range check against the byte array length
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rbp, -16);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -24);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsi, 16);
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_l, string.concat(name, ".range"));
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_l, string.concat(name, ".range"));
+    x86_64.cmp_rr(code, x86_64.rdx, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_g, string.concat(name, ".range"));
+    x86_64.sub_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.cmp_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_g, string.concat(name, ".range"));
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsi, 40);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.mov_store(code, x86_64.rbp, -48, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.rbp, -56, x86_64.rax);
+    x86_64.label(code, string.concat(name, ".again"));
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -40);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rax, 0);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -48);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rbp, -24);
+    moshi (reading) { x86_64.mov_eax_imm(code, 0); }
+    moshi (!reading) { x86_64.mov_eax_imm(code, 1); }
+    moshi (!reading) {
+        x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+        x86_64.jcc(code, x86_64.cc_e, string.concat(name, ".finished"));
+    }
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, string.concat(name, ".errno"));
+    moshi (reading) {
+        x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+        x86_64.mov_ri(code, x86_64.rdx, 0);
+        x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+        x86_64.jcc(code, x86_64.cc_ne, string.concat(name, ".success"));
+        x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -24);
+        x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+        x86_64.jcc(code, x86_64.cc_e, string.concat(name, ".success"));
+        x86_64.mov_ri(code, x86_64.rdx, 1);
+        x86_64.label(code, string.concat(name, ".success"));
+        x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -32);
+        x86_64.mov_ri(code, x86_64.rcx, 0);
+        x86_64.call(code, "rt.fs_status_io");
+        leave_frame(code);
+    }
+    moshi (!reading) {
+        x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+        x86_64.jcc(code, x86_64.cc_e, string.concat(name, ".errno_zero"));
+        x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -56);
+        x86_64.add_rr(code, x86_64.rcx, x86_64.rax);
+        x86_64.mov_store(code, x86_64.rbp, -56, x86_64.rcx);
+        x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -48);
+        x86_64.add_rr(code, x86_64.rsi, x86_64.rax);
+        x86_64.mov_store(code, x86_64.rbp, -48, x86_64.rsi);
+        x86_64.mov_load(code, x86_64.rdx, x86_64.rbp, -24);
+        x86_64.sub_rr(code, x86_64.rdx, x86_64.rax);
+        x86_64.mov_store(code, x86_64.rbp, -24, x86_64.rdx);
+        x86_64.jmp(code, string.concat(name, ".again"));
+        x86_64.label(code, string.concat(name, ".finished"));
+        x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -56);
+        x86_64.mov_ri(code, x86_64.rdx, 0);
+        x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -32);
+        x86_64.mov_ri(code, x86_64.rcx, 0);
+        x86_64.call(code, "rt.fs_status_io");
+        leave_frame(code);
+        x86_64.label(code, string.concat(name, ".errno_zero"));
+        x86_64.mov_ri(code, x86_64.rax, 5);
+        x86_64.jmp(code, string.concat(name, ".code"));
+    }
+    x86_64.label(code, string.concat(name, ".errno"));
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.fs_classify");
+    x86_64.label(code, string.concat(name, ".code"));
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -56);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -32);
+    x86_64.call(code, "rt.fs_status_io");
+    leave_frame(code);
+    x86_64.label(code, string.concat(name, ".fail"));
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -32);
+    x86_64.call(code, "rt.fs_status_io");
+    leave_frame(code);
+    x86_64.label(code, string.concat(name, ".range"));
+    x86_64.mov_ri(code, x86_64.rcx, 4);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -32);
+    x86_64.call(code, "rt.fs_status_io");
+    leave_frame(code);
+}
+
+
+// ---- directories, stat, mkdir ------------------------------------------------------------------------
+// Directory iteration state lives in a second table indexed like the handle table:
+// 4 words per slot: buffer (backing payload), bytes in buffer, read position, current entry (0 = none).
+waza dir_table_base() -> int64 { kaesu elf.data_base + 16 + 1536; }
+
+// rt.fs_cpath: rdi = string -> rax = NUL-terminated copy (payload pointer), or 0 when the path contains NUL.
+waza emit_fs_cpath(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fs_cpath");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 32);
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rdi);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 16);
+    x86_64.lea(code, x86_64.rsi, x86_64.rdi, 24);
+    x86_64.label(code, "rt.fs_cpath.scan");
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_cpath.copy");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_cpath.bad");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.sub_ri(code, x86_64.rcx, 1);
+    x86_64.jmp(code, "rt.fs_cpath.scan");
+    x86_64.label(code, "rt.fs_cpath.copy");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -8);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 16);
+    x86_64.add_ri(code, x86_64.rax, 8);
+    x86_64.and_ri(code, x86_64.rax, -8);
+    x86_64.add_ri(code, x86_64.rax, 16);
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rax);
+    x86_64.call(code, "rt.alloc");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -16);
+    x86_64.shl_ri(code, x86_64.rcx, 8);
+    x86_64.add_ri(code, x86_64.rcx, 4);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rbp, -24, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rsi, 16);
+    x86_64.add_ri(code, x86_64.rsi, 24);
+    x86_64.lea(code, x86_64.rdi, x86_64.rax, 16);
+    x86_64.rep_movsb(code);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rdx);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -24);
+    x86_64.add_ri(code, x86_64.rax, 16);
+    leave_frame(code);
+    x86_64.label(code, "rt.fs_cpath.bad");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    leave_frame(code);
+}
+
+// rt.fs_stat: rdi = path, rsi = status array (2 bytes) -> message. status[0]: 0 missing, 1 other/file, 2 directory.
+waza emit_fs_stat(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fs_stat");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 192);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rsi);
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.call(code, "rt.fs_cpath");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_stat.badpath");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.lea(code, x86_64.rsi, x86_64.rbp, -192);
+    x86_64.mov_eax_imm(code, 4);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.fs_stat.failed");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -168);
+    x86_64.and_ri(code, x86_64.rcx, 61440);
+    x86_64.mov_ri(code, x86_64.rdx, 1);
+    x86_64.cmp_ri(code, x86_64.rcx, 16384);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.fs_stat.store");
+    x86_64.mov_ri(code, x86_64.rdx, 2);
+    x86_64.label(code, "rt.fs_stat.store");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rsi, 40);
+    x86_64.mov_store8(code, x86_64.rsi, 0, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store8(code, x86_64.rsi, 1, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.call(code, "rt.fs_message");
+    leave_frame(code);
+    x86_64.label(code, "rt.fs_stat.failed");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.fs_classify");
+    x86_64.jmp(code, "rt.fs_stat.fail_store");
+    x86_64.label(code, "rt.fs_stat.badpath");
+    x86_64.mov_ri(code, x86_64.rax, 7);
+    x86_64.label(code, "rt.fs_stat.fail_store");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rsi, 40);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store8(code, x86_64.rsi, 0, x86_64.rdx);
+    x86_64.mov_store8(code, x86_64.rsi, 1, x86_64.rax);
+    x86_64.call(code, "rt.fs_message");
+    leave_frame(code);
+}
+
+// rt.fs_mkdir: rdi = path, rsi = status array -> message
+waza emit_fs_mkdir(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fs_mkdir");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 16);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rsi);
+    x86_64.call(code, "rt.fs_cpath");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_mkdir.badpath");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 511);
+    x86_64.mov_eax_imm(code, 83);
+    x86_64.syscall(code);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ge, "rt.fs_mkdir.done");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.fs_classify");
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.label(code, "rt.fs_mkdir.done");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -8);
+    x86_64.call(code, "rt.fs_status_one");
+    leave_frame(code);
+    x86_64.label(code, "rt.fs_mkdir.badpath");
+    x86_64.mov_ri(code, x86_64.rsi, 7);
+    x86_64.jmp(code, "rt.fs_mkdir.done");
+}
+
+// rt.fs_dir_slot: rdi = token -> rax = address of the directory state, or 0 (rcx = handle table entry)
+waza emit_fs_dir_slot(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fs_dir_slot");
+    x86_64.call(code, "rt.fs_lookup");
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_dir_slot.none");
+    x86_64.mov_ri(code, x86_64.rdx, handle_table_base());
+    x86_64.sub_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.r8, 24);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.div_r(code, x86_64.r8);
+    x86_64.shl_ri(code, x86_64.rax, 5);
+    x86_64.mov_ri(code, x86_64.rdx, dir_table_base());
+    x86_64.add_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.fs_dir_slot.none");
+    x86_64.ret(code);
+}
+
+// rt.fs_open_dir: rdi = path -> token. The directory is opened O_RDONLY|O_DIRECTORY and gets a 32 KiB entry buffer.
+waza emit_fs_open_dir(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fs_open_dir");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 16);
+    x86_64.call(code, "rt.fs_cpath");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_open_dir.badpath");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 65536);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_eax_imm(code, 2);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.fs_open_dir.errno");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 1);
+    x86_64.call(code, "rt.fs_alloc");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_open_dir.done");
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -8);
+    x86_64.call(code, "rt.fs_dir_slot");
+    // slot i of the directory table owns the static buffer directory_buffers() + i * 32768
+    x86_64.mov_rr(code, x86_64.rdx, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rcx, dir_table_base());
+    x86_64.sub_rr(code, x86_64.rdx, x86_64.rcx);
+    x86_64.shl_ri(code, x86_64.rdx, 10);
+    x86_64.mov_ri(code, x86_64.rcx, directory_buffers());
+    x86_64.add_rr(code, x86_64.rdx, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store(code, x86_64.rax, 8, x86_64.rdx);
+    x86_64.mov_store(code, x86_64.rax, 16, x86_64.rdx);
+    x86_64.mov_store(code, x86_64.rax, 24, x86_64.rdx);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -8);
+    x86_64.jmp(code, "rt.fs_open_dir.done");
+    x86_64.label(code, "rt.fs_open_dir.errno");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.fs_classify");
+    x86_64.lea(code, x86_64.rsi, x86_64.rax, 10);
+    x86_64.mov_ri(code, x86_64.rdi, -1);
+    x86_64.call(code, "rt.fs_alloc");
+    x86_64.jmp(code, "rt.fs_open_dir.done");
+    x86_64.label(code, "rt.fs_open_dir.badpath");
+    x86_64.mov_ri(code, x86_64.rsi, 17);
+    x86_64.mov_ri(code, x86_64.rdi, -1);
+    x86_64.call(code, "rt.fs_alloc");
+    x86_64.label(code, "rt.fs_open_dir.done");
+    leave_frame(code);
+}
+
+// rt.fs_dir_status: rdi = token, rsi = status array -> message (same contract as file_status)
+// rt.fs_dir_close: same as rt.fs_close
+// rt.fs_dir_next: rdi = token -> rax = 1 when an entry (not "." or "..") is current
+waza emit_fs_dir_next(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fs_dir_next");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 32);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rdi);
+    x86_64.call(code, "rt.fs_dir_slot");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_dir_next.none");
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rbp, -24, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rcx, 8);
+    x86_64.cmp_ri(code, x86_64.rdx, 10);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.fs_dir_next.none");
+    x86_64.label(code, "rt.fs_dir_next.again");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -16);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rax, 16);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rax, 8);
+    x86_64.cmp_rr(code, x86_64.rcx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_l, "rt.fs_dir_next.have");
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rbp, -24);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rdx, 0);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rax, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 32768);
+    x86_64.mov_eax_imm(code, 217);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.fs_dir_next.failed");
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_dir_next.end");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -16);
+    x86_64.mov_store(code, x86_64.rcx, 8, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store(code, x86_64.rcx, 16, x86_64.rdx);
+    x86_64.jmp(code, "rt.fs_dir_next.again");
+    x86_64.label(code, "rt.fs_dir_next.have");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rax, 0);
+    x86_64.add_rr(code, x86_64.rsi, x86_64.rcx);
+    x86_64.mov_load8(code, x86_64.rdx, x86_64.rsi, 16);
+    x86_64.mov_load8(code, x86_64.r8, x86_64.rsi, 17);
+    x86_64.shl_ri(code, x86_64.r8, 8);
+    x86_64.add_rr(code, x86_64.rdx, x86_64.r8);
+    x86_64.add_rr(code, x86_64.rcx, x86_64.rdx);
+    x86_64.mov_store(code, x86_64.rax, 16, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rax, 24, x86_64.rsi);
+    x86_64.mov_load8(code, x86_64.rdx, x86_64.rsi, 19);
+    x86_64.cmp_ri(code, x86_64.rdx, 46);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.fs_dir_next.found");
+    x86_64.mov_load8(code, x86_64.rdx, x86_64.rsi, 20);
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_dir_next.again");
+    x86_64.cmp_ri(code, x86_64.rdx, 46);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.fs_dir_next.found");
+    x86_64.mov_load8(code, x86_64.rdx, x86_64.rsi, 21);
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_dir_next.again");
+    x86_64.label(code, "rt.fs_dir_next.found");
+    x86_64.mov_ri(code, x86_64.rax, 1);
+    leave_frame(code);
+    x86_64.label(code, "rt.fs_dir_next.failed");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.fs_classify");
+    x86_64.add_ri(code, x86_64.rax, 10);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -24);
+    x86_64.mov_store(code, x86_64.rcx, 8, x86_64.rax);
+    x86_64.label(code, "rt.fs_dir_next.end");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -16);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store(code, x86_64.rax, 24, x86_64.rdx);
+    x86_64.label(code, "rt.fs_dir_next.none");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    leave_frame(code);
+}
+
+// rt.fs_dir_current: rdi = token -> rax = pointer to the current dirent, or traps with "invalid argument"
+waza emit_fs_dir_current(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.fs_dir_current");
+    x86_64.call(code, "rt.fs_dir_slot");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.call");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 24);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.call");
+    x86_64.ret(code);
+    // rt.fs_dir_name: rdi = token -> rax = the entry name as a new string
+    x86_64.label(code, "rt.fs_dir_name");
+    x86_64.call(code, "rt.fs_dir_current");
+    x86_64.lea(code, x86_64.rsi, x86_64.rax, 19);
+    x86_64.mov_ri(code, x86_64.rcx, 0);
+    x86_64.label(code, "rt.fs_dir_name.length");
+    x86_64.mov_load8(code, x86_64.rdx, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.fs_dir_name.sized");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.add_ri(code, x86_64.rcx, 1);
+    x86_64.jmp(code, "rt.fs_dir_name.length");
+    x86_64.label(code, "rt.fs_dir_name.sized");
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.push_r(code, x86_64.rcx);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.add_ri(code, x86_64.rax, 24 + 7);
+    x86_64.and_ri(code, x86_64.rax, -8);
+    x86_64.mov_rr(code, x86_64.r9, x86_64.rax);
+    x86_64.call(code, "rt.alloc");
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rax);
+    x86_64.pop_r(code, x86_64.rcx);
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.shl_ri(code, x86_64.r9, 8);
+    x86_64.add_ri(code, x86_64.r9, 6);
+    x86_64.mov_store(code, x86_64.r8, 0, x86_64.r9);
+    x86_64.mov_store(code, x86_64.r8, 16, x86_64.rcx);
+    x86_64.add_ri(code, x86_64.rsi, 19);
+    x86_64.lea(code, x86_64.rdi, x86_64.r8, 24);
+    x86_64.rep_movsb(code);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.r8);
+    x86_64.ret(code);
+    // rt.fs_dir_is_dir / rt.fs_dir_is_file: d_type DT_DIR = 4, DT_REG = 8
+    x86_64.label(code, "rt.fs_dir_is_dir");
+    x86_64.call(code, "rt.fs_dir_current");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rax, 18);
+    x86_64.cmp_ri(code, x86_64.rax, 4);
+    x86_64.setcc_rax(code, x86_64.cc_e);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.fs_dir_is_file");
+    x86_64.call(code, "rt.fs_dir_current");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rax, 18);
+    x86_64.cmp_ri(code, x86_64.rax, 8);
+    x86_64.setcc_rax(code, x86_64.cc_e);
+    x86_64.ret(code);
+}
+
+waza emit_fs_runtime(code: x86_64.Assembler) -> unit {
+    emit_fs_support(code);
+    emit_fs_open(code);
+    emit_fs_file_status(code);
+    emit_fs_close(code);
+    emit_fs_transfer(code, "rt.fs_read", hai);
+    emit_fs_transfer(code, "rt.fs_write", iie);
+    emit_fs_cpath(code);
+    emit_fs_stat(code);
+    emit_fs_mkdir(code);
+    emit_fs_dir_slot(code);
+    emit_fs_open_dir(code);
+    emit_fs_dir_next(code);
+    emit_fs_dir_current(code);
+    emit_os_runtime(code);
+    emit_os_unsupported(code);
+    x86_64.label(code, "rt.fs_dir_status");
+    x86_64.jmp(code, "rt.fs_file_status");
+    x86_64.label(code, "rt.fs_dir_close");
+    x86_64.jmp(code, "rt.fs_close");
+    kaku code_number = 0;
+    aida (code_number < 8) {
+        kaku text = "";
+        moshi (code_number != 0) { text = message_for(code_number); }
+        emit_string_object(code, message_label(code_number), text);
+        code_number = code_number + 1;
+    }
+}
+
+// Native operation of a body-less MMA function: "fs:<name>" or "os:<name>" ("" for any other function).
+waza operation_name(operation: string) -> string {
+    kaku bytes = string.to_bytes(operation);
+    kaku output: []uint8 = [];
+    kaku at = 3;
+    aida (at < len(bytes)) { array.push(output, bytes[at]); at = at + 1; }
+    kaku text = string.from_utf8(output);
+    moshi (text == mu) { kaesu ""; }
+    kaesu text;
+}
+
+waza native_operation(name: string) -> string {
+    kaku prefixes: []string = ["$mma::mio/fs/runtime::", "$mma::mio/os/runtime::"];
+    kaku labels: []string = ["fs:", "os:"];
+    kaku which = 0;
+    aida (which < 2) {
+        moshi (string.has_prefix(name, prefixes[which])) {
+            kaku bytes = string.to_bytes(name);
+            kaku at = string.byte_len(prefixes[which]);
+            kaku output: []uint8 = [];
+            aida (at < len(bytes) && bytes[at] != uint8(58)) { array.push(output, bytes[at]); at = at + 1; }
+            kaku text = string.from_utf8(output);
+            moshi (text == mu) { kaesu ""; }
+            kaesu string.concat(labels[which], text);
+        }
+        which = which + 1;
+    }
+    kaesu "";
+}
+
+// Routine of a native operation, or "" when it is not implemented.
+waza native_routine(operation: string) -> string {
+    moshi (string.has_prefix(operation, "os:")) { kaesu os_routine(string.concat("", operation_name(operation))); }
+    kaku name = operation_name(operation);
+    moshi (name == "open") { kaesu "rt.fs_open"; }
+    moshi (name == "file_status") { kaesu "rt.fs_file_status"; }
+    moshi (name == "read") { kaesu "rt.fs_read"; }
+    moshi (name == "write") { kaesu "rt.fs_write"; }
+    moshi (name == "close") { kaesu "rt.fs_close"; }
+    moshi (name == "stat") { kaesu "rt.fs_stat"; }
+    moshi (name == "mkdir") { kaesu "rt.fs_mkdir"; }
+    moshi (name == "open_dir") { kaesu "rt.fs_open_dir"; }
+    moshi (name == "dir_status") { kaesu "rt.fs_dir_status"; }
+    moshi (name == "dir_next") { kaesu "rt.fs_dir_next"; }
+    moshi (name == "dir_name") { kaesu "rt.fs_dir_name"; }
+    moshi (name == "dir_is_dir") { kaesu "rt.fs_dir_is_dir"; }
+    moshi (name == "dir_is_file") { kaesu "rt.fs_dir_is_file"; }
+    moshi (name == "dir_close") { kaesu "rt.fs_dir_close"; }
+    kaesu "";
+}

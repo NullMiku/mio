@@ -1,0 +1,49 @@
+yobu "kiso/aot/x86_64";
+yobu "kiso/aot/elf";
+yobu "kiso/runtime/ir";
+yobu "kiso/runtime/cpu/amd64";
+yobu "kiso/string";
+yobu "kiso/convert";
+// Static Linux image builder. Layout of the code segment:
+//   _start (fills the import table with stub addresses, calls `entry`, exit_group)
+//   one syscall stub per slot, then the lowered runtime-IR functions.
+// The import table lives at the start of the fixed RW segment (elf.data_base).
+// No loader, no external linker, no libc.
+koukai kata LinkedImage { bytes: []uint8; error: string; }
+
+koukai waza executable(functions: []ir.Function, bindings: []ir.Binding, entry: string, extra_data: int64) -> LinkedImage {
+    kaku numbers = syscall_numbers();
+    moshi (extra_data < 0 || extra_data > 134217728) { kaesu LinkedImage { bytes: [], error: "INVALID_RUNTIME_DATA" }; }
+    kaku found = iie; kaku fi = 0;
+    aida (fi < len(functions)) { moshi (functions[fi].name == entry) { found = hai; } fi = fi + 1; }
+    moshi (!found) { kaesu LinkedImage { bytes: [], error: "UNDEFINED_RUNTIME_ENTRY" }; }
+    kaku c = x86_64.assembler();
+    // _start
+    kaku slot = 0;
+    x86_64.mov_ri(c, x86_64.rcx, elf.data_base);
+    aida (slot < len(numbers)) {
+        x86_64.lea_label(c, x86_64.rax, string_stub(slot));
+        x86_64.mov_store(c, x86_64.rcx, slot * 8, x86_64.rax);
+        slot = slot + 1;
+    }
+    x86_64.mov_rr(c, x86_64.r11, x86_64.rcx);
+    x86_64.call(c, string_function("rt", entry));
+    x86_64.mov_rr(c, x86_64.rdi, x86_64.rax);
+    x86_64.mov_eax_imm(c, 231); x86_64.syscall(c);
+    slot = 0;
+    aida (slot < len(numbers)) {
+        x86_64.label(c, string_stub(slot));
+        x86_64.mov_eax_imm(c, numbers[slot]); x86_64.mov_rr(c, x86_64.r10, x86_64.rcx); x86_64.syscall(c); x86_64.ret(c);
+        slot = slot + 1;
+    }
+    kaku failure = amd64.emit_program(c, functions, bindings, len(numbers), "rt");
+    moshi (failure != "") { kaesu LinkedImage { bytes: [], error: failure }; }
+    kaku assembled = x86_64.assemble(c);
+    moshi (assembled.error != "") { kaesu LinkedImage { bytes: [], error: assembled.error }; }
+    kaku image = elf.executable(elf.ImageSpec { code: assembled.bytes, entry_offset: 0, bss_size: len(numbers) * 8 + extra_data });
+    moshi (image.error != "") { kaesu LinkedImage { bytes: [], error: image.error }; }
+    kaesu LinkedImage { bytes: image.bytes, error: "" };
+}
+
+waza string_stub(slot: int64) -> string { kaesu string.concat("stub_", convert.format_int(slot)); }
+waza string_function(prefix: string, name: string) -> string { kaesu string.concat(prefix, string.concat("_", name)); }

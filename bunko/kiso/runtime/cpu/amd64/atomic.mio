@@ -1,0 +1,41 @@
+yobu "kiso/aot/x86_64";
+yobu "kiso/runtime/gc";
+// CPU ABI (AMD64): rdi address, rsi desired/addend, rdx expected; rax observed
+// old value. For compare-and-swap rcx additionally holds the success flag (1 on
+// success, 0 on failure); the runtime-IR lowering in program.mio returns only rax, so
+// rcx is for callers that emit this sequence directly. Other operations leave rcx unspecified.
+// The runtime IR itself only reaches fetch_add and compare_exchange here; the load, store
+// and fence forms are part of the CPU contract (gc.RuntimeOp) and are covered by byte tests.
+// x86-64 is TSO: loads are acquire and stores are release, and LOCK-prefixed
+// read-modify-write instructions are full barriers. A seq_cst store is XCHG and
+// a seq_cst fence is MFENCE; weaker fences only constrain the compiler.
+koukai waza emit_atomic(code: x86_64.Assembler, op: gc.RuntimeOp) -> string {
+    moshi (!gc.valid_operation(op) || op.kind < gc.atomic_load || op.kind > gc.fence) { kaesu "INVALID_RUNTIME_OP"; }
+    moshi (op.kind == gc.atomic_load) {
+        x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 0);
+        moshi (op.order == gc.seq_cst) { x86_64.mfence(code); }
+    }
+    moshi (op.kind == gc.atomic_store) {
+        moshi (op.order == gc.seq_cst) { x86_64.xchg_store(code, x86_64.rdi, x86_64.rsi); }
+        sore { x86_64.mov_store(code, x86_64.rdi, 0, x86_64.rsi); }
+    }
+    moshi (op.kind == gc.atomic_add) {
+        x86_64.mov_rr(code, x86_64.rax, x86_64.rsi);
+        x86_64.lock_xadd(code, x86_64.rdi, x86_64.rax);
+    }
+    moshi (op.kind == gc.atomic_cas) {
+        x86_64.mov_rr(code, x86_64.rax, x86_64.rdx);
+        x86_64.lock_cmpxchg(code, x86_64.rdi, x86_64.rsi);
+        x86_64.setcc_rcx(code, x86_64.cc_e);
+    }
+    moshi (op.kind == gc.fence) { moshi (op.order == gc.seq_cst) { x86_64.mfence(code); } }
+    kaesu "";
+}
+
+// Public native ABI import call (System V): arguments are already in
+// rdi,rsi,rdx,rcx,r8,r9; the table base is `table` and slots are 8 bytes.
+koukai waza emit_import_call(code: x86_64.Assembler, table: int64, slot: int64, slots: int64) -> string {
+    moshi (table < 0 || table > 15 || table == 4 || slot < 0 || slot >= slots || slots < 1 || slots > 4096) { kaesu "INVALID_IMPORT_CALL"; }
+    x86_64.call_memory(code, table, slot * 8);
+    kaesu "";
+}
