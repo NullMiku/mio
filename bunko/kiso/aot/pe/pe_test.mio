@@ -212,7 +212,16 @@ waza test_fixed_data_rva_placement() -> unit {
     testing.expect(data==33554432 && image.layout.image_size==33558528,"data section sits at the requested RVA");
     testing.expect(len(image.bytes)==1024,"the RVA gap costs no file bytes");
     testing.expect(executable_placed(spec,[],1048576,100).error!=mu,"unaligned rva rejected");
-    testing.expect(executable_placed(spec,[],1048576,4096).error!=mu,"rva overlapping text rejected");
+    testing.expect(executable_placed(spec,[],1048576,4096).error==mu,"rva 4096 selects the data-first layout");
     testing.expect(executable_placed(spec,[],1048576,8192).error==mu,"rva right after text accepted");
     testing.expect(executable_placed(spec,[],1048576,0).error==mu,"zero keeps sequential layout");
+}
+
+waza test_data_first_layout_has_no_gap() -> unit {
+    kaku spec=ImageSpec {text:[195],rdata:[],data:[],zero_fill:5000,entry:0,imports:[],patches:[],unwind:[]};
+    kaku image=executable_placed(spec,[],1048576,4096);
+    testing.expect(image.error==mu && len(image.layout.sections)==2,"data-first image accepted");
+    testing.expect(image.layout.sections[0].kind==data_section && image.layout.sections[0].rva==4096 && image.layout.sections[0].raw_size==0,"data first at 0x1000, no raw bytes");
+    testing.expect(image.layout.sections[1].kind==text_section && image.layout.sections[1].rva==12288 && image.layout.sections[1].offset==512,"text follows the page-aligned data");
+    testing.expect(u32(image.bytes,168)==12288 && u32(image.bytes,172)==12288 && image.layout.image_size==16384,"entry and BaseOfCode point at text; image size has no gap");
 }

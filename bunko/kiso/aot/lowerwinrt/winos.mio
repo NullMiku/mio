@@ -37,8 +37,9 @@ koukai teisu mark_stack_size = 536870912;
 
 // Packages cannot hold mutable globals, so the collected unwind records and patches travel in a context.
 koukai kata WinContext { patches: []pe.Patch; frames: []pe.FrameFunction; }
-// .data is placed at a fixed RVA (pe.executable_placed), so every absolute data address is a link-time constant.
-koukai teisu data_rva = 33554432;
+// .data is the first section, at RVA 0x1000 (pe.executable_placed data-first layout): every absolute data address is a
+// link-time constant and the image has no RVA gap.
+koukai teisu data_rva = 4096;
 koukai waza data_base() -> int64 { kaesu pe.image_base + data_rva; }
 // Scratch zone between the directory buffers and the Mochi globals (131072 bytes): +0 UTF-16 path buffer (64 KiB),
 // +65536 directory-enumeration state, 64 slots x 1024 bytes: [0] find handle (0 = free), [8] entry pending flag,

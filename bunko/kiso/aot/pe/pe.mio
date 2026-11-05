@@ -235,7 +235,8 @@ koukai waza executable_framed(spec:ImageSpec, frames:[]FrameFunction) -> ImageRe
 koukai waza executable_sized(spec:ImageSpec, frames:[]FrameFunction, stack_reserve:int64) -> ImageResult { kaesu executable_placed(spec,frames,stack_reserve,0); }
 
 // data_rva > 0 places .data at that RVA (a multiple of 4096, not below the end of .text/.rdata), so generated code may
-// embed absolute data addresses (image_base + data_rva) as constants. 0 keeps the sequential layout.
+// embed absolute data addresses (image_base + data_rva) as constants. 4096 is special: .data comes first, directly after the
+// headers, so there is no RVA gap and .text follows it. 0 keeps the sequential layout.
 koukai waza executable_placed(spec:ImageSpec, frames:[]FrameFunction, stack_reserve:int64, data_rva:int64) -> ImageResult {
     moshi(data_rva<0 || data_rva-(data_rva/4096)*4096!=0 || data_rva>maximum_image_size){kaesu failure(PEError.InvalidEntry());}
     moshi(stack_reserve<65536 || stack_reserve>1073741824 || stack_reserve-(stack_reserve/65536)*65536!=0){kaesu failure(PEError.ImageTooLarge());}
@@ -259,9 +260,15 @@ koukai waza executable_placed(spec:ImageSpec, frames:[]FrameFunction, stack_rese
     moshi(has_relocations){count=count+1;}
     kaku headers=align(392+count*40,file_alignment);
     kaku layout=Layout {headers_size:headers,image_size:4096,file_size:headers,sections:[],iat_rva:0,iat_size:imports.iat_size};
+    // data_rva == 4096 puts .data FIRST (right after the headers, no RVA gap), so its address is a constant independent of code size.
+    kaku data_first=data_rva==4096;
+    moshi(data_first && len(spec.data)+spec.zero_fill>0){
+        kaku first_flags=3221225536;moshi(len(spec.data)==0){first_flags=3221225600;}
+        layout=add_section(layout,data_section,".data",len(spec.data),len(spec.data)+spec.zero_fill,first_flags);
+    }
     layout=add_section(layout,text_section,".text",len(spec.text),len(spec.text),1610612768);
     moshi(len(spec.rdata)>0){layout=add_section(layout,rdata_section,".rdata",len(spec.rdata),len(spec.rdata),1073741888);}
-    moshi(len(spec.data)+spec.zero_fill>0){
+    moshi(!data_first && len(spec.data)+spec.zero_fill>0){
         moshi(data_rva>0 && data_rva<layout.image_size){kaesu failure(PEError.ImageTooLarge());}
         moshi(data_rva>0){layout=Layout {headers_size:layout.headers_size,image_size:data_rva,file_size:layout.file_size,sections:layout.sections,iat_rva:layout.iat_rva,iat_size:layout.iat_size};}
         kaku flags=3221225536;moshi(len(spec.data)==0){flags=3221225600;}
