@@ -1,10 +1,10 @@
 yobu "selfhost/frontend";
 yobu "kiso/encoding/mochi";
-yobu "kiso/aot/lowerwin";
+yobu "kiso/aot/lowerwinrt";
 yobu "kiso/string";
 
-// Windows AMD64 counterpart of linux.mio: the same pure-Mio frontend, a different backend (scalar subset, see
-// kiso/aot/lowerwin). Mochi stays in this process's memory; the result is a PE32+ console image with no linker and no libc.
+// Windows AMD64 counterpart of linux.mio: the same pure-Mio frontend, a different backend (heap-capable, see
+// kiso/aot/lowerwinrt). Mochi stays in this process's memory; the result is a PE32+ console image with no linker and no libc.
 koukai waza build_windows_source(root: string, entry: string, bunko_root: string) -> NativeBuildResult {
     kaku compiled = frontend.compile_source(root, entry, bunko_root);
     moshi (compiled.error != "") { kaesu NativeBuildResult { bytes: [], error: compiled.error }; }
@@ -16,7 +16,7 @@ koukai waza build_windows_mochi(data: []uint8) -> NativeBuildResult {
     kaku file = decoded.value;
     moshi (decoded.error != mu) { kaesu NativeBuildResult { bytes: [], error: "E_IR frontend produced invalid Mochi" }; }
     moshi (file == mu) { kaesu NativeBuildResult { bytes: [], error: "E_IR frontend returned no module" }; }
-    kaku lowered = lowerwin.compile(file);
+    kaku lowered = lowerwinrt.compile(file);
     moshi (lowered.error != "") { kaesu NativeBuildResult { bytes: [], error: string.concat("E_LOWER ", lowered.error) }; }
     kaesu NativeBuildResult { bytes: lowered.bytes, error: "" };
 }

@@ -132,6 +132,7 @@ waza emit_runtime(code: x86_64.Assembler, ctx: WinContext) -> unit {
     emit_object_runtime(code);
     emit_box_runtime(code);
     emit_fs_runtime(code);
+    emit_os_runtime(code);
     emit_map_runtime(code);
     emit_trap(code, "rt.trap.nil", "rt.text.nil", 25);
     emit_trap(code, "rt.trap.index", "rt.text.index", 33);
@@ -1174,6 +1175,7 @@ koukai waza compile_with_gc_threshold(file: mochi.File, gc_threshold: int64) -> 
     x86_64.mov_ri(code, x86_64.rcx, initial_sp_cell());
     x86_64.mov_store(code, x86_64.rcx, 0, x86_64.rsp);
     x86_64.call(code, "rt.init");
+    x86_64.call(code, "rt.win_args");
     x86_64.mov_ri(code, x86_64.rcx, gc_state());
     x86_64.mov_ri(code, x86_64.rax, gc_threshold);
     x86_64.mov_store(code, x86_64.rcx, 16, x86_64.rax);
@@ -1197,7 +1199,7 @@ koukai waza compile_with_gc_threshold(file: mochi.File, gc_threshold: int64) -> 
     moshi (assembled.error != "") { kaesu failed(assembled.error); }
     kaku bss = 8192 + 2097152 + 131072 + 8 * file.global_count + 32;
     kaku image = pe.executable_placed(pe.ImageSpec { text: assembled.bytes, rdata: [], data: [], zero_fill: bss, entry: 0,
-        imports: [pe.ImportLibrary { name: "KERNEL32.dll", symbols: ["GetStdHandle", "WriteFile", "ExitProcess", "VirtualAlloc", "CreateFileW", "ReadFile", "CloseHandle", "MultiByteToWideChar", "GetLastError", "GetFileAttributesW", "CreateDirectoryW", "FindFirstFileW", "FindNextFileW", "FindClose", "WideCharToMultiByte"] }],
+        imports: [pe.ImportLibrary { name: "KERNEL32.dll", symbols: ["GetStdHandle", "WriteFile", "ExitProcess", "VirtualAlloc", "CreateFileW", "ReadFile", "CloseHandle", "MultiByteToWideChar", "GetLastError", "GetFileAttributesW", "CreateDirectoryW", "FindFirstFileW", "FindNextFileW", "FindClose", "WideCharToMultiByte", "GetCommandLineW", "GetEnvironmentStringsW", "DeleteFileW", "RemoveDirectoryW", "GetCurrentProcessId", "GetTickCount64", "GetFullPathNameW"] }],
         patches: ctx.patches, unwind: [] }, ctx.frames, 67108864, data_rva);
     moshi (image.error != mu) { kaesu failed("PE_IMAGE_ERROR"); }
     kaesu LowerResult { bytes: image.bytes, error: "" };

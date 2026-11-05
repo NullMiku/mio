@@ -13,7 +13,8 @@ yobu "kiso/string";
 //  * every Win64 boundary routine is a frame-pointer function with unwind info, 16-byte realigned, 32-byte shadow space.
 // Imports (index): 0 GetStdHandle, 1 WriteFile, 2 ExitProcess, 3 VirtualAlloc, 4 CreateFileW, 5 ReadFile, 6 CloseHandle,
 // 7 MultiByteToWideChar, 8 GetLastError, 9 GetFileAttributesW, 10 CreateDirectoryW, 11 FindFirstFileW, 12 FindNextFileW,
-// 13 FindClose, 14 WideCharToMultiByte.
+// 13 FindClose, 14 WideCharToMultiByte, 15 GetCommandLineW, 16 GetEnvironmentStringsW, 17 DeleteFileW, 18 RemoveDirectoryW,
+// 19 GetCurrentProcessId, 20 GetTickCount64, 21 GetFullPathNameW.
 koukai teisu import_get_std_handle = 0;
 koukai teisu import_write_file = 1;
 koukai teisu import_exit_process = 2;
@@ -29,6 +30,13 @@ koukai teisu import_find_first = 11;
 koukai teisu import_find_next = 12;
 koukai teisu import_find_close = 13;
 koukai teisu import_wide_to_multibyte = 14;
+koukai teisu import_command_line = 15;
+koukai teisu import_environment_strings = 16;
+koukai teisu import_delete_file = 17;
+koukai teisu import_remove_directory = 18;
+koukai teisu import_process_id = 19;
+koukai teisu import_tick_count = 20;
+koukai teisu import_full_path = 21;
 koukai teisu io_failure_exit = 111;
 koukai teisu heap_reserve = 8589934592;
 koukai teisu heap_first_commit = 16777216;
@@ -309,6 +317,16 @@ waza emit_win_syscall(code: x86_64.Assembler, ctx: WinContext) -> unit {
     x86_64.jcc(code, x86_64.cc_e, "rt.syscall.mkdir");
     x86_64.cmp_ri(code, x86_64.rax, 217);
     x86_64.jcc(code, x86_64.cc_e, "rt.syscall.getdents");
+    x86_64.cmp_ri(code, x86_64.rax, 87);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.unlink");
+    x86_64.cmp_ri(code, x86_64.rax, 84);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.rmdir");
+    x86_64.cmp_ri(code, x86_64.rax, 39);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.getpid");
+    x86_64.cmp_ri(code, x86_64.rax, 228);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.ticks");
+    x86_64.cmp_ri(code, x86_64.rax, 1000);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.fullpath");
     x86_64.mov_ri(code, x86_64.rax, -38);
     x86_64.jmp(code, "rt.syscall.out");
     // read(fd, buffer, count)
@@ -642,6 +660,89 @@ waza emit_win_syscall(code: x86_64.Assembler, ctx: WinContext) -> unit {
     x86_64.label(code, "rt.syscall.ebadf");
     x86_64.mov_ri(code, x86_64.rax, -9);
     x86_64.jmp(code, "rt.syscall.out");
+    // unlink / rmdir(path)
+    x86_64.label(code, "rt.syscall.unlink");
+    emit_path_to_wide(code, ctx);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.einval");
+    x86_64.mov_ri(code, x86_64.rcx, scratch_path());
+    import_call(code, ctx, import_delete_file);
+    x86_64.zero_extend_eax(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.error");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.jmp(code, "rt.syscall.out");
+    x86_64.label(code, "rt.syscall.rmdir");
+    emit_path_to_wide(code, ctx);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.einval");
+    x86_64.mov_ri(code, x86_64.rcx, scratch_path());
+    import_call(code, ctx, import_remove_directory);
+    x86_64.zero_extend_eax(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.error");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.jmp(code, "rt.syscall.out");
+    x86_64.label(code, "rt.syscall.getpid");
+    import_call(code, ctx, import_process_id);
+    x86_64.zero_extend_eax(code);
+    x86_64.jmp(code, "rt.syscall.out");
+    x86_64.label(code, "rt.syscall.ticks");
+    import_call(code, ctx, import_tick_count);
+    x86_64.jmp(code, "rt.syscall.out");
+    // fullpath(cpath, buffer, capacity): absolute path of an EXISTING file or directory as UTF-8 with '/' separators
+    x86_64.label(code, "rt.syscall.fullpath");
+    emit_path_to_wide(code, ctx);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.einval");
+    x86_64.mov_ri(code, x86_64.rcx, scratch_path());
+    import_call(code, ctx, import_get_attributes);
+    x86_64.zero_extend_eax(code);
+    x86_64.mov_ri(code, x86_64.rcx, 4294967295);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.error");
+    x86_64.mov_ri(code, x86_64.rcx, scratch_path());
+    x86_64.mov_ri(code, x86_64.rdx, 16384);
+    x86_64.mov_ri(code, x86_64.r8, scratch_path() + 32768);
+    x86_64.mov_ri(code, x86_64.r9, 0);
+    import_call(code, ctx, import_full_path);
+    x86_64.zero_extend_eax(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.error");
+    x86_64.mov_ri(code, x86_64.rcx, 65001);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_ri(code, x86_64.r8, scratch_path() + 32768);
+    x86_64.mov_ri(code, x86_64.r9, -1);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 72);
+    x86_64.mov_store(code, x86_64.rsp, 32, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 80);
+    x86_64.mov_store(code, x86_64.rsp, 40, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.rsp, 48, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rsp, 56, x86_64.rax);
+    import_call(code, ctx, import_wide_to_multibyte);
+    x86_64.zero_extend_eax(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.einval");
+    x86_64.sub_ri(code, x86_64.rax, 1);
+    x86_64.mov_store(code, x86_64.rsp, 136, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsp, 72);
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.label(code, "rt.syscall.fullpath_slash");
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.fullpath_done");
+    x86_64.mov_load8(code, x86_64.r8, x86_64.rdx, 0);
+    x86_64.cmp_ri(code, x86_64.r8, 92);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.syscall.fullpath_next");
+    x86_64.mov_ri(code, x86_64.r8, 47);
+    x86_64.mov_store8(code, x86_64.rdx, 0, x86_64.r8);
+    x86_64.label(code, "rt.syscall.fullpath_next");
+    x86_64.add_ri(code, x86_64.rdx, 1);
+    x86_64.sub_ri(code, x86_64.rcx, 1);
+    x86_64.jmp(code, "rt.syscall.fullpath_slash");
+    x86_64.label(code, "rt.syscall.fullpath_done");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 136);
+    x86_64.jmp(code, "rt.syscall.out");
     // rt.syscall.dev: rdi = literal device path, rsi = candidate path, rdx = descriptor -> rax = descriptor or -1
     x86_64.label(code, "rt.syscall.dev");
     x86_64.mov_rr(code, x86_64.r8, x86_64.rsi);
@@ -720,7 +821,247 @@ waza emit_win_syscall(code: x86_64.Assembler, ctx: WinContext) -> unit {
     x86_64.byte(code, 115); x86_64.byte(code, 116); x86_64.byte(code, 100); x86_64.byte(code, 101); x86_64.byte(code, 114); x86_64.byte(code, 114); x86_64.byte(code, 0);
 }
 
+// rt.win_args: builds the Linux-style argument/environment block described in runtime_os.mio and stores its address in
+// initial_sp_cell(). Windows command-line rules (CommandLineToArgvW semantics for argv[1..]; argv[0] is quote-delimited
+// without escapes). Frame after realignment: +32..+56 stack arguments, +64 block, +72 string cursor, +80 pointer cursor,
+// +88 environment cursor (wide), +96 argc, +104 quote state.
+waza emit_win_args(code: x86_64.Assembler, ctx: WinContext) -> unit {
+    kaku begin = open_frame(code, "rt.win_args", 0);
+    x86_64.and_ri(code, x86_64.rsp, -16);
+    x86_64.sub_ri(code, x86_64.rsp, 128);
+    x86_64.mov_ri(code, x86_64.rcx, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 4194304);
+    x86_64.mov_ri(code, x86_64.r8, 12288);
+    x86_64.mov_ri(code, x86_64.r9, 4);
+    x86_64.call(code, "rt.virtual_alloc");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.memory");
+    x86_64.mov_store(code, x86_64.rsp, 64, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rcx, initial_sp_cell());
+    x86_64.mov_store(code, x86_64.rcx, 0, x86_64.rax);
+    x86_64.lea(code, x86_64.rdx, x86_64.rax, 8);
+    x86_64.mov_store(code, x86_64.rsp, 80, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.rdx, 65536);
+    x86_64.add_rr(code, x86_64.rdx, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rsp, 72, x86_64.rdx);
+    // the whole command line as UTF-8 at the string cursor
+    import_call(code, ctx, import_command_line);
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rcx, 65001);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_ri(code, x86_64.r9, -1);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 72);
+    x86_64.mov_store(code, x86_64.rsp, 32, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 1048576);
+    x86_64.mov_store(code, x86_64.rsp, 40, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.rsp, 48, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rsp, 56, x86_64.rax);
+    import_call(code, ctx, import_wide_to_multibyte);
+    x86_64.zero_extend_eax(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.memory");
+    // rsi = read, rdi = write, r9 = pointer cursor, r8 = argc; the string cursor moves past the converted text
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rsp, 72);
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rsi);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.mov_store(code, x86_64.rsp, 72, x86_64.rax);
+    x86_64.mov_load(code, x86_64.r9, x86_64.rsp, 80);
+    x86_64.mov_ri(code, x86_64.r8, 1);
+    x86_64.mov_store(code, x86_64.r9, 0, x86_64.rdi);
+    x86_64.add_ri(code, x86_64.r9, 8);
+    // argv[0]
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.cmp_ri(code, x86_64.rax, 34);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.win_args.a0_plain");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.label(code, "rt.win_args.a0_quoted");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.a0_end");
+    x86_64.cmp_ri(code, x86_64.rax, 34);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.a0_close");
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rdi, 1);
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.jmp(code, "rt.win_args.a0_quoted");
+    x86_64.label(code, "rt.win_args.a0_close");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.jmp(code, "rt.win_args.a0_end");
+    x86_64.label(code, "rt.win_args.a0_plain");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.a0_end");
+    x86_64.cmp_ri(code, x86_64.rax, 32);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.a0_space");
+    x86_64.cmp_ri(code, x86_64.rax, 9);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.a0_space");
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rdi, 1);
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.jmp(code, "rt.win_args.a0_plain");
+    x86_64.label(code, "rt.win_args.a0_space");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.label(code, "rt.win_args.a0_end");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rdi, 1);
+    // the remaining arguments
+    x86_64.label(code, "rt.win_args.next");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.cmp_ri(code, x86_64.rax, 32);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.skip");
+    x86_64.cmp_ri(code, x86_64.rax, 9);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.win_args.begin");
+    x86_64.label(code, "rt.win_args.skip");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.jmp(code, "rt.win_args.next");
+    x86_64.label(code, "rt.win_args.begin");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.args_done");
+    x86_64.mov_store(code, x86_64.r9, 0, x86_64.rdi);
+    x86_64.add_ri(code, x86_64.r9, 8);
+    x86_64.add_ri(code, x86_64.r8, 1);
+    x86_64.mov_ri(code, x86_64.r10, 0);
+    x86_64.label(code, "rt.win_args.char");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.end");
+    x86_64.cmp_ri(code, x86_64.rax, 92);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.backslash");
+    x86_64.cmp_ri(code, x86_64.rax, 34);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.quote");
+    x86_64.test_rr(code, x86_64.r10, x86_64.r10);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.win_args.copy");
+    x86_64.cmp_ri(code, x86_64.rax, 32);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.space");
+    x86_64.cmp_ri(code, x86_64.rax, 9);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.space");
+    x86_64.label(code, "rt.win_args.copy");
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rdi, 1);
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.jmp(code, "rt.win_args.char");
+    x86_64.label(code, "rt.win_args.quote");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.mov_ri(code, x86_64.rax, 1);
+    x86_64.xor_rr(code, x86_64.r10, x86_64.rax);
+    x86_64.jmp(code, "rt.win_args.char");
+    // n backslashes: if followed by a quote, emit n/2 and (odd) a literal quote, else emit n
+    x86_64.label(code, "rt.win_args.backslash");
+    x86_64.mov_ri(code, x86_64.rcx, 0);
+    x86_64.label(code, "rt.win_args.bs_count");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.cmp_ri(code, x86_64.rax, 92);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.win_args.bs_counted");
+    x86_64.add_ri(code, x86_64.rcx, 1);
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.jmp(code, "rt.win_args.bs_count");
+    x86_64.label(code, "rt.win_args.bs_counted");
+    x86_64.cmp_ri(code, x86_64.rax, 34);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.win_args.bs_literal");
+    x86_64.mov_rr(code, x86_64.rdx, x86_64.rcx);
+    x86_64.shr_ri(code, x86_64.rdx, 1);
+    x86_64.mov_ri(code, x86_64.rax, 92);
+    x86_64.label(code, "rt.win_args.bs_half");
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.bs_half_done");
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rdi, 1);
+    x86_64.sub_ri(code, x86_64.rdx, 1);
+    x86_64.jmp(code, "rt.win_args.bs_half");
+    x86_64.label(code, "rt.win_args.bs_half_done");
+    x86_64.and_ri(code, x86_64.rcx, 1);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.quote");
+    x86_64.mov_ri(code, x86_64.rax, 34);
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rdi, 1);
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.jmp(code, "rt.win_args.char");
+    x86_64.label(code, "rt.win_args.bs_literal");
+    x86_64.mov_ri(code, x86_64.rax, 92);
+    x86_64.label(code, "rt.win_args.bs_literal_loop");
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.char");
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rdi, 1);
+    x86_64.sub_ri(code, x86_64.rcx, 1);
+    x86_64.jmp(code, "rt.win_args.bs_literal_loop");
+    x86_64.label(code, "rt.win_args.space");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.label(code, "rt.win_args.end");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store8(code, x86_64.rdi, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rdi, 1);
+    x86_64.jmp(code, "rt.win_args.next");
+    x86_64.label(code, "rt.win_args.args_done");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.r9, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.r9, 8);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 64);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.r8);
+    x86_64.mov_store(code, x86_64.rsp, 80, x86_64.r9);
+    // environment: every "NAME=value" entry that does not start with '=' becomes a UTF-8 string
+    import_call(code, ctx, import_environment_strings);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.env_done");
+    x86_64.mov_store(code, x86_64.rsp, 88, x86_64.rax);
+    x86_64.label(code, "rt.win_args.env_next");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rsp, 88);
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.mov_load8(code, x86_64.rcx, x86_64.rsi, 1);
+    x86_64.or_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.env_done");
+    // length in wide characters (incl. NUL) -> advance the cursor after converting
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rsi);
+    x86_64.label(code, "rt.win_args.env_len");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rdi, 0);
+    x86_64.mov_load8(code, x86_64.rcx, x86_64.rdi, 1);
+    x86_64.add_ri(code, x86_64.rdi, 2);
+    x86_64.or_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.win_args.env_len");
+    x86_64.mov_store(code, x86_64.rsp, 88, x86_64.rdi);
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.cmp_ri(code, x86_64.rax, 61);
+    x86_64.jcc(code, x86_64.cc_e, "rt.win_args.env_next");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 72);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsp, 80);
+    x86_64.mov_store(code, x86_64.rdx, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rdx, 8);
+    x86_64.mov_store(code, x86_64.rsp, 80, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.rcx, 65001);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rsi);
+    x86_64.mov_ri(code, x86_64.r9, -1);
+    x86_64.mov_store(code, x86_64.rsp, 32, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 64);
+    x86_64.mov_ri(code, x86_64.rdi, 4194304);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rdi);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rsp, 72);
+    x86_64.sub_rr(code, x86_64.rax, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_be, "rt.trap.memory");
+    x86_64.mov_store(code, x86_64.rsp, 40, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.rsp, 48, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rsp, 56, x86_64.rax);
+    import_call(code, ctx, import_wide_to_multibyte);
+    x86_64.zero_extend_eax(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.memory");
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsp, 72);
+    x86_64.add_rr(code, x86_64.rdx, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rsp, 72, x86_64.rdx);
+    x86_64.jmp(code, "rt.win_args.env_next");
+    x86_64.label(code, "rt.win_args.env_done");
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsp, 80);
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.rdx, 0, x86_64.rax);
+    emit_epilogue(code);
+    close_frame(code, ctx, begin, 0);
+}
+
 waza emit_win_runtime(code: x86_64.Assembler, ctx: WinContext) -> unit {
+    emit_win_args(code, ctx);
     emit_win_syscall(code, ctx);
     emit_win_exit(code, ctx);
     emit_win_write(code, ctx);
@@ -740,7 +1081,18 @@ waza emit_win_runtime(code: x86_64.Assembler, ctx: WinContext) -> unit {
 // of the os operations only exit exists. Everything else stops at call time with the explicit runtime error
 // "unsupported operation" (rt.os_unsupported).
 waza os_routine(operation: string) -> string {
+    moshi (operation == "argc") { kaesu "rt.os_argc"; }
+    moshi (operation == "arg_size") { kaesu "rt.os_arg_size"; }
+    moshi (operation == "arg_copy") { kaesu "rt.os_arg_copy"; }
     moshi (operation == "exit") { kaesu "rt.os_exit"; }
+    moshi (operation == "chmod") { kaesu "rt.os_chmod"; }
+    moshi (operation == "remove") { kaesu "rt.os_remove"; }
+    moshi (operation == "rmdir") { kaesu "rt.os_rmdir"; }
+    moshi (operation == "pid") { kaesu "rt.os_pid"; }
+    moshi (operation == "real_path") { kaesu "rt.os_real_path"; }
+    moshi (operation == "env_size") { kaesu "rt.os_env_size"; }
+    moshi (operation == "env_copy") { kaesu "rt.os_env_copy"; }
+    moshi (operation == "monotonic_ms") { kaesu "rt.os_monotonic_ms"; }
     kaesu "";
 }
 waza initial_sp_cell() -> int64 { kaesu gc_state() + 72; }

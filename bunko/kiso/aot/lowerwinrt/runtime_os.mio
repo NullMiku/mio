@@ -1,0 +1,222 @@
+yobu "kiso/aot/pe";
+yobu "kiso/aot/x86_64";
+yobu "kiso/array";
+yobu "kiso/string";
+
+// Windows implementation of the body-less "mio/os/runtime" functions needed to run selfhost/cli's build path.
+// Arguments and environment use the Linux layout: rt.win_args builds, at startup, a block
+//   [argc][argv pointers][0][envp pointers][0] ... strings from +65536   (UTF-8, NUL-terminated)
+// from GetCommandLineW / GetEnvironmentStringsW and stores its address in initial_sp_cell(); the lookup routines below are the
+// Linux ones, unchanged. Process spawning (spawn/exec/spawn_test) and stdin readiness are NOT implemented (explicit
+// "unsupported operation"). chmod is a successful no-op: Windows has no POSIX permission bits.
+waza emit_load_initial_sp(code: x86_64.Assembler, reg: int64) -> unit {
+    x86_64.mov_ri(code, reg, initial_sp_cell());
+    x86_64.mov_load(code, reg, reg, 0);
+}
+
+waza emit_os_runtime(code: x86_64.Assembler) -> unit {
+    // rt.os_argc -> rax
+    x86_64.label(code, "rt.os_argc");
+    emit_load_initial_sp(code, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 0);
+    x86_64.ret(code);
+
+    // rt.os_arg_pointer: rdi = index -> rax = pointer to the NUL-terminated argument, or 0
+    x86_64.label(code, "rt.os_arg_pointer");
+    emit_load_initial_sp(code, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 0);
+    x86_64.cmp_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.os_arg_pointer.none");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rdi);
+    x86_64.shl_ri(code, x86_64.rax, 3);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 8);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_arg_pointer.none");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+
+    // rt.os_strlen: rsi = pointer -> rax = length
+    x86_64.label(code, "rt.os_strlen");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.label(code, "rt.os_strlen.loop");
+    x86_64.mov_load8(code, x86_64.rcx, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_strlen.done");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.add_ri(code, x86_64.rax, 1);
+    x86_64.jmp(code, "rt.os_strlen.loop");
+    x86_64.label(code, "rt.os_strlen.done");
+    x86_64.ret(code);
+
+    // rt.os_arg_size: rdi = index -> rax = byte length or -1
+    x86_64.label(code, "rt.os_arg_size");
+    x86_64.call(code, "rt.os_arg_pointer");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_arg_size.none");
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.call(code, "rt.os_strlen");
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_arg_size.none");
+    x86_64.mov_ri(code, x86_64.rax, -1);
+    x86_64.ret(code);
+
+    // rt.os_arg_copy: rdi = index, rsi = byte array -> rax = length copied, or -1
+    x86_64.label(code, "rt.os_arg_copy");
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.os_arg_pointer");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_arg_size.none");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.call(code, "rt.os_strlen");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 16);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_g, "rt.os_arg_size.none");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rdi, 40);
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.rep_movsb(code);
+    x86_64.ret(code);
+
+
+    // chmod: no POSIX modes on Windows
+    x86_64.label(code, "rt.os_chmod");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+    emit_os_path_call(code, "rt.os_remove", 87);
+    emit_os_path_call(code, "rt.os_rmdir", 84);
+    x86_64.label(code, "rt.os_pid");
+    x86_64.mov_eax_imm(code, 39);
+    x86_64.call(code, "rt.syscall");
+    x86_64.ret(code);
+    // rt.os_monotonic_ms: milliseconds since boot (GetTickCount64 through the shim)
+    x86_64.label(code, "rt.os_monotonic_ms");
+    x86_64.mov_eax_imm(code, 228);
+    x86_64.call(code, "rt.syscall");
+    x86_64.ret(code);
+    emit_os_environment(code);
+    // rt.os_real_path: rdi = path string, rsi = byte array -> rax = length of the absolute path (forward slashes) or -errno
+    x86_64.label(code, "rt.os_real_path");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 16);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rsi);
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.call(code, "rt.fs_cpath");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_real_path.invalid");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -8);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rcx, 16);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rcx, 40);
+    x86_64.mov_eax_imm(code, 1000);
+    x86_64.call(code, "rt.syscall");
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_real_path.invalid");
+    x86_64.mov_ri(code, x86_64.rax, -22);
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+}
+
+waza emit_os_path_call(code: x86_64.Assembler, name: string, number: int64) -> unit {
+    x86_64.label(code, name);
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.fs_cpath");
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, string.concat(name, ".bad"));
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_eax_imm(code, number);
+    x86_64.call(code, "rt.syscall");
+    x86_64.ret(code);
+    x86_64.label(code, string.concat(name, ".bad"));
+    x86_64.mov_ri(code, x86_64.rax, -22);
+    x86_64.ret(code);
+}
+
+// rt.os_find_env: rdi = name string -> rax = pointer to the value (after '='), or 0
+waza emit_os_environment(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.os_find_env");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    emit_load_initial_sp(code, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 0);
+    x86_64.lea(code, x86_64.rcx, x86_64.rcx, 16);
+    x86_64.shl_ri(code, x86_64.rax, 3);
+    x86_64.add_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.mov_load(code, x86_64.r8, x86_64.rdi, 16);
+    x86_64.lea(code, x86_64.r9, x86_64.rdi, 24);
+    x86_64.label(code, "rt.os_find_env.next");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rcx, 0);
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_find_env.none");
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.label(code, "rt.os_find_env.compare");
+    x86_64.cmp_rr(code, x86_64.rdx, x86_64.r8);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.os_find_env.tail");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rax, 0);
+    x86_64.mov_rr(code, x86_64.r10, x86_64.r9);
+    x86_64.add_rr(code, x86_64.r10, x86_64.rdx);
+    x86_64.mov_load8(code, x86_64.r10, x86_64.r10, 0);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.r10);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.os_find_env.skip");
+    x86_64.add_ri(code, x86_64.rdx, 1);
+    x86_64.jmp(code, "rt.os_find_env.compare");
+    x86_64.label(code, "rt.os_find_env.tail");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.add_rr(code, x86_64.rax, x86_64.r8);
+    x86_64.mov_load8(code, x86_64.r10, x86_64.rax, 0);
+    x86_64.cmp_ri(code, x86_64.r10, 61);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.os_find_env.skip");
+    x86_64.add_ri(code, x86_64.rax, 1);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_find_env.skip");
+    x86_64.add_ri(code, x86_64.rcx, 8);
+    x86_64.jmp(code, "rt.os_find_env.next");
+    x86_64.label(code, "rt.os_find_env.none");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+    // rt.os_env_size: rdi = name -> rax = value length or -1
+    x86_64.label(code, "rt.os_env_size");
+    x86_64.call(code, "rt.os_find_env");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_arg_size.none");
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.call(code, "rt.os_strlen");
+    x86_64.ret(code);
+    // rt.os_env_copy: rdi = name, rsi = byte array -> rax = length copied, or -1
+    x86_64.label(code, "rt.os_env_copy");
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.os_find_env");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_arg_size.none");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.call(code, "rt.os_strlen");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 16);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_g, "rt.os_arg_size.none");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rdi, 40);
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.rep_movsb(code);
+    x86_64.ret(code);
+}
+
