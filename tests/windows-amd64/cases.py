@@ -33,3 +33,23 @@ REJECT = [
     ("closure", "waza mk() -> int64 { kaku n = 1; kaku f = waza() -> int64 { kaesu n; }; kaesu f(); }\nchant(mk());\n", "UNSUPPORTED"),
     ("string_concat", 'kaku s = "a"; chant(s == "a");\n', "UNSUPPORTED"),
 ]
+
+# Cases that need the heap-capable backend (lowerwinrt): NativeFS, UTF-8 paths, large transfers. Files are created in the
+# working directory of the run (the evidence directory).
+FS = 'yobu "kiso/fs";\nyobu "kiso/string";\n'
+RUN_HEAP = [
+    ("fs_roundtrip", FS + 'kaku w = fs.write_all("fs-roundtrip.txt", string.to_bytes("hello file\\n"));\n'
+     'moshi (w.error == mu) { chant("written"); } sore { chant("write failed"); }\n'
+     'kaku r = fs.read_all("fs-roundtrip.txt");\n'
+     'moshi (r.error == mu) { chant(len(r.data)); kaku s = string.from_utf8(r.data); moshi (s != mu) { chant(s); } } sore { chant("read failed"); }\n'
+     'kaku m = fs.read_all("no-such-file-for-mio.txt"); moshi (m.error != mu) { chant("missing reported"); }\n',
+     0, b"written\n11\nhello file\n\nmissing reported\n", b""),
+    ("fs_utf8_path_and_large", FS + 'yobu "kiso/array";\n'
+     'kaku data: []uint8 = []; kaku i = 0; aida (i < 200000) { array.push(data, uint8(i - (i / 251) * 251)); i = i + 1; }\n'
+     'kaku w = fs.write_all("fs-テスト.bin", data); moshi (w.error != mu) { chant("write failed"); }\n'
+     'kaku r = fs.read_all("fs-テスト.bin");\n'
+     'moshi (r.error != mu) { chant("read failed"); } sore { chant(len(r.data)); chant(r.data[199999]); chant(r.data[250]); }\n',
+     0, b"200000\n" + str(199999 % 251).encode() + b"\n250\n", b""),
+    ("fs_directories", 'yobu "kiso/fs";\nyobu "kiso/string";\nkaku made = fs.create_dir("sub");\nmoshi (made.error == mu) { chant("mkdir ok"); } sore { chant("mkdir failed"); }\nkaku again = fs.create_dir("sub");\nmoshi (again.error != mu) { chant("mkdir twice reported"); }\nfs.write_all("sub/b.txt", string.to_bytes("bb"));\nfs.write_all("sub/a.txt", string.to_bytes("a"));\nkaku listing = fs.read_dir("sub");\nmoshi (listing.error == mu) {\n    kaku i = 0;\n    aida (i < len(listing.entries)) { chant(listing.entries[i].name); i = i + 1; }\n    chant(len(listing.entries));\n} sore { chant("read_dir failed"); }\nkaku gone = fs.read_dir("nonexistent-dir");\nmoshi (gone.error != mu) { chant("missing dir reported"); }\n',
+     0, b"mkdir ok\nmkdir twice reported\na.txt\nb.txt\n2\nmissing dir reported\n", b""),
+]

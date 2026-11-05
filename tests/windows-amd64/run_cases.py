@@ -21,6 +21,7 @@ def main():
     p.add_argument("--mio", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--execute", action="store_true", help="require real Windows execution")
+    p.add_argument("--backend", default="lowerwin", choices=("lowerwin", "lowerwinrt"))
     o = p.parse_args()
     out = o.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -34,12 +35,12 @@ def main():
         sys.exit(2)
     gen_ok = struct_ok = True
     exec_ok = True if o.execute else None
-    for name, source, code, stdout, stderr in cases.RUN:
+    for name, source, code, stdout, stderr in cases.RUN + (cases.RUN_HEAP if o.backend == "lowerwinrt" else []):
         src = out / (name + ".mio")
         src.write_text(source, encoding="utf-8")
         exe = out / (name + ".exe")
         entry = dict(name=name, source_sha256=hashlib.sha256(source.encode()).hexdigest())
-        ok, message = build_pe.build(o.mio, src, exe)
+        ok, message = build_pe.build(o.mio, src, exe, o.backend)
         if not ok:
             gen_ok = False
             entry.update(status="FAIL", error=message)
@@ -48,7 +49,7 @@ def main():
             continue
         entry["pe_sha256"] = hashlib.sha256(exe.read_bytes()).hexdigest()
         try:
-            entry["structure"] = verify_pe.verify(exe.read_bytes())
+            entry["structure"] = verify_pe.verify(exe.read_bytes(), expect_relocations=o.backend == "lowerwin")
         except Exception as error:
             struct_ok = False
             entry.update(status="FAIL", error="structure: %s" % error)
@@ -57,7 +58,7 @@ def main():
             continue
         entry["status"] = "GENERATED"
         if o.execute:
-            r = subprocess.run([str(exe)], capture_output=True, timeout=60)
+            r = subprocess.run([str(exe)], capture_output=True, timeout=60, cwd=out)
             entry.update(exit_code=r.returncode, stdout_hex=r.stdout.hex(), stderr_hex=r.stderr.hex())
             if (r.returncode, r.stdout, r.stderr) == (code, stdout, stderr):
                 entry["status"] = "PASS"
@@ -67,11 +68,12 @@ def main():
                 failures.append("%s: expected %r got %r" % (name, (code, stdout, stderr), (r.returncode, r.stdout, r.stderr)))
         report["cases"].append(entry)
     rej_ok = True
-    for name, source, needle in cases.REJECT:
+    # The reject list describes the scalar backend; lowerwinrt supports those constructs, so it is not applicable.
+    for name, source, needle in (cases.REJECT if o.backend == "lowerwin" else []):
         src = out / ("reject-" + name + ".mio")
         src.write_text(source, encoding="utf-8")
         exe = out / ("reject-" + name + ".exe")
-        ok, message = build_pe.build(o.mio, src, exe)
+        ok, message = build_pe.build(o.mio, src, exe, o.backend)
         good = (not ok) and needle in message and not exe.exists()
         report["rejects"].append(dict(name=name, rejected=good, message=message[:300]))
         if not good:
@@ -79,7 +81,8 @@ def main():
             failures.append("reject %s: ok=%s message=%s" % (name, ok, message[:200]))
     report["generation"] = "PASS" if gen_ok else "FAIL"
     report["structure"] = "PASS" if gen_ok and struct_ok else ("FAIL" if not struct_ok else "NOT_RUN")
-    report["reject"] = "PASS" if rej_ok else "FAIL"
+    report["reject"] = ("PASS" if rej_ok else "FAIL") if o.backend == "lowerwin" else "NOT_RUN"
+    report["backend"] = o.backend
     report["windows_execution"] = ("PASS" if exec_ok else "FAIL") if o.execute else "NOT_RUN"
     report["failures"] = failures
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")

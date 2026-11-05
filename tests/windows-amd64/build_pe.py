@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # The Go frontend cannot compile kiso/os (native-only runtime). Test programs therefore declare
 # `waza windows_test_exit(code: int64) -> unit`; this DEVELOPMENT shim turns exactly that function into the
 # body-less native os.exit function the pure-Mio frontend produces. Real kiso/os.exit is NOT_RUN here.
-DRIVER = '''yobu "kiso/aot/lowerwin";
+DRIVER = '''yobu "kiso/aot/BACKEND";
 yobu "kiso/array";
 yobu "kiso/encoding/mochi";
 yobu "kiso/fs";
@@ -33,7 +33,7 @@ waza shimmed(file: mochi.File) -> mochi.File {
         instructions: file.instructions, functions: functions };
 }
 waza build(file: mochi.File) -> unit {
-    kaku lowered = lowerwin.compile(shimmed(file));
+    kaku lowered = BACKEND.compile(shimmed(file));
     moshi (lowered.error != "") { chant(lowered.error); kaesu; }
     kaku written = fs.write_all(%s, lowered.bytes);
     moshi (written.error != mu) { chant("write failed"); kaesu; }
@@ -46,20 +46,30 @@ sore { moshi (file == mu) { chant("decode failed"); } sore { build(file); } }
 '''
 
 
-def build(mio, source, output):
+def frontend_command(host, command, source, output=None):
+    """`host` is either the reference `mio` binary or tests/windows-amd64/refvm (large instruction budget)."""
+    host = Path(host)
+    if host.name.startswith("refvm"):
+        return [str(host), str(ROOT / "bunko"), command, str(source)] + ([str(output)] if output else [])
+    if command == "mochi":
+        return [str(host), "build", "-o", str(output), str(source)]
+    return [str(host), "run", str(source)]
+
+
+def build(mio, source, output, backend="lowerwin"):
     """Returns (ok, message). A lowering error is reported verbatim, never turned into an image."""
     output = Path(output).resolve()
     output.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         mochi = tmp / "in.mochi"
-        compiled = subprocess.run([str(mio), "build", "-o", str(mochi), str(Path(source).resolve())],
+        compiled = subprocess.run(frontend_command(mio, "mochi", Path(source).resolve(), mochi),
                                   cwd=ROOT, capture_output=True, text=True, timeout=300)
         if compiled.returncode != 0:
             return False, "frontend: " + compiled.stderr.strip()
         driver = tmp / "driver.mio"
-        driver.write_text(DRIVER % ('"%s"' % output.as_posix(), '"%s"' % mochi.as_posix()), encoding="utf-8")
-        ran = subprocess.run([str(mio), "run", str(driver)], cwd=ROOT, capture_output=True, text=True, timeout=600)
+        driver.write_text(DRIVER.replace("BACKEND", backend) % ('"%s"' % output.as_posix(), '"%s"' % mochi.as_posix()), encoding="utf-8")
+        ran = subprocess.run(frontend_command(mio, "run", driver), cwd=ROOT, capture_output=True, text=True, timeout=1800)
         out = ran.stdout.strip()
         if ran.returncode != 0:
             return False, "driver: " + (ran.stderr.strip() or out)
@@ -75,8 +85,9 @@ def main():
     p.add_argument("--mio", type=Path, required=True)
     p.add_argument("source", type=Path)
     p.add_argument("-o", "--output", type=Path, required=True)
+    p.add_argument("--backend", default="lowerwin", choices=("lowerwin", "lowerwinrt"))
     o = p.parse_args()
-    ok, message = build(o.mio, o.source, o.output)
+    ok, message = build(o.mio, o.source, o.output, o.backend)
     print(message, file=sys.stdout if ok else sys.stderr)
     sys.exit(0 if ok else 1)
 

@@ -44,10 +44,10 @@ def read_rva(data, img, rva, n):
     raise PEError("RVA not file-backed: %#x" % rva)
 
 
-def verify(data):
+def verify(data, expect_relocations=True):
     img = parse(data)
     secs = {s["name"]: s for s in img["secs"]}
-    for name in (".text", ".pdata", ".xdata", ".idata", ".reloc"):
+    for name in (".text", ".pdata", ".xdata", ".idata") + ((".reloc",) if expect_relocations else ()):
         require(name in secs, "missing section " + name)
     text = secs[".text"]
     require(text["flags"] & 0x20000000 and text["flags"] & 0x40000000 and not text["flags"] & 0x80000000, ".text is RX")
@@ -118,6 +118,12 @@ def verify(data):
             text_name += c
         names.append(text_name.decode())
     require(names == ["GetStdHandle", "WriteFile", "ExitProcess"], "import names " + repr(names))
+    if not expect_relocations:
+        dll = struct.unpack_from("<H", data, struct.unpack_from("<I", data, 60)[0] + 24 + 70)[0]
+        require(img["dirs"][5] == (0, 0) and not dll & 0x40, "fixed-base image: no relocations and no DYNAMIC_BASE")
+        data_sec = secs[".data"]
+        require(data_sec["rva"] == 0x2000000 and data_sec["flags"] & 0x80000000, ".data is RW at the fixed RVA")
+        return dict(functions=len(functions), relocations=0, image_size=img["size_image"])
     # every movabs imm64 holding an in-image VA must be a DIR64 relocation
     rr, rsz = img["dirs"][5]
     relocs = set()
