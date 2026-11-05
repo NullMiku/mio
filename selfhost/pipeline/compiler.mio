@@ -46,7 +46,12 @@ waza build_file(file: mochi.File, heap_capacity: int64, gc_stress: bool) -> Nati
 // GF3 callers receive a locally ad-hoc signed image; the unsigned API remains
 // available for reproducible full-byte bootstrap comparisons and IR audits.
 koukai waza build_signed_source(root: string, entry: string, bunko_root: string) -> NativeBuildResult {
-    kaku compiled = build_source(root, entry, bunko_root);
+    kaesu build_signed_source_with_options(root, entry, bunko_root, iie);
+}
+
+// gc_stress: the generational collector runs a collection at every allocation (lower.compile_with_heap).
+koukai waza build_signed_source_with_options(root: string, entry: string, bunko_root: string, gc_stress: bool) -> NativeBuildResult {
+    kaku compiled = build_source_with_options(root, entry, bunko_root, 1073741824, gc_stress);
     moshi (compiled.error != "") { kaesu compiled; }
     kaku signed = sign.adhoc(compiled.bytes);
     moshi (signed.error != "") { kaesu NativeBuildResult { bytes: [], error: string.concat("E_SIGN ", signed.error) }; }
