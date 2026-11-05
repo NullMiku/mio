@@ -853,13 +853,19 @@ koukai waza analyze_types_traced(file: mochi.File, trace: bool) -> TypeAnalysis 
             kaku opcode = 1; moshi (len(data) > 0) { opcode = int64(data[0]); moshi (opcode == 0) { opcode = 1; } }
             kaesu TypeAnalysis { arena: arena, globals: globals, locals: locals, returns: returns, upvalues: upvalues, cells: cells, blocks: blocks, error_detail: type_fail(block_index, 0, opcode) };
         }
-        kaku entries: [][]int64 = [];
-        kaku reachable: []bool = [];
+        kaku entries = array.with_capacity[[]int64](len(data) + 1);
+        kaku reachable = array.with_capacity[bool](len(data) + 1);
+        // Positions without stack values (operand bytes, unreachable code, empty stacks) share one empty entry: entries
+        // are never mutated in place, only replaced (type_merge_entry), so sharing is unobservable.
+        kaku no_values: []int64 = [];
         kaku at = 0;
         aida (at <= len(data)) {
-            kaku values: []int64 = [];
+            kaku values = no_values;
             moshi (depths[at] >= 0 && (block_index < 0 || function_reachable[block_index])) {
-                kaku depth = 0; aida (depth < depths[at]) { array.push(values, type_new(arena, type_unknown)); depth = depth + 1; }
+                moshi (depths[at] > 0) {
+                    values = array.with_capacity[int64](depths[at]);
+                    kaku depth = 0; aida (depth < depths[at]) { array.push(values, type_new(arena, type_unknown)); depth = depth + 1; }
+                }
                 array.push(reachable, hai);
             }
             sore { array.push(reachable, iie); }
