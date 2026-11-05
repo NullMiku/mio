@@ -30,6 +30,7 @@ runner = load("ci_runner", HERE / "runner.py")
 verify = load("ci_verify", HERE / "verify.py")
 isolation = load("release_isolation", HERE / "release_isolation.py")
 plan = load("ci_plan", HERE / "plan.py")
+native = load("ci_native_platforms", HERE / "native_platforms.py")
 
 
 class ContractTests(unittest.TestCase):
@@ -650,6 +651,73 @@ exit "$result"
         bootstrap = (HERE.parent / "check-native-bootstrap.sh").read_text(encoding="utf-8")
         self.assertIn("b5904e8fd51e96be16183826177504ed395be67143e0c78d7a4b5d304cfd00a1", bootstrap)
 
+
+    # ---- Native 3-platform verification (scripts/ci/native_platforms.py, .github/workflows/native.yml) ----
+
+    def test_native_workflow_never_hides_failures_and_names_the_hosted_runners(self):
+        import re
+        root = HERE.parents[1] / ".github" / "workflows"
+        text = (root / "native.yml").read_text(encoding="utf-8")
+        for forbidden in ("continue-on-error", "|| true", "self-hosted", "MIO_NATIVE_SEED"):
+            self.assertNotIn(forbidden, text)
+        for runner_name in ("ubuntu-24.04", "macos-15", "windows-2025"):
+            self.assertIn(runner_name, text)
+        names = re.findall(r"upload-artifact@v4\n(?:\s+if: .*\n)?\s+with:\n\s+name: (.*)\n", text)
+        self.assertGreaterEqual(len(names), 4)
+        self.assertEqual(len(names), len(set(names)))
+        for artifact in names:
+            self.assertIn("github.run_id", artifact)
+            self.assertIn("github.run_attempt", artifact)
+        full = (root / "ci-full.yml").read_text(encoding="utf-8")
+        self.assertIn("uses: ./.github/workflows/native.yml", full)
+
+    def native_report(self, directory, target="linux-amd64"):
+        return native.Report(target, directory)
+
+    def fake_run(self, text, code=0):
+        def run(report, label, argv, **kwargs):
+            return code, text, "", 0.1
+        return run
+
+    def test_native_mio_test_never_counts_a_skip_as_a_pass(self):
+        skipped = "--- SKIP: test_x (0.1s)\n    skipped: Mach-O test image needs a macOS ARM64 host\nTests complete: 0 passed, 0 failed\nTests skipped: 1\n"
+        with tempfile.TemporaryDirectory() as directory, patch.object(native, "test_packages", return_value=["pkg"]):
+            report = self.native_report(directory)
+            with patch.object(native, "run", side_effect=self.fake_run(skipped)):
+                native.native_mio_test(report, "mio", skips_allowed=True)
+            self.assertEqual([(c["status"], c["required"]) for c in report.checks], [("SKIP", False)])
+            self.assertIn("macOS ARM64", report.checks[0]["reason"])
+            report = self.native_report(directory, "darwin-arm64")
+            with patch.object(native, "run", side_effect=self.fake_run(skipped)):
+                self.assertFalse(native.native_mio_test(report, "mio", skips_allowed=False) and report.data["status"] == "PASS")
+            self.assertEqual(report.data["status"], "FAIL")
+
+    def test_native_mio_test_requires_a_complete_passing_summary(self):
+        cases = [("Tests complete: 3 passed, 0 failed\n", 0, "PASS"), ("Tests complete: 2 passed, 1 failed\n", 1, "FAIL"),
+                 ("compilation failed\n", 1, "FAIL"), ("", 0, "FAIL"), ("Tests complete: 0 passed, 0 failed\n", 0, "FAIL")]
+        for text, code, expected in cases:
+            with tempfile.TemporaryDirectory() as directory, patch.object(native, "test_packages", return_value=["pkg"]):
+                report = self.native_report(directory)
+                with patch.object(native, "run", side_effect=self.fake_run(text, code)):
+                    native.native_mio_test(report, "mio", skips_allowed=True)
+                self.assertEqual(report.checks[0]["status"], expected, text)
+
+    def test_native_summary_fails_on_missing_or_failed_platform_reports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reports = Path(directory) / "reports"
+            for target, status in (("linux-amd64", "PASS"), ("darwin-arm64", "PASS")):
+                report = native.Report(target, reports / ("native-report-" + target))
+                report.check("x", status, "native")
+            args = type("Args", (), dict(reports=str(reports), output=str(Path(directory) / "out")))
+            self.assertEqual(native.summary(args), 1)  # windows-amd64 is missing: NOT_RUN, never PASS
+            report = native.Report("windows-amd64", reports / "native-report-windows-amd64")
+            report.check("x", "PASS", "native")
+            report.check("mio-test", "NOT_APPLICABLE", "native", "no spawn", required=False)
+            self.assertEqual(native.summary(args), 0)
+            report.check("y", "NOT_RUN", "native", "missing")
+            self.assertEqual(native.summary(args), 1)
+            for data in json.loads((Path(directory) / "out" / "native-summary.json").read_text())["targets"].values():
+                self.assertEqual(data["seed"]["status"], "NOT_RUN")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
