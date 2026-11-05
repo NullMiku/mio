@@ -331,6 +331,25 @@ kaku sum = 0; kaku k = 0;
 aida (k < 300) { kaku b = keep[k]; moshi (b != mu) { sum = sum + b.id; } k = k + 1; }
 chant(checksum); chant(sum);
 kaku kept = strings["k"]; moshi (kept != mu) { chant(kept); }`,
+	// Type analysis regression: a self-referential nullable struct joined through recursive calls in nested branches
+	// lost its nullability (a nested field join re-parented the class root), so the nil test folded to "not nil".
+	"recursive_nullable_tree": `kata Tree { v: int64; left: Tree?; right: Tree?; }
+waza ins(t: Tree?, v: int64) -> Tree {
+    moshi (t == mu) { kaesu Tree { v: v, left: mu, right: mu }; }
+    moshi (v < t.v) { kaesu Tree { v: t.v, left: ins(t.left, v), right: t.right }; }
+    kaesu Tree { v: t.v, left: t.left, right: ins(t.right, v) };
+}
+waza total(t: Tree?) -> int64 { moshi (t == mu) { kaesu 0; } kaesu t.v + total(t.left) + total(t.right); }
+kaku tree: Tree? = mu; kaku i = 0;
+aida (i < 200) { tree = ins(tree, (i * 37) - ((i * 37) / 101) * 101); i = i + 1; }
+chant(total(tree));`,
+	// Type analysis regression: a global first seen as nil whose struct stores are analysed in a later block was
+	// rejected at the first field read.
+	"nil_global_struct_result": `kata Mixed { v: int64; next: Mixed?; }
+waza mixed(i: int64, next: Mixed?) -> Mixed { kaesu Mixed { v: i, next: next }; }
+kaku chain: Mixed? = mu;
+chain = mixed(0, chain); chain = mixed(1, chain);
+kaku t = mixed(7, mu); chant(t.v);`,
 	"divide_by_zero": `kaku zero = 0; chant(1); chant(10 / zero); chant(2);`,
 }
 

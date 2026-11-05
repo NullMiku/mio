@@ -174,6 +174,10 @@ waza type_join(arena: TypeArena, a: int64, b: int64) -> bool {
     moshi (arena.array_descriptor[left] == 0) { arena.array_descriptor[left] = arena.array_descriptor[right]; }
     arena.map_written[left] = arena.map_written[left] || arena.map_written[right];
     arena.parent[right] = left; arena.revision[0] = arena.revision[0] + 1;
+    // Nullability belongs to the class before the recursive field joins run: a self-referential shape
+    // (struct Tree { left: Tree? }) can make a nested join re-parent `left`, and anything written to `left`
+    // afterwards would land on a node that is no longer the root.
+    arena.nullable[left] = arena.nullable[left] || arena.nullable[right];
     moshi (!type_merge_fields(arena, left, right)) { kaesu iie; }
     moshi (arena.array_width[left] != 0 && arena.array_width[right] != 0 && arena.array_width[left] != arena.array_width[right]) { kaesu iie; }
     moshi (arena.array_width[left] == 0) { arena.array_width[left] = arena.array_width[right]; }
@@ -208,6 +212,26 @@ waza type_join(arena: TypeArena, a: int64, b: int64) -> bool {
     moshi (!arena.struct_exact[left] && arena.struct_arity[left] < arena.struct_arity[right]) {
         arena.struct_arity[left] = arena.struct_arity[right];
     }
+    // A nested join may have re-parented `left` (see above): carry its facts to the current root.
+    kaesu type_carry_to_root(arena, left);
+}
+
+waza type_carry_to_root(arena: TypeArena, node: int64) -> bool {
+    kaku root = type_root(arena, node);
+    moshi (root == node) { kaesu hai; }
+    moshi (arena.nullable[node] && !arena.nullable[root]) { arena.nullable[root] = hai; arena.revision[0] = arena.revision[0] + 1; }
+    moshi (arena.map_written[node] && !arena.map_written[root]) { arena.map_written[root] = hai; arena.revision[0] = arena.revision[0] + 1; }
+    moshi (merge_targets(arena.targets[root], arena.targets[node])) { arena.revision[0] = arena.revision[0] + 1; }
+    moshi (arena.struct_exact[node] && arena.struct_exact[root] && arena.struct_arity[node] != arena.struct_arity[root]) { kaesu iie; }
+    moshi (arena.struct_exact[node] && !arena.struct_exact[root]) { arena.struct_exact[root] = hai; arena.struct_arity[root] = arena.struct_arity[node]; }
+    moshi (!arena.struct_exact[root] && arena.struct_arity[root] < arena.struct_arity[node]) { arena.struct_arity[root] = arena.struct_arity[node]; }
+    kaku variants = arena.variants[node]; kaku current = arena.variants[root]; kaku vi = 0;
+    aida (vi < len(variants)) {
+        aida (len(current) <= vi) { kaku empty: []int64 = []; array.push(current, empty); }
+        moshi (len(current[vi]) == 0 && len(variants[vi]) > 0) { current[vi] = variants[vi]; }
+        vi = vi + 1;
+    }
+    arena.variants[root] = current;
     kaesu hai;
 }
 
@@ -232,6 +256,9 @@ waza type_new_struct(arena: TypeArena, fields: []int64) -> int64 {
 waza type_struct_field(arena: TypeArena, node: int64, index: int64) -> int64 {
     kaku root = type_root(arena, node);
     moshi (arena.kind[root] == type_unknown) { arena.kind[root] = type_struct_ref; }
+    // A class that has only met nil so far (for example a global initialised with mu whose struct stores are
+    // analysed in a later block) is a nullable struct once a field is read, exactly as type_join(nil, struct).
+    moshi (arena.kind[root] == type_nil) { arena.kind[root] = type_struct_ref; arena.nullable[root] = hai; arena.revision[0] = arena.revision[0] + 1; }
     moshi (arena.kind[root] != type_struct_ref || index < 0) { kaesu -1; }
     moshi (arena.struct_exact[root] && index >= arena.struct_arity[root]) { kaesu -1; }
     kaku fields = arena.fields[root];
