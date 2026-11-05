@@ -107,6 +107,7 @@ __pycache__/
 
 !/docs/testing.md
 !/docs/testing-audit.md
+!/docs/windows-amd64-audit.md
 !/docs/ci-reliability-audit.md
 !/docs/ci-pr-integration.md
 !/docs/ci-scheduling-audit.md

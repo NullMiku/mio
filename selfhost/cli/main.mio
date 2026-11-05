@@ -41,7 +41,7 @@ waza help() -> unit {
     chant("mio lsp [--stdio]");
     chant("mio check <source> [--bunko-root <directory>]");
     chant("source diagnostics: --color=auto|always|never --format=human|short|json --verbose");
-    chant("mio build <source> [-o <output>] [--emit=mochi] [--target=darwin-arm64|linux-amd64] [--bunko-root <directory>]");
+    chant("mio build <source> [-o <output>] [--emit=mochi] [--target=darwin-arm64|linux-amd64|windows-amd64] [--bunko-root <directory>]");
 }
 waza run() -> unit {
     kaku args = os.arguments();
@@ -85,7 +85,7 @@ waza run() -> unit {
                 at = at + 1; value = args[at];
             }
             moshi (option != "--target") { value = string.trim_space(string.concat("", option)); kaku bytes = string.to_bytes(option); kaku tail: []uint8 = []; kaku cut = 9; aida (cut < len(bytes)) { array.push(tail, bytes[cut]); cut = cut + 1; } kaku parsed = string.from_utf8(tail); moshi (parsed != mu) { value = parsed; } }
-            moshi (value != "darwin-arm64" && value != "linux-amd64") { fail("E_TARGET unsupported target (expected darwin-arm64 or linux-amd64)", 2); kaesu; }
+            moshi (value != "darwin-arm64" && value != "linux-amd64" && value != "windows-amd64") { fail("E_TARGET unsupported target (expected darwin-arm64, linux-amd64 or windows-amd64)", 2); kaesu; }
             target = value; at = at + 1; tsuzuku;
         }
         moshi (option == "-o" || option == "--bunko-root") {
@@ -100,6 +100,7 @@ waza run() -> unit {
         at = at + 1;
     }
     moshi ((command == "run" || command == "exec" || command == "disasm" || command == "check") && emit_mochi) { fail("E_OPTIONS run requires native output", 2); kaesu; }
+    moshi (target == "windows-amd64" && (command == "run" || command == "exec")) { fail("E_TARGET windows-amd64 images are build-only; run them on Windows", 2); kaesu; }
     moshi (entry == "" || output == "") { fail("E_OPTIONS source and output must be nonempty", 2); kaesu; }
     moshi(command=="check"){
         kaku analyzed=frontend.analyze_source(".",entry,bunko,[],iie);
@@ -123,9 +124,9 @@ waza run() -> unit {
             moshi (written.error != mu) { fail("E_IO cannot write disassembly", 1); }
             kaesu;
         }
-        moshi (target == "linux-amd64") { compiled = pipeline.build_linux_mochi(input.data); } sore { compiled = pipeline.build_signed_mochi(input.data); }
+        moshi (target == "linux-amd64") { compiled = pipeline.build_linux_mochi(input.data); } sore { moshi (target == "windows-amd64") { compiled = pipeline.build_windows_mochi(input.data); } sore { compiled = pipeline.build_signed_mochi(input.data); } }
     }
-    sore { moshi (target == "linux-amd64") { compiled = pipeline.build_linux_source(".", entry, bunko); } sore { compiled = pipeline.build_signed_source(".", entry, bunko); } }
+    sore { moshi (target == "linux-amd64") { compiled = pipeline.build_linux_source(".", entry, bunko); } sore { moshi (target == "windows-amd64") { compiled = pipeline.build_windows_source(".", entry, bunko); } sore { compiled = pipeline.build_signed_source(".", entry, bunko); } } }
     moshi (compiled.error != "") {moshi(command=="build" || command=="run"){source_failure(entry,bunko,opts,compiled.error);}sore{fs.write_all("/dev/stderr",string.to_bytes(diagnostic.failure(compiled.error,entry,opts)));os.exit(1);}kaesu;}
     kaku temporary = "";
     moshi (command == "run" || command == "exec") {

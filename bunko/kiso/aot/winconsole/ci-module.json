@@ -1,0 +1,1 @@
+{"module":"kiso/aot/winconsole","targets":["macos-arm64"],"suites":["quick","full","unit"],"required_checks":["native","independent"],"skip_reason":"Native Mio generation requires a trusted macOS ARM64 seed; Windows PE execution is a separate explicit check"}

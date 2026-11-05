@@ -1,0 +1,12 @@
+yobu "kiso/aot/winconsole";
+yobu "kiso/string";
+yobu "kiso/fs";
+yobu "kiso/math";
+
+// A Mio image generator; ordinary Mio source-to-Windows lowering is not yet connected.
+kaku image=winconsole.stdout_executable(string.to_bytes("Mio Windows AMD64\n"),48);
+moshi(image.error!=""){math.fail(image.error);}
+sore {
+    kaku saved=fs.write_all("hello-windows.exe",image.bytes);
+    moshi(saved.error!=mu){math.fail("cannot write hello-windows.exe");}
+}
