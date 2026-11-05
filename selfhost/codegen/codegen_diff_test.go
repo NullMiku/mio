@@ -391,7 +391,7 @@ func TestCodegenSelfAndBunkoSources(t *testing.T) {
 		{path: "selfhost/progress", directory: "selfhost/progress"},
 		{path: "selfhost/lexer", directory: "selfhost/lexer", dependencies: []string{"kiso/array", "kiso/string", "kiso/utf8", "selfhost/progress"}},
 		{path: "selfhost/parser", directory: "selfhost/parser", dependencies: []string{"kiso/array", "kiso/convert", "kiso/string", "kiso/utf8", "selfhost/lexer", "selfhost/progress"}},
-		{path: "selfhost/resolver", directory: "selfhost/resolver", dependencies: []string{"kiso/array", "kiso/string", "selfhost/parser", "selfhost/progress"}},
+		{path: "selfhost/resolver", directory: "selfhost/resolver", dependencies: []string{"kiso/array", "kiso/convert", "kiso/string", "selfhost/parser", "selfhost/progress"}},
 		{path: "selfhost/typecheck", directory: "selfhost/typecheck", dependencies: []string{"kiso/array", "kiso/convert", "kiso/string", "selfhost/parser", "selfhost/progress", "selfhost/resolver"}},
 		{path: "selfhost/codegen", directory: "selfhost/codegen", dependencies: []string{"kiso/array", "kiso/convert", "kiso/string", "selfhost/lexer", "selfhost/parser", "selfhost/progress", "selfhost/resolver", "selfhost/typecheck"}},
 	}
