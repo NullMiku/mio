@@ -1,0 +1,25 @@
+yobu "kiso/encoding/binary";
+yobu "kiso/encoding/mochi";
+yobu "kiso/testing";
+
+waza test_local_slots_follow_the_linux_frame_model() -> unit {
+    testing.expect(local_disp(2, 0) == 24 && local_disp(2, 1) == 16, "arguments pushed left to right sit above the return address");
+    testing.expect(local_disp(2, 2) == -8 && local_disp(2, 4) == -24, "locals sit below rbp");
+}
+
+waza test_constants_sign_and_zero_extend() -> unit {
+    testing.expect(constant_value(mochi.Constant { tag: uint8(5), bits: binary.U64 { high: uint32(0), low: uint32(255) }, data: [] }) == -1, "int8");
+    testing.expect(constant_value(mochi.Constant { tag: uint8(8), bits: binary.U64 { high: uint32(0), low: uint32(255) }, data: [] }) == 255, "uint8");
+    testing.expect(constant_value(mochi.Constant { tag: uint8(1), bits: binary.U64 { high: uint32(4294967295), low: uint32(4294967295) }, data: [] }) == -1, "int64 minus one");
+}
+
+waza test_only_the_os_exit_native_is_recognised() -> unit {
+    testing.expect(native_exit("$mma::mio/os/runtime::exit::abc"), "os exit");
+    testing.expect(!native_exit("$mma::mio/os/runtime::exec::abc"), "other os natives are rejected");
+    testing.expect(!native_exit("$mma::mio/fs/runtime::exit::abc"), "other modules are rejected");
+}
+
+waza test_unsupported_opcode_is_an_error_not_a_skip() -> unit {
+    testing.expect(!supported(30) && !supported(44) && !supported(56), "arrays, closures, structs stay unsupported");
+    testing.expect(supported(25) && supported(22), "calls and chant are supported");
+}
