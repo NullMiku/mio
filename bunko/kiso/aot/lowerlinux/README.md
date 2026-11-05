@@ -15,4 +15,4 @@ The collector runs at function entry and loop back-edges; each call/poll site is
 
 Not supported (reported as errors or as run-time "unsupported operation" stubs, never skipped silently):
 string ordering, `chant` of floats, threads, TLS and concurrent collection.
-Tests: `internal/aot/linux_purelower_test.go` (differential against the Mochi VM, GC stress, native fixed points).
+Tests: `scripts/ci/native_platforms.py` (native compiler and CLI fixed points, `tests/native-differential` and the Runtime ABI contract in the default and `--gc-stress` configurations, compared with the reference VM).

@@ -2,7 +2,7 @@
 """Differential test: each program's expected stdout/exit status comes from the Go reference VM (independent oracle);
 the actual result comes from the PE built by the pure-Mio lowering, run either on Windows (--execute) or, as a local
 development aid only, in the unicorn emulator (--emulate; NOT Windows). programs.json is the corpus of
-internal/aot/linux_purelower_test.go (pureLowerPrograms)."""
+the former Go harness pureLowerPrograms (now tests/native-differential)."""
 import argparse
 import hashlib
 import json

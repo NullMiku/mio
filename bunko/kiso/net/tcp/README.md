@@ -37,12 +37,10 @@ Two runnable examples live in `examples/tcp_echo_server.mio` and
 `examples/tcp_echo_client.mio`. Start the server first, then the client.
 They use loopback port 18080; the server serves one connection and exits.
 
-Native AOT on macOS ARM64 uses the existing two-stage toolchain:
+Native builds use the pure-Mio CLI (the image is written and ad-hoc signed by Mio):
 
 ```sh
-go run ./cmd/mio build examples/tcp_echo_client.mio
-go run ./cmd/mochi-aot -o tcp-client examples/tcp_echo_client.mochi
-codesign --force --sign - tcp-client
+mio build examples/tcp_echo_client.mio --target=darwin-arm64 -o tcp-client   # or --target=linux-amd64
 ./tcp-client
 ```
 

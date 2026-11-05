@@ -42,11 +42,11 @@ chant(values[1]);
 chant("Mio");
 ''', encoding="utf-8")
     expected = b"10\n45\n8\nMio\n"
-    mochi = work / "oracle.mochi"
-    built = run([mio, "build", "-o", mochi, source])
-    if built.returncode or built.stderr or not mochi.is_file() or mochi.stat().st_size == 0:
-        raise RuntimeError("Mochi build failed: " + repr(built))
     if mode == "vm":
+        mochi = work / "oracle.mochi"
+        built = run([mio, "build", "-o", mochi, source])
+        if built.returncode or built.stderr or not mochi.is_file() or mochi.stat().st_size == 0:
+            raise RuntimeError("Mochi build failed: " + repr(built))
         require_output(run([mio, "run", source]), expected)
         require_output(run([mio, "exec", mochi]), expected)
         invalid = work / "invalid.mio"
@@ -66,16 +66,18 @@ chant("Mio");
     elif mode == "native":
         if (platform.system(), platform.machine()) != ("Darwin", "arm64"):
             raise RuntimeError("native oracle requires macOS ARM64")
+        # The current-source native CLI (built from the verified seed by the runner) compiles the oracle; the image is
+        # written and ad-hoc signed by Mio itself. No Go program generates code here.
         binary = work / "oracle.native"
-        result = run([tools / "mochi-aot", "-gc-stress", "-o", binary, mochi])
+        result = run([os.environ["MIO_CI_MIO"], "build", source, "--target=darwin-arm64", "-o", binary])
         if result.returncode or result.stderr:
             raise RuntimeError("native compilation failed: " + repr(result))
         header = struct.unpack_from("<4I", binary.read_bytes())
         if header[0] != 0xFEEDFACF or header[1] != 0x100000C or header[3] != 2:
             raise RuntimeError("expected ARM64 Mach-O executable")
-        result = run(["codesign", "--force", "--sign", "-", binary])
+        result = run(["codesign", "--verify", "--strict", binary])
         if result.returncode:
-            raise RuntimeError("codesign failed")
+            raise RuntimeError("Mio ad-hoc signature does not verify")
         require_output(run([binary]), expected)
     else:
         raise ValueError("unknown verification mode")

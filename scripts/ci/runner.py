@@ -216,7 +216,7 @@ def discover():
                     not isinstance(data["module_timeout"], (int, float)) or not 0 < data["module_timeout"] <= 21600):
                 raise ValueError("invalid module_timeout: " + name)
             if "reference_tools" in data and (not isinstance(data["reference_tools"], list) or
-                    any(tool not in ("mio", "mochi-aot", "mochi-aot-audit") for tool in data["reference_tools"])):
+                    any(tool != "mio" for tool in data["reference_tools"])):
                 raise ValueError("invalid reference_tools: " + name)
             suite_checks = data.get("suite_checks", {})
             if (not isinstance(suite_checks, dict) or
@@ -373,7 +373,7 @@ def run(args):
                 module_env["MIO_CI_SEED"] = str(seed.resolve())
                 item["compiler"] = dict(path=str(native_compiler), sha256=native_build["compiler_sha256"], seed_sha256=SEED_SHA256)
             elif engine == "reference":
-                tools = module.get("reference_tools", ["mio", "mochi-aot", "mochi-aot-audit"])
+                tools = module.get("reference_tools", ["mio"])
                 for tool in tools:
                     if tool not in reference_build:
                         argv = ["go", "build", "-o", str(Path(env["MIO_CI_TOOLS"]) / tool), "./cmd/" + tool]

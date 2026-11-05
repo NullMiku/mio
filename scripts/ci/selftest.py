@@ -470,7 +470,7 @@ exit "$result"
     def test_reference_tools_build_lazily_once_per_run(self):
         modules = {name: dict(module=name, engine="reference", targets=["linux-amd64"], suites=["quick"],
                              script="fake.sh", reference_tools=tools) for name, tools in
-                   (("one", ["mio"]), ("two", ["mio", "mochi-aot"]), ("three", ["mio"]))}
+                   (("one", ["mio"]), ("two", ["mio"]), ("three", ["mio"]))}
         built = []
         def execute(argv, timeout, env):
             if argv[0] == "go":
@@ -480,7 +480,7 @@ exit "$result"
             return 0, b"", b"", "PASS", "", 1
         code, report = self.dispatch(modules, execute=execute)
         self.assertEqual((code, report["status"]), (0, "PASS"))
-        self.assertEqual(built, ["./cmd/mio", "./cmd/mochi-aot"])
+        self.assertEqual(built, ["./cmd/mio"])
 
     # ---- Native Verification deferral (GitHub-hosted runners have no trusted Native Seed) ----
 
@@ -544,7 +544,7 @@ exit "$result"
             self.assertEqual(sorted(chosen), sorted(expected))
             for name in chosen:
                 self.assertNotEqual(modules[name].get("engine", "native"), "native")
-        self.assertIn("go-aot-reference", deferred["macos_modules"].split(","))
+        self.assertIn("go-reference", deferred["macos_modules"].split(","))
 
     def test_hosted_workflows_have_no_self_hosted_or_shared_macos_dependency(self):
         root = HERE.parents[1] / ".github" / "workflows"
@@ -641,16 +641,17 @@ exit "$result"
         self.assertNotIn("go-bootstrap-reference", plan_result["macos_modules"].split(","))
         self.assertIn("go-bootstrap-reference", plan_result["standalone_modules"]["linux-amd64"])
 
-    def test_legacy_m18_uses_the_migrated_ancestor_and_does_not_run_tests_without_evidence(self):
-        script = (HERE / "legacy" / "test.sh").read_text(encoding="utf-8")
-        self.assertIn("M18_ANCESTOR=f398065", script)
-        self.assertEqual(script.count('--ci-ancestor "$M18_ANCESTOR"'), 2)
-        self.assertIn("m18_reference", script)
-        self.assertIn("NOT_RUN: legacy-m18-reference", script)
-        # The frozen hashes of the historical BCD gate are not touched.
-        bootstrap = (HERE.parent / "check-native-bootstrap.sh").read_text(encoding="utf-8")
-        self.assertIn("b5904e8fd51e96be16183826177504ed395be67143e0c78d7a4b5d304cfd00a1", bootstrap)
-
+    def test_go_aot_backends_and_their_modules_are_gone(self):
+        # Mio-2.1 is self-hosted in pure Mio: no Go program generates native code, and no CI module depends on one.
+        root = HERE.parents[1]
+        for path in ("internal/aot", "cmd/mochi-aot", "cmd/mochi-aot-audit", "scripts/ci/legacy",
+                     "scripts/check-native-aot-fixed-point.py", "scripts/check-native-bootstrap.sh"):
+            self.assertFalse((root / path).exists(), path)
+        modules = runner.discover()
+        for name in ("go-aot-reference", "legacy-bootstrap", "go-aot-linux-amd64", "go-linux-native", "linux-runtime-reference"):
+            self.assertNotIn(name, modules)
+        for module in modules.values():
+            self.assertTrue(set(module.get("reference_tools", ["mio"])) <= {"mio"}, module["module"])
 
     # ---- Native 3-platform verification (scripts/ci/native_platforms.py, .github/workflows/native.yml) ----
 
