@@ -40,7 +40,9 @@ waza empty_result(path: string) -> TypeCheckResult {
         structs: array.with_capacity[StructDefinition](16),
         enums: array.with_capacity[EnumDefinition](16),
         constants: array.with_capacity[ConstantBinding](32),
-        errors: array.with_capacity[TypeError](16)
+        errors: array.with_capacity[TypeError](16),
+        type_buckets: array.make[int64](type_bucket_count, -1),
+        type_next: array.with_capacity[int64](64)
     };
 }
 

@@ -171,6 +171,9 @@ koukai kata TypeCheckResult {
     enums: []EnumDefinition;
     constants: []ConstantBinding;
     errors: []TypeError;
+    // hash index over types[].identity: chain head per bucket, next entry per type (types is append-only)
+    type_buckets: []int64;
+    type_next: []int64;
 }
 
 koukai waza constant_kind_code(kind: ConstantKind) -> int64 {
@@ -261,14 +264,33 @@ waza type_key(kind: TypeKind, name: string, element: int64, key: int64, value: i
     kaesu string.builder_string(builder);
 }
 
+koukai teisu type_bucket_count = 8191;
+
+waza identity_bucket(identity: string) -> int64 {
+    kaku bytes = string.to_bytes(identity); kaku hash = 0; kaku at = 0;
+    aida (at < len(bytes)) { hash = hash * 31 + int64(bytes[at]); hash = hash - (hash / type_bucket_count) * type_bucket_count; at = at + 1; }
+    kaesu hash;
+}
+
+// The interned type with exactly this identity, or -1.
+koukai waza find_interned(result: TypeCheckResult, identity: string) -> int64 {
+    kaku entry = result.type_buckets[identity_bucket(identity)]; kaku found = -1;
+    aida (entry >= 0) {
+        moshi (result.types[entry].identity == identity) { found = entry; }
+        entry = result.type_next[entry];
+    }
+    kaesu found;
+}
+
+// Interning compares the same identity strings as before; the hash index only replaces the scan over every type.
+// The lowest matching id is returned, exactly as the former front-to-back scan did.
 waza intern_type(result: TypeCheckResult, kind: TypeKind, name: string, element: int64, key: int64, value: int64, parameters: []int64, return_type: int64, arguments: []int64) -> int64 {
     kaku identity = type_key(kind, name, element, key, value, parameters, return_type, arguments);
-    kaku index = 0;
-    aida (index < len(result.types)) {
-        moshi (result.types[index].identity == identity) { kaesu index; }
-        index = index + 1;
-    }
+    kaku found = find_interned(result, identity);
+    moshi (found >= 0) { kaesu found; }
+    kaku bucket = identity_bucket(identity);
     kaku id = len(result.types);
+    array.push(result.type_next, result.type_buckets[bucket]); result.type_buckets[bucket] = id;
     array.push(result.types, TypeInfo { kind: kind, name: name, element: element, key: key, value: value, parameters: array.clone(parameters), result: return_type, arguments: array.clone(arguments), identity: identity });
     kaesu id;
 }
