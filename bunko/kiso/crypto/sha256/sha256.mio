@@ -2,7 +2,7 @@ yobu "kiso/array";
 
 // Immutable arithmetic lookup tables; no host crypto or foreign compiler is
 // involved. Values stay nonnegative int64 while sums wrap modulo 2^32.
-koukai kata Context { xor_nibbles: []int64; powers: []int64; constants: []int64; }
+koukai kata Context { xor_nibbles: []int64; powers: []int64; constants: []int64; byte_tables: []Tables; }
 
 koukai waza context() -> Context {
     kaku table: []int64 = []; kaku b = 0;
@@ -21,7 +21,8 @@ koukai waza context() -> Context {
     }
     kaku powers: []int64 = [1]; kaku at = 0;
     aida (at < 32) { array.push(powers, powers[at] * 2); at = at + 1; }
-    kaesu Context { xor_nibbles: table, powers: powers, constants: [
+    kaku cache: []Tables = [];
+    kaesu Context { xor_nibbles: table, powers: powers, byte_tables: cache, constants: [
         1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,
         3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,
         3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,
@@ -32,76 +33,307 @@ koukai waza context() -> Context {
         1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298] };
 }
 
-waza wrap(value: int64) -> int64 { kaesu value - (value / 4294967296) * 4294967296; }
-waza xor32(ctx: Context, a: int64, b: int64) -> int64 {
-    kaku left = a; kaku right = b; kaku value = 0; kaku scale = 1; kaku at = 0;
-    aida (at < 8) {
-        kaku x = left - (left / 16) * 16; kaku y = right - (right / 16) * 16;
-        value = value + ctx.xor_nibbles[x + y * 16] * scale;
-        left = left / 16; right = right / 16; scale = scale * 16; at = at + 1;
+
+// Byte-sliced SHA-256. Mio has no bitwise operators, so XOR/AND of two bytes are two lookups in the 16x16 nibble XOR
+// table (via 256-entry nibble-split tables) and shifts are lookups in 9x256 tables. A 32-bit word is split into its four bytes once (three divisions) and all
+// rotations, Sigma/sigma, Ch and Maj work on bytes; additions stay on int64 values and wrap by subtraction. The
+// tables are built on first use and cached in the context, so reusing one context (as signing does) builds them once.
+koukai kata Tables { nib: []int64; nib16: []int64; low: []int64; low16: []int64; high: []int64; high16: []int64; shr: []int64; shl: []int64; }
+
+waza tables(ctx: Context) -> Tables {
+    moshi (len(ctx.byte_tables) > 0) { kaesu ctx.byte_tables[0]; }
+    // low/high nibble of every byte value, pre-scaled for the 16x16 nibble XOR table
+    kaku low = array.make[int64](256, 0); kaku low16 = array.make[int64](256, 0);
+    kaku high = array.make[int64](256, 0); kaku high16 = array.make[int64](256, 0);
+    kaku v = 0;
+    aida (v < 256) { kaku h = v / 16; high[v] = h; high16[v] = h * 16; low[v] = v - h * 16; low16[v] = low[v] * 16; v = v + 1; }
+    kaku nib16 = array.make[int64](256, 0); v = 0;
+    aida (v < 256) { nib16[v] = ctx.xor_nibbles[v] * 16; v = v + 1; }
+    kaku shr = array.make[int64](9 * 256, 0); kaku shl = array.make[int64](9 * 256, 0);
+    kaku shift = 0;
+    aida (shift <= 8) {
+        v = 0;
+        aida (v < 256) {
+            shr[shift * 256 + v] = v / ctx.powers[shift];
+            kaku left = v * ctx.powers[shift]; shl[shift * 256 + v] = left - (left / 256) * 256;
+            v = v + 1;
+        }
+        shift = shift + 1;
+    }
+    kaku built = Tables { nib: ctx.xor_nibbles, nib16: nib16, low: low, low16: low16, high: high, high16: high16, shr: shr, shl: shl };
+    array.push(ctx.byte_tables, built);
+    kaesu built;
+}
+
+// XOR and AND of two bytes: two lookups in the 16x16 nibble XOR table.
+waza bx(t: Tables, a: int64, b: int64) -> int64 { kaesu t.nib[t.low[a] + t.low16[b]] + t.nib16[t.high[a] + t.high16[b]]; }
+waza band(t: Tables, a: int64, b: int64) -> int64 { kaesu (a + b - bx(t, a, b)) / 2; }
+
+waza wrap_sum(value: int64) -> int64 {
+    kaku result = value;
+    aida (result >= 4294967296) { result = result - 4294967296; }
+    kaesu result;
+}
+
+// bytes[base .. base + 3] = value (big endian)
+waza split(value: int64, bytes: []int64, base: int64) -> unit {
+    kaku b0 = value / 16777216; kaku rest = value - b0 * 16777216;
+    kaku b1 = rest / 65536; rest = rest - b1 * 65536;
+    kaku b2 = rest / 256;
+    bytes[base] = b0; bytes[base + 1] = b1; bytes[base + 2] = b2; bytes[base + 3] = rest - b2 * 256;
+}
+
+// Byte i of ROTR(word, 8q + s) (rotate) or SHR(word, 8q + s) (shift) of the big-endian word at bytes[base].
+waza rot_byte(t: Tables, bytes: []int64, base: int64, i: int64, q: int64, s: int64, shift: bool) -> int64 {
+    kaku k = i - q; kaku high = 0; kaku low = 0;
+    moshi (shift) {
+        moshi (k >= 0) { high = bytes[base + k]; }
+        moshi (k >= 1) { low = bytes[base + k - 1]; }
+    } sore {
+        moshi (k < 0) { k = k + 4; }
+        high = bytes[base + k];
+        kaku previous = k - 1; moshi (previous < 0) { previous = previous + 4; }
+        low = bytes[base + previous];
+    }
+    kaku complement = 8 - s;
+    kaesu t.shr[s * 256 + high] + t.shl[complement * 256 + low];
+}
+
+// ROTR(n1) ^ ROTR(n2) ^ (ROTR or SHR)(n3) of the word at bytes[base], as an int64.
+waza sigma_bytes(t: Tables, bytes: []int64, base: int64, n1: int64, n2: int64, n3: int64, small: bool) -> int64 {
+    kaku q1 = n1 / 8; kaku s1 = n1 - q1 * 8; kaku q2 = n2 / 8; kaku s2 = n2 - q2 * 8; kaku q3 = n3 / 8; kaku s3 = n3 - q3 * 8;
+    kaku value = 0; kaku i = 0;
+    aida (i < 4) {
+        kaku r1 = rot_byte(t, bytes, base, i, q1, s1, iie);
+        kaku r2 = rot_byte(t, bytes, base, i, q2, s2, iie);
+        kaku r3 = rot_byte(t, bytes, base, i, q3, s3, small);
+        value = value * 256 + bx(t, bx(t, r1, r2), r3);
+        i = i + 1;
     }
     kaesu value;
 }
-waza and32(ctx: Context, a: int64, b: int64) -> int64 { kaesu (a + b - xor32(ctx, a, b)) / 2; }
-waza rotate(ctx: Context, value: int64, count: int64) -> int64 {
-    kaku divisor = ctx.powers[count];
-    kaesu value / divisor + (value - (value / divisor) * divisor) * ctx.powers[32 - count];
-}
-waza sigma(ctx: Context, value: int64, a: int64, b: int64, c: int64, small: bool) -> int64 {
-    kaku third = rotate(ctx, value, c); moshi (small) { third = value / ctx.powers[c]; }
-    kaesu xor32(ctx, xor32(ctx, rotate(ctx, value, a), rotate(ctx, value, b)), third);
-}
 
-// Hash a range without allocating a copy of the input or its padding.
-// Invalid ranges return an empty digest; callers must check the 32-byte result.
+// Hash a range without allocating a copy of the input. Invalid ranges return an empty digest; callers must check the
+// 32-byte result.
 koukai waza sum_range(ctx: Context, data: []uint8, start: int64, length: int64) -> []uint8 {
     moshi (start < 0 || length < 0 || start > len(data) || length > len(data) - start) { kaesu []; }
+    moshi (length >= fast_threshold) { kaesu sum_range_fast(ctx, data, start, length); }
+    kaesu sum_range_small(ctx, data, start, length);
+}
+
+waza sum_range_small(ctx: Context, data: []uint8, start: int64, length: int64) -> []uint8 {
+    kaku t = tables(ctx);
     kaku state: []int64 = [1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225];
-    kaku words = array.make[int64](64, 0); kaku blocks = (length + 9 + 63) / 64; kaku block = 0;
+    kaku words = array.make[int64](64, 0); kaku wbytes = array.make[int64](256, 0);
+    // working variables a..h: values and their bytes (rotated by reference each round)
+    kaku vb = array.make[int64](32, 0);
+    kaku tail = array.make[int64](128, 0);
+    kaku full = length / 64; kaku blocks = (length + 9 + 63) / 64; kaku block = 0;
+    // the padded tail (last one or two blocks)
+    kaku tail_start = full * 64; kaku at = 0;
+    aida (at < length - tail_start) { tail[at] = int64(data[start + tail_start + at]); at = at + 1; }
+    tail[length - tail_start] = 128;
+    kaku bits = length * 8; kaku position = (blocks - full) * 64 - 1;
+    aida (bits > 0) { kaku high = bits / 256; tail[position] = bits - high * 256; bits = high; position = position - 1; }
     aida (block < blocks) {
         kaku at = 0;
         aida (at < 16) {
-            kaku value = 0; kaku byte = 0;
-            aida (byte < 4) {
-                kaku position = block * 64 + at * 4 + byte; kaku octet = 0;
-                moshi (position < length) { octet = int64(data[start + position]); }
-                sore { moshi (position == length) { octet = 128; }
-                    sore { moshi (position >= blocks * 64 - 8) {
-                        kaku shift = (blocks * 64 - 1 - position) * 8;
-                        kaku bits = length * 8;
-                        // Input arrays are bounded below 2^32 bytes. The high
-                        // length word is still encoded for the complete ABI.
-                        kaku divisor = 1; kaku bit = 0;
-                        aida (bit < shift) { divisor = divisor * 2; bit = bit + 1; }
-                        octet = bits / divisor; octet = octet - (octet / 256) * 256;
-                    } }
-                }
-                value = value * 256 + octet; byte = byte + 1;
+            kaku b0 = 0; kaku b1 = 0; kaku b2 = 0; kaku b3 = 0;
+            moshi (block < full) {
+                kaku offset = start + block * 64 + at * 4;
+                b0 = int64(data[offset]); b1 = int64(data[offset + 1]); b2 = int64(data[offset + 2]); b3 = int64(data[offset + 3]);
+            } sore {
+                kaku offset = (block - full) * 64 + at * 4;
+                b0 = tail[offset]; b1 = tail[offset + 1]; b2 = tail[offset + 2]; b3 = tail[offset + 3];
             }
-            words[at] = value; at = at + 1;
+            wbytes[at * 4] = b0; wbytes[at * 4 + 1] = b1; wbytes[at * 4 + 2] = b2; wbytes[at * 4 + 3] = b3;
+            words[at] = ((b0 * 256 + b1) * 256 + b2) * 256 + b3; at = at + 1;
         }
         aida (at < 64) {
-            words[at] = wrap(sigma(ctx, words[at - 2], 17, 19, 10, hai) + words[at - 7] + sigma(ctx, words[at - 15], 7, 18, 3, hai) + words[at - 16]); at = at + 1;
+            kaku value = wrap_sum(sigma_bytes(t, wbytes, (at - 2) * 4, 17, 19, 10, hai) + words[at - 7] +
+                sigma_bytes(t, wbytes, (at - 15) * 4, 7, 18, 3, hai) + words[at - 16]);
+            words[at] = value; split(value, wbytes, at * 4); at = at + 1;
         }
+        // vb holds the bytes of a, b, c, d, e, f, g, h at 0, 4, ..., 28; slot[] maps a variable to its 4-byte group so
+        // the per-round shuffle moves indices, not bytes.
         kaku a = state[0]; kaku b = state[1]; kaku c = state[2]; kaku d = state[3];
-        kaku e = state[4]; kaku f = state[5]; kaku g = state[6]; kaku h = state[7]; at = 0;
+        kaku e = state[4]; kaku f = state[5]; kaku g = state[6]; kaku h = state[7];
+        kaku ia = 0; kaku ib = 4; kaku ic = 8; kaku id = 12; kaku ie = 16; kaku iff = 20; kaku ig = 24; kaku ih = 28;
+        split(a, vb, ia); split(b, vb, ib); split(c, vb, ic); split(d, vb, id);
+        split(e, vb, ie); split(f, vb, iff); split(g, vb, ig); split(h, vb, ih);
+        at = 0;
         aida (at < 64) {
-            kaku choice = xor32(ctx, g, and32(ctx, e, xor32(ctx, f, g)));
-            kaku majority = xor32(ctx, and32(ctx, a, b), and32(ctx, c, xor32(ctx, a, b)));
-            kaku first = wrap(h + sigma(ctx, e, 6, 11, 25, iie) + choice + ctx.constants[at] + words[at]);
-            kaku second = wrap(sigma(ctx, a, 2, 13, 22, iie) + majority);
-            h = g; g = f; f = e; e = wrap(d + first); d = c; c = b; b = a; a = wrap(first + second); at = at + 1;
+            kaku choice = 0; kaku majority = 0; kaku i = 0;
+            aida (i < 4) {
+                kaku eb = vb[ie + i]; kaku fb = vb[iff + i]; kaku gb = vb[ig + i];
+                kaku ab = vb[ia + i]; kaku bb = vb[ib + i]; kaku cb = vb[ic + i];
+                choice = choice * 256 + bx(t, gb, band(t, eb, bx(t, fb, gb)));
+                kaku axb = bx(t, ab, bb);
+                majority = majority * 256 + bx(t, band(t, ab, bb), band(t, cb, axb));
+                i = i + 1;
+            }
+            kaku first = wrap_sum(h + sigma_bytes(t, vb, ie, 6, 11, 25, iie) + choice + ctx.constants[at] + words[at]);
+            kaku second = wrap_sum(sigma_bytes(t, vb, ia, 2, 13, 22, iie) + majority);
+            // h <- g <- f <- e <- d + first; d <- c <- b <- a <- first + second (reusing the byte groups of h and d)
+            kaku free_e = ih; kaku free_a = id;
+            h = g; ih = ig; g = f; ig = iff; f = e; iff = ie; e = wrap_sum(d + first); ie = free_e; split(e, vb, ie);
+            d = c; id = ic; c = b; ic = ib; b = a; ib = ia; a = wrap_sum(first + second); ia = free_a; split(a, vb, ia);
+            at = at + 1;
         }
-        state[0] = wrap(state[0] + a); state[1] = wrap(state[1] + b); state[2] = wrap(state[2] + c); state[3] = wrap(state[3] + d);
-        state[4] = wrap(state[4] + e); state[5] = wrap(state[5] + f); state[6] = wrap(state[6] + g); state[7] = wrap(state[7] + h);
+        state[0] = wrap_sum(state[0] + a); state[1] = wrap_sum(state[1] + b); state[2] = wrap_sum(state[2] + c); state[3] = wrap_sum(state[3] + d);
+        state[4] = wrap_sum(state[4] + e); state[5] = wrap_sum(state[5] + f); state[6] = wrap_sum(state[6] + g); state[7] = wrap_sum(state[7] + h);
         block = block + 1;
     }
-    kaku output: []uint8 = []; kaku at = 0;
-    aida (at < 8) {
-        kaku divisor = 16777216; kaku byte = 0;
-        aida (byte < 4) { kaku value = state[at] / divisor; array.push(output, uint8(value - (value / 256) * 256)); divisor = divisor / 256; byte = byte + 1; }
-        at = at + 1;
+    kaku output: []uint8 = []; kaku oat = 0; kaku digest = array.make[int64](4, 0);
+    aida (oat < 8) {
+        split(state[oat], digest, 0);
+        array.push(output, uint8(digest[0])); array.push(output, uint8(digest[1])); array.push(output, uint8(digest[2])); array.push(output, uint8(digest[3]));
+        oat = oat + 1;
     }
     kaesu output;
 }
+// Inputs of at least this many bytes (one code-signing page) use 256x256 byte tables built once per context and a
+// call-free compression loop; smaller inputs keep the light path above. Both compute the same digest.
+teisu fast_threshold = 4096;
+
+waza fast_tables(ctx: Context) -> []int64 {
+    // [0, 65536) XOR, [65536, 131072) AND, then 9x256 SHR and 9x256 SHL rows
+    moshi (len(ctx.byte_tables) > 1) { kaesu ctx.byte_tables[1].shr; }
+    kaku t = tables(ctx);
+    kaku table = array.make[int64](131072 + 4608, 0);
+    kaku a = 0; kaku index = 0;
+    aida (a < 256) {
+        kaku la = t.low[a]; kaku ha = t.high[a]; kaku b = 0;
+        aida (b < 256) {
+            kaku x = t.nib[la + t.low16[b]] + t.nib16[ha + t.high16[b]];
+            table[index] = x; table[65536 + index] = (a + b - x) / 2; b = b + 1; index = index + 1;
+        }
+        a = a + 1;
+    }
+    kaku at = 0;
+    aida (at < 2304) { table[131072 + at] = t.shr[at]; table[131072 + 2304 + at] = t.shl[at]; at = at + 1; }
+    array.push(ctx.byte_tables, Tables { nib: [], nib16: [], low: [], low16: [], high: [], high16: [], shr: table, shl: [] });
+    kaesu table;
+}
+
+// Word layout in the fast path: 12 entries per word, [0, 0, 0, 0, b0, b1, b2, b3, b0, b1, b2, b3] (b0 most significant).
+// Byte i of ROTR(w, 8q + s) is SHR_s(e[8 + i - q]) + SHL_(8-s)(e[7 + i - q]); of SHR(w, 8q + s) it is
+// SHR_s(e[4 + i - q]) + SHL_(8-s)(e[3 + i - q]), the leading zeros supplying the shifted-in bits.
+waza xor3(x: []int64, a: int64, b: int64, c: int64) -> int64 { kaku ab = x[a * 256 + b]; kaesu x[ab * 256 + c]; }
+
+waza put_word(bytes: []int64, base: int64, value: int64) -> unit {
+    kaku b0 = value / 16777216; kaku rest = value - b0 * 16777216; kaku b1 = rest / 65536; rest = rest - b1 * 65536;
+    kaku b2 = rest / 256; kaku b3 = rest - b2 * 256;
+    bytes[base + 4] = b0; bytes[base + 5] = b1; bytes[base + 6] = b2; bytes[base + 7] = b3;
+    bytes[base + 8] = b0; bytes[base + 9] = b1; bytes[base + 10] = b2; bytes[base + 11] = b3;
+}
+
+waza sum_range_fast(ctx: Context, data: []uint8, start: int64, length: int64) -> []uint8 {
+    kaku x = fast_tables(ctx);
+    // per term: offset of the high byte for i = 0 (8 - q, or 4 - q for a shift) and the SHR / SHL row bases
+    kaku shr0 = 131072; kaku shl0 = 131072 + 2304;
+    // Sigma1(e): ROTR 6, 11, 25
+    kaku e1o = 8; kaku e1r = shr0 + 6 * 256; kaku e1l = shl0 + 2 * 256;
+    kaku e2o = 7; kaku e2r = shr0 + 3 * 256; kaku e2l = shl0 + 5 * 256;
+    kaku e3o = 5; kaku e3r = shr0 + 1 * 256; kaku e3l = shl0 + 7 * 256;
+    // Sigma0(a): ROTR 2, 13, 22
+    kaku a1o = 8; kaku a1r = shr0 + 2 * 256; kaku a1l = shl0 + 6 * 256;
+    kaku a2o = 7; kaku a2r = shr0 + 5 * 256; kaku a2l = shl0 + 3 * 256;
+    kaku a3o = 6; kaku a3r = shr0 + 6 * 256; kaku a3l = shl0 + 2 * 256;
+    // sigma0: ROTR 7, ROTR 18, SHR 3
+    kaku s1o = 8; kaku s1r = shr0 + 7 * 256; kaku s1l = shl0 + 1 * 256;
+    kaku s2o = 6; kaku s2r = shr0 + 2 * 256; kaku s2l = shl0 + 6 * 256;
+    kaku s3o = 4; kaku s3r = shr0 + 3 * 256; kaku s3l = shl0 + 5 * 256;
+    // sigma1: ROTR 17, ROTR 19, SHR 10
+    kaku t1o = 6; kaku t1r = shr0 + 1 * 256; kaku t1l = shl0 + 7 * 256;
+    kaku t2o = 6; kaku t2r = shr0 + 3 * 256; kaku t2l = shl0 + 5 * 256;
+    kaku t3o = 3; kaku t3r = shr0 + 2 * 256; kaku t3l = shl0 + 6 * 256;
+    kaku state: []int64 = [1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225];
+    kaku words = array.make[int64](64, 0);
+    // W[0..63] at 12t, working variables at 768 + 12v; the four leading entries of every word stay zero
+    kaku bytes = array.make[int64](768 + 96, 0);
+    kaku tail = array.make[int64](128, 0);
+    kaku full = length / 64; kaku blocks = (length + 9 + 63) / 64;
+    kaku tail_start = full * 64; kaku at = 0;
+    aida (at < length - tail_start) { tail[at] = int64(data[start + tail_start + at]); at = at + 1; }
+    tail[length - tail_start] = 128;
+    kaku bits = length * 8; kaku position = (blocks - full) * 64 - 1;
+    aida (bits > 0) { kaku high = bits / 256; tail[position] = bits - high * 256; bits = high; position = position - 1; }
+    kaku block = 0;
+    aida (block < blocks) {
+        at = 0;
+        aida (at < 16) {
+            kaku b0 = 0; kaku b1 = 0; kaku b2 = 0; kaku b3 = 0;
+            moshi (block < full) {
+                kaku offset = start + block * 64 + at * 4;
+                b0 = int64(data[offset]); b1 = int64(data[offset + 1]); b2 = int64(data[offset + 2]); b3 = int64(data[offset + 3]);
+            } sore {
+                kaku offset = (block - full) * 64 + at * 4;
+                b0 = tail[offset]; b1 = tail[offset + 1]; b2 = tail[offset + 2]; b3 = tail[offset + 3];
+            }
+            kaku base = at * 12;
+            bytes[base + 4] = b0; bytes[base + 5] = b1; bytes[base + 6] = b2; bytes[base + 7] = b3;
+            bytes[base + 8] = b0; bytes[base + 9] = b1; bytes[base + 10] = b2; bytes[base + 11] = b3;
+            words[at] = ((b0 * 256 + b1) * 256 + b2) * 256 + b3; at = at + 1;
+        }
+        aida (at < 64) {
+            kaku s1 = 0; kaku s0 = 0; kaku i = 0;
+            kaku p = (at - 2) * 12; kaku q = (at - 15) * 12;
+            aida (i < 4) {
+                kaku h1 = p + t1o + i; kaku h2 = p + t2o + i; kaku h3 = p + t3o + i;
+                kaku r = xor3(x, x[t1r + bytes[h1]] + x[t1l + bytes[h1 - 1]], x[t2r + bytes[h2]] + x[t2l + bytes[h2 - 1]], x[t3r + bytes[h3]] + x[t3l + bytes[h3 - 1]]);
+                s1 = s1 * 256 + r;
+                h1 = q + s1o + i; h2 = q + s2o + i; h3 = q + s3o + i;
+                r = xor3(x, x[s1r + bytes[h1]] + x[s1l + bytes[h1 - 1]], x[s2r + bytes[h2]] + x[s2l + bytes[h2 - 1]], x[s3r + bytes[h3]] + x[s3l + bytes[h3 - 1]]);
+                s0 = s0 * 256 + r;
+                i = i + 1;
+            }
+            kaku value = s1 + words[at - 7] + s0 + words[at - 16];
+            aida (value >= 4294967296) { value = value - 4294967296; }
+            words[at] = value; put_word(bytes, at * 12, value);
+            at = at + 1;
+        }
+        kaku a = state[0]; kaku b = state[1]; kaku c = state[2]; kaku d = state[3];
+        kaku e = state[4]; kaku f = state[5]; kaku g = state[6]; kaku h = state[7];
+        // byte groups of the working variables; the round shuffle permutes these offsets, not bytes
+        kaku sa = 768; kaku sb = 780; kaku sc = 792; kaku sd = 804; kaku se = 816; kaku sf = 828; kaku sg = 840; kaku sh = 852;
+        put_word(bytes, sa, a); put_word(bytes, sb, b); put_word(bytes, sc, c); put_word(bytes, sd, d);
+        put_word(bytes, se, e); put_word(bytes, sf, f); put_word(bytes, sg, g); put_word(bytes, sh, h);
+        at = 0;
+        aida (at < 64) {
+            kaku sigma1 = 0; kaku sigma0 = 0; kaku choice = 0; kaku majority = 0; kaku i = 0;
+            aida (i < 4) {
+                kaku h1 = se + e1o + i; kaku h2 = se + e2o + i; kaku h3 = se + e3o + i;
+                sigma1 = sigma1 * 256 + xor3(x, x[e1r + bytes[h1]] + x[e1l + bytes[h1 - 1]], x[e2r + bytes[h2]] + x[e2l + bytes[h2 - 1]], x[e3r + bytes[h3]] + x[e3l + bytes[h3 - 1]]);
+                h1 = sa + a1o + i; h2 = sa + a2o + i; h3 = sa + a3o + i;
+                sigma0 = sigma0 * 256 + xor3(x, x[a1r + bytes[h1]] + x[a1l + bytes[h1 - 1]], x[a2r + bytes[h2]] + x[a2l + bytes[h2 - 1]], x[a3r + bytes[h3]] + x[a3l + bytes[h3 - 1]]);
+                kaku eb = bytes[se + 4 + i]; kaku fb = bytes[sf + 4 + i]; kaku gb = bytes[sg + 4 + i];
+                kaku ab = bytes[sa + 4 + i]; kaku bb = bytes[sb + 4 + i]; kaku cb = bytes[sc + 4 + i];
+                choice = choice * 256 + x[gb * 256 + x[65536 + eb * 256 + x[fb * 256 + gb]]];
+                majority = majority * 256 + x[x[65536 + ab * 256 + bb] * 256 + x[65536 + cb * 256 + x[ab * 256 + bb]]];
+                i = i + 1;
+            }
+            kaku first = h + sigma1 + choice + ctx.constants[at] + words[at];
+            aida (first >= 4294967296) { first = first - 4294967296; }
+            kaku second = sigma0 + majority;
+            aida (second >= 4294967296) { second = second - 4294967296; }
+            kaku free_e = sh; kaku free_a = sd;
+            h = g; sh = sg; g = f; sg = sf; f = e; sf = se; e = d + first; aida (e >= 4294967296) { e = e - 4294967296; } se = free_e;
+            d = c; sd = sc; c = b; sc = sb; b = a; sb = sa; a = first + second; aida (a >= 4294967296) { a = a - 4294967296; } sa = free_a;
+            put_word(bytes, se, e); put_word(bytes, sa, a);
+            at = at + 1;
+        }
+        state[0] = wrap_sum(state[0] + a); state[1] = wrap_sum(state[1] + b); state[2] = wrap_sum(state[2] + c); state[3] = wrap_sum(state[3] + d);
+        state[4] = wrap_sum(state[4] + e); state[5] = wrap_sum(state[5] + f); state[6] = wrap_sum(state[6] + g); state[7] = wrap_sum(state[7] + h);
+        block = block + 1;
+    }
+    kaku output: []uint8 = []; kaku oat = 0; kaku digest = array.make[int64](4, 0);
+    aida (oat < 8) {
+        split(state[oat], digest, 0);
+        array.push(output, uint8(digest[0])); array.push(output, uint8(digest[1])); array.push(output, uint8(digest[2])); array.push(output, uint8(digest[3]));
+        oat = oat + 1;
+    }
+    kaesu output;
+}
+
 koukai waza sum(data: []uint8) -> []uint8 { kaesu sum_range(context(), data, 0, len(data)); }
