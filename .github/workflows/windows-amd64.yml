@@ -39,6 +39,21 @@ jobs:
       - name: Mio source -> PE cases (pure-Mio lowering hosted by the reference VM; Windows native execution)
         shell: bash
         run: python tests/windows-amd64/run_cases.py --mio "$EVIDENCE/mio-reference.exe" --output "$EVIDENCE/cases" --execute 2>&1 | tee "$EVIDENCE/cases.log"
+      - name: Build dev reference host (Go VM with a large instruction budget; oracle and host only)
+        shell: bash
+        run: go build -o "$EVIDENCE/refvm.exe" ./tests/windows-amd64/refvm
+      - name: Heap-capable lowering (lowerwinrt) - exit/stdout cases on Windows
+        shell: bash
+        run: python tests/windows-amd64/run_cases.py --mio "$EVIDENCE/refvm.exe" --backend lowerwinrt --output "$EVIDENCE/cases-rt" --execute 2>&1 | tee "$EVIDENCE/cases-rt.log"
+      - name: Heap-capable lowering (lowerwinrt) - differential vs Go VM on Windows (arrays, structs, enums, maps, closures, floats, GC)
+        shell: bash
+        run: python tests/windows-amd64/differential.py --mio "$EVIDENCE/refvm.exe" --execute --output "$EVIDENCE/differential" 2>&1 | tee "$EVIDENCE/differential.log"
+      - name: Backend driver chain A-B-C-D (native on Windows; reference-VM start, NOT a native seed)
+        shell: bash
+        run: python tests/windows-amd64/driver_chain.py --refvm "$EVIDENCE/refvm.exe" --execute --output "$EVIDENCE/driver-chain" 2>&1 | tee "$EVIDENCE/driver-chain.log"
+      - name: Windows compiler chain A-B-C-D (parser+typecheck+codegen+lowering, native on Windows)
+        shell: bash
+        run: python tests/windows-amd64/compiler_chain.py --refvm "$EVIDENCE/refvm.exe" --execute --output "$GITHUB_WORKSPACE/build/windows-amd64-evidence/compiler-chain" 2>&1 | tee "$EVIDENCE/compiler-chain.log"
       - name: lowerwin Mio unit tests (reference VM)
         shell: bash
         run: |
