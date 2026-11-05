@@ -1,0 +1,91 @@
+yobu "kiso/aot/lower/types";
+yobu "kiso/aot/x86_64";
+yobu "kiso/encoding/mochi";
+
+// Test images (kiso/testing report channel), Linux side. The failure counter lives at gc_state() + 80.
+// rt.testing_report: rdi = condition, rsi = message string, rdx = 1 for the packet channel.
+// A failed expectation is counted, written to stderr with a newline and, in packet mode, to fd 3 as an
+// 8-byte little-endian length followed by the bytes. It returns normally so that every failure is recorded.
+waza testing_counter() -> int64 { kaesu gc_state() + 80; }
+
+waza uses_testing(file: mochi.File) -> bool {
+    kaku at = 0;
+    aida (at < len(file.functions)) {
+        moshi (types.is_testing_report(file.functions[at].name) || types.is_testing_packet(file.functions[at].name)) { kaesu hai; }
+        at = at + 1;
+    }
+    kaesu iie;
+}
+
+waza uses_testing_packet(file: mochi.File) -> bool {
+    kaku at = 0;
+    aida (at < len(file.functions)) { moshi (types.is_testing_packet(file.functions[at].name)) { kaesu hai; } at = at + 1; }
+    kaesu iie;
+}
+
+waza emit_testing_runtime(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.testing_report");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.testing_report.done");
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 32);
+    x86_64.mov_ri(code, x86_64.rcx, testing_counter());
+    x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 0);
+    x86_64.add_ri(code, x86_64.rax, 1);
+    x86_64.mov_store(code, x86_64.rcx, 0, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rsi);
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.testing_report.stderr");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsi, 16);
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rdi, 3);
+    x86_64.lea(code, x86_64.rsi, x86_64.rbp, -16);
+    x86_64.mov_ri(code, x86_64.rdx, 8);
+    x86_64.mov_eax_imm(code, 1);
+    x86_64.syscall(code);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsi, 16);
+    x86_64.add_ri(code, x86_64.rsi, 24);
+    x86_64.mov_ri(code, x86_64.rdi, 3);
+    x86_64.mov_eax_imm(code, 1);
+    x86_64.syscall(code);
+    x86_64.label(code, "rt.testing_report.stderr");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsi, 16);
+    x86_64.add_ri(code, x86_64.rsi, 24);
+    x86_64.mov_ri(code, x86_64.rdi, 2);
+    x86_64.mov_eax_imm(code, 1);
+    x86_64.syscall(code);
+    emit_write_literal(code, "rt.text.newline", 1, 2);
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.label(code, "rt.testing_report.done");
+    x86_64.ret(code);
+
+    // rt.testing_finish: rdi = 1 when the packet channel is open. Writes the completion marker (all ones) to fd 3 and
+    // exits with status 1 when any expectation failed, else 0.
+    x86_64.label(code, "rt.testing_finish");
+    x86_64.sub_ri(code, x86_64.rsp, 16);
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.testing_finish.status");
+    x86_64.mov_ri(code, x86_64.rax, -1);
+    x86_64.mov_store(code, x86_64.rsp, 0, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rdi, 3);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rsp);
+    x86_64.mov_ri(code, x86_64.rdx, 8);
+    x86_64.mov_eax_imm(code, 1);
+    x86_64.syscall(code);
+    x86_64.label(code, "rt.testing_finish.status");
+    x86_64.mov_ri(code, x86_64.rcx, testing_counter());
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rcx, 0);
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.mov_ri(code, x86_64.rdi, 0);
+    x86_64.jcc(code, x86_64.cc_e, "rt.testing_finish.exit");
+    x86_64.mov_ri(code, x86_64.rdi, 1);
+    x86_64.label(code, "rt.testing_finish.exit");
+    x86_64.mov_eax_imm(code, 231);
+    x86_64.syscall(code);
+}

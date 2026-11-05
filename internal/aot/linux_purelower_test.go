@@ -652,6 +652,69 @@ func TestLinuxAMD64NativeCLIFixedPoint(t *testing.T) {
 	if out, _, err := run(hello); err != nil || out != "hello from the native Linux CLI\n5050\n" {
 		t.Fatalf("hello: err=%v out=%q", err, out)
 	}
+	// `mio test` runs Linux ELF test images through spawn_test: pass, assertion failure, filter, hang, compile error, abnormal exit
+	for _, c := range []struct {
+		name, source string
+		args         []string
+		exit         int
+		contains     []string
+		absent       []string
+	}{
+		{"pass", "yobu \"kiso/testing\";\nwaza test_a() -> unit { testing.expect(1 + 1 == 2, \"ok\"); }\nwaza test_b() -> unit { testing.expect(hai, \"ok\"); }\n", nil, 0, []string{"PASS: test_a", "PASS: test_b", "2 passed, 0 failed"}, nil},
+		{"fail", "yobu \"kiso/testing\";\nwaza test_ok() -> unit { testing.expect(hai, \"ok\"); }\nwaza test_bad() -> unit { testing.expect(1 == 2, \"one is not two\"); testing.expect(3 == 4, \"three is not four\"); }\n", nil, 1, []string{"PASS: test_ok", "FAIL: test_bad", "assertion failed: one is not two", "assertion failed: three is not four", "1 passed, 1 failed"}, nil},
+		{"filter", "yobu \"kiso/testing\";\nwaza test_alpha() -> unit { testing.expect(hai, \"a\"); }\nwaza test_beta() -> unit { testing.expect(iie, \"must not run\"); }\n", []string{"--run=alpha"}, 0, []string{"PASS: test_alpha", "1 passed, 0 failed"}, []string{"test_beta"}},
+		{"hang", "yobu \"kiso/testing\";\nwaza test_spin() -> unit { kaku i = 0; aida (hai) { i = i + 1; } }\nwaza test_after() -> unit { testing.expect(hai, \"ok\"); }\n", nil, 1, []string{"FAIL: test_spin", "resource limit", "PASS: test_after"}, nil},
+		{"compile", "yobu \"kiso/testing\";\nwaza test_bad() -> unit { kaku x: int64 = \"text\"; }\n", nil, 1, []string{"E0301", "0 passed, 1 failed"}, []string{"PASS"}},
+		{"abnormal", "yobu \"kiso/testing\";\nyobu \"kiso/os\";\nwaza test_exit() -> unit { os.exit(3); }\nwaza test_crash() -> unit { kaku a: []int64 = []; testing.expect(a[5] == 0, \"unreachable\"); }\n", nil, 1, []string{"FAIL: test_exit", "status=3", "FAIL: test_crash", "status=1", "0 passed, 2 failed"}, []string{"PASS"}},
+		{"gc", "yobu \"kiso/testing\";\nyobu \"kiso/array\";\nwaza test_garbage() -> unit {\n    kaku keep = array.make[int64](100, 7); kaku i = 0; kaku sink = 0;\n    aida (i < 300000) { kaku g = array.make[int64](1000, i); sink = sink + g[999]; i = i + 1; }\n    testing.expect(keep[50] == 7, \"live\"); testing.expect(sink == 44999850000, \"sum\");\n}\n", nil, 0, []string{"PASS: test_garbage"}, nil},
+	} {
+		dirName := filepath.Join(project, "test_"+c.name)
+		os.MkdirAll(dirName, 0o755)
+		os.WriteFile(filepath.Join(dirName, "a_test.mio"), []byte(c.source), 0o644)
+		args := append([]string{"test", dirName}, c.args...)
+		for repeat := 0; repeat < 2; repeat++ {
+			out, errOut, err := run(cli, args...)
+			code := 0
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				code = exitErr.ExitCode()
+			} else if err != nil {
+				t.Fatalf("mio test %s: %v", c.name, err)
+			}
+			if code != c.exit {
+				t.Errorf("mio test %s: exit %d, want %d\n%s%s", c.name, code, c.exit, out, errOut)
+			}
+			out += errOut
+			for _, want := range c.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("mio test %s: output lacks %q:\n%s", c.name, want, out)
+				}
+			}
+			for _, bad := range c.absent {
+				if strings.Contains(out, bad) {
+					t.Errorf("mio test %s: output unexpectedly has %q:\n%s", c.name, bad, out)
+				}
+			}
+		}
+	}
+	if leftovers, _ := filepath.Glob("/tmp/mio-test-*"); len(leftovers) > 0 {
+		t.Logf("note: temporary test files left behind: %v", leftovers)
+	}
+	// the native `mio test` runs real package suites: the encoder / ELF / runtime packages
+	for _, suite := range []struct {
+		target  string
+		skipped string
+	}{{"bunko/kiso/aot/x86_64", ""}, {"bunko/kiso/aot/elf", ""}, {"bunko/kiso/runtime/cpu/amd64", ""}, {"bunko/kiso/runtime/os/linux", ""}} {
+		out, errOut, err := run(cli, "test", suite.target)
+		if err != nil || !strings.Contains(out, " 0 failed") {
+			t.Errorf("native mio test %s: err=%v\n%s%s", suite.target, err, out, errOut)
+		}
+		if suite.skipped != "" && !strings.Contains(out, suite.skipped) {
+			t.Errorf("native mio test %s: expected %q:\n%s", suite.target, suite.skipped, out)
+		}
+		if suite.skipped == "" && strings.Contains(out, "SKIP") {
+			t.Errorf("native mio test %s: unexpected skip:\n%s", suite.target, out)
+		}
+	}
 	// the CLI builds itself repeatedly
 	previous := cli
 	var built [][]byte
