@@ -290,6 +290,14 @@ def linux(args):
     native_mio_test(report, cli, skips_allowed=True)
     contract(report, cli, "linux-amd64", reference=str(refvm))
     contract(report, cli, "linux-amd64", reference=str(refvm), suite="differential")
+    chain = work / "runtime-chain"
+    chain.mkdir(exist_ok=True)
+    code, out, err, seconds = run(report, "linux-runtime-chain", [sys.executable, ROOT / "bunko/kiso/runtime/os/linux/check_chain.py"],
+                                  env=dict(MIO_CI_MIO=str(cli), MIO_CI_MODULE_DIR=str(chain)), timeout=1800)
+    executed = "execution: NOT_RUN" not in out + err
+    report.check("linux-runtime-chain", "PASS" if code == 0 and executed else "FAIL", "native",
+                 "" if code == 0 and executed else "exit %s: %s" % (code, brief(err or out)), seconds=round(seconds, 1),
+                 note="kiso/runtime/ir -> cpu/amd64 -> x86_64 -> elf image built by a native Mio program and executed")
     # Stage A of the other targets, cross-built by two native generations that must agree
     seeds = report.output / "stage-a"
     seeds.mkdir(exist_ok=True)
