@@ -15,14 +15,16 @@ teisu memory_ObjectLimit = 2712;
 teisu memory_LOSCommitted = 2720;
 teisu memory_HighWater = 2784;
 // OS memory pressure (sysctl kern.memorystatus_vm_pressure_level) is queried by memory.update unless the system
-// pressure state word (2752) is 2, which the policy treats as "available, use the cached level" (2672). Querying it
-// at every allocation made allocation-heavy programs spend a large share of their time in the kernel, so the
-// adapter re-queries at most once per memory_SystemRefresh samples and after every collection, and reuses the
-// cached level in between. The state word is restored to 1 afterwards, so observed values are unchanged.
-// 2880 is unused metadata (the policy block ends at 2816; nothing in 2824..3071 is addressed).
-teisu memory_SystemCountdown = 2880;
+// pressure state word (2752) is 2, which the policy treats as "available, use the cached level" (2672). memory.update
+// runs several times per allocation (362 M updates for 91 M allocations in a CLI self-build), and on macos-15 each
+// sysctl costs about 0.1 ms of kernel time, so even one query per 256 updates spent more than half of a self-build
+// in the kernel. The adapter therefore re-queries only when 1/16 s (CNTVCT ticks) has passed since the last query
+// or a collection has run, and reuses the cached level in between. The state word is restored to 1 afterwards, so
+// observed values are unchanged.
+// 2880 is unused metadata (the policy block ends at 2816; nothing in 2824..3071 is addressed): the CNTVCT tick at or
+// after which the next query is due (0 = now).
+teisu memory_SystemNextQuery = 2880;
 teisu memory_SystemState = 2752;
-teisu memory_SystemRefresh = 255;
 waza emit_memory_adapters(code: arm64.Assembler) -> unit {
  emit_memory_policy(code);
  arm64.assembler_label(code,"memory_sample");
@@ -38,9 +40,12 @@ waza emit_memory_adapters(code: arm64.Assembler) -> unit {
  arm64.assembler_label(code,"memory_charge_bounded");
  move_x(code,0,23); emit(code,arm64.ldr_x(1,23,304)); emit(code,arm64.ldr_x(2,23,296)); observation_word(code,3577470980); emit(code,arm64.ldr_x(5,23,872)); emit(code,arm64.ldr_x(6,23,2800));
  emit(code,arm64.ldr_x(9,23,memory_SystemState)); emit(code,arm64.cmp_imm_x(9,1,iie)); arm64.assembler_b_cond(code,1,"memory_sample_update");
- emit(code,arm64.ldr_x(10,23,memory_SystemCountdown)); arm64.assembler_cbz_x(code,10,"memory_sample_refresh");
- emit(code,arm64.sub_imm_x(10,10,1,iie)); emit(code,arm64.str_x(10,23,memory_SystemCountdown)); emit(code,arm64.movz_x(9,2,0)); emit(code,arm64.str_x(9,23,memory_SystemState)); arm64.assembler_b(code,"memory_sample_update");
- arm64.assembler_label(code,"memory_sample_refresh"); emit(code,arm64.movz_x(10,memory_SystemRefresh,0)); emit(code,arm64.str_x(10,23,memory_SystemCountdown));
+ observation_word(code,3577471050); // MRS x10, CNTVCT_EL0
+ emit(code,arm64.ldr_x(11,23,memory_SystemNextQuery)); emit(code,arm64.cmp_x(10,11)); arm64.assembler_b_cond(code,2,"memory_sample_refresh");
+ emit(code,arm64.movz_x(9,2,0)); emit(code,arm64.str_x(9,23,memory_SystemState)); arm64.assembler_b(code,"memory_sample_update");
+ arm64.assembler_label(code,"memory_sample_refresh");
+ observation_word(code,3577470987); // MRS x11, CNTFRQ_EL0
+ emit(code,arm64.lsr_x(11,11,4)); emit(code,arm64.add_x(11,10,11)); emit(code,arm64.str_x(11,23,memory_SystemNextQuery));
  arm64.assembler_label(code,"memory_sample_update");
  arm64.assembler_bl(code,"memory.update");
  emit(code,arm64.ldr_x(9,23,memory_SystemState)); emit(code,arm64.cmp_imm_x(9,2,iie)); arm64.assembler_b_cond(code,1,"memory_sample_state");
@@ -55,7 +60,7 @@ waza emit_memory_adapters(code: arm64.Assembler) -> unit {
  emit(code,arm64.ldr_x(0,31,8)); emit(code,arm64.ldr_x(30,31,0)); emit(code,arm64.add_imm_x(31,31,32,iie)); emit(code,arm64.ret());
  arm64.assembler_label(code,"memory_aftergc");
  emit(code,arm64.sub_imm_x(31,31,32,iie)); emit(code,arm64.str_x(30,31,0)); emit(code,arm64.str_x(0,31,8)); emit(code,arm64.str_x(31,23,memory_GCActive));
- emit(code,arm64.str_x(31,23,memory_SystemCountdown)); // a collection always refreshes the OS pressure level
+ emit(code,arm64.str_x(31,23,memory_SystemNextQuery)); // a collection always refreshes the OS pressure level
  arm64.assembler_bl(code,"memory_sample");
  move_x(code,0,23); emit(code,arm64.ldr_x(1,23,304)); emit(code,arm64.movz_x(2,0,0)); arm64.assembler_bl(code,"memory.goal");
  emit(code,arm64.ldr_x(0,31,8)); emit(code,arm64.ldr_x(30,31,0)); emit(code,arm64.add_imm_x(31,31,32,iie)); emit(code,arm64.ret());
