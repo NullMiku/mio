@@ -14,8 +14,6 @@
 - `M19E.md`：并发 Old GC 分阶段实现任务。
 - `M19F.md`：性能模式与自适应策略任务。
 - `ACCEPTANCE.md`：代码审计、运行、竞态、回归、自举、跨平台抽象验收。
-- `AUTONOMY.md`：Codex 连续执行和工作树保护规则。
-- `CODEX_START.txt`：给 Codex 的一次性启动指令。
 - `status.json`：初始状态占位，必须以真实证据更新。
 
 ## 关键背景
@@ -26,4 +24,4 @@
 
 ## 使用
 
-将 `specs/002-m19ef-portable-pure-mio/` 放在 Mio 仓库根目录的 `specs/` 下。在目标 `Mio-2.1` 的独立 worktree 中阅读 `CODEX_START.txt` 并执行；Codex 不得触碰用户其他 worktree，未经授权不 Commit/Push/Tag/Release。
+阅读本目录中的规范、架构、合同和验收文档；当前实现与测试状态以实际源码、验收报告及测试证据为准。

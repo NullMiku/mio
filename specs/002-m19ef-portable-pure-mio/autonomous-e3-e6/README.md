@@ -9,9 +9,9 @@
 - 已存在工作树：`/Users/hatsunemiku/.codex/worktrees/m19ef-portable-gc/mio`
 - 开发分支：`EXP/m19ef-portable-gc`
 - 上游基础分支：`Mio-2.1`
-- 原始规范：当前目录上一级 `../SPEC.md`、`../ARCHITECTURE.md`、`../CONTRACTS.md`、`../M19E.md`、`../ACCEPTANCE.md`、`../AUTONOMY.md`
+- 原始规范：当前目录上一级 `../SPEC.md`、`../ARCHITECTURE.md`、`../CONTRACTS.md`、`../M19E.md`、`../ACCEPTANCE.md`
 - 近期实际状态优先参考：`../E3_REPORT.md`、`../IMPLEMENTATION_REPORT.md`、`tests/m19ef/README.md`、本地 `build/m19ef-evidence/`（可能尚未提交 Git）
-- 执行入口：`CODEX_START.txt`。依次阅读 `AUTONOMY.md`、`PORTABILITY.md`、`EVIDENCE.md`、`GATES.md`、`phases/E3.md`～`E6.md`。
+- 阅读顺序：`PORTABILITY.md`、`EVIDENCE.md`、`GATES.md`、`phases/E3.md`～`E6.md`。
 
 ## 严格完成条件
 
@@ -25,8 +25,6 @@
 
 ## 文件说明
 
-- `CODEX_START.txt`：一次提交给 Codex 的入口。
-- `AUTONOMY.md`：不中断地自主编写、测试、审计、恢复与保护规则。
 - `PORTABILITY.md`：GC 核心与 CPU/OS 后端分层及对象 ABI 不变量。
 - `GATES.md`：每阶段及最终可机械检查的 Pass/Fail 条件。
 - `EVIDENCE.md`：结果文件、失败保存、固定点与真实性要求。
