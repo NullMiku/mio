@@ -25,8 +25,8 @@ payloads (`int64`, `float64`, packed nullable scalars, enum tags) are never trea
 `tests/runtime-abi` on every target, in the default configuration and with `mio build --gc-stress`.
 
 **Binary layout (uniform inside a target, not across targets).** Native images never exchange heap objects, link with
-each other or share a heap with another runtime, and the Go+C reference backend (`internal/aot/linuxamd64`) produces
-independent executables. Cross-target byte compatibility of objects is therefore not required; each target must match
+each other or share a heap with another runtime (the former Go+C reference backend was removed; it produced
+independent executables as well). Cross-target byte compatibility of objects is therefore not required; each target must match
 its own profile exactly, and the profile is checked against the emitter constants.
 
 **Free per target.** Collection algorithm and policy, heap reservation, thresholds, safepoint placement (subject to §4),
@@ -101,7 +101,9 @@ scalars are boxed on every target.
 | declared profiles satisfy RA-1, match emitter constants | `bunko/kiso/runtime/abi` (`mio test`) | native and reference VM |
 | contract behaviour, default and `--gc-stress` | `tests/runtime-abi/run.py` on each target | native |
 | VM / native differential of the contract programs | `run.py --reference` | reference |
-| target-specific collectors | `internal/aot` Linux GC stress, Darwin M19ef witnesses | as recorded by CI |
+| VM / native differential corpus, default and `--gc-stress` | `run.py --suite differential` (`tests/native-differential`) | native, reference |
+| x86-64 runtime chain (IR -> cpu/amd64 -> ELF) | `bunko/kiso/runtime/os/linux/check_chain.py` with the native CLI | native |
+| Darwin concurrent-GC protocol witnesses | `tests/m19ef` (seed-gated, not part of hosted CI) | NOT_RUN on hosted runners |
 
 See [docs/testing.md](testing.md) and [docs/ci-pr-integration.md](ci-pr-integration.md) for how the results are run and
 reported.

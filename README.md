@@ -21,9 +21,9 @@
 
 **Mio** 是一门采用日语罗马字关键字的**静态强类型编程语言**。它强调明确的数值语义、精简的语言核心，以及按需导入的 **Bunko** 标准库。
 
-**Mio V2** 在 Mochi 字节码与虚拟机之外，已经实现面向 **macOS Apple Silicon（ARM64）** 的原生 AOT 编译，并完成纯 Mio 原生 AOT 编译器的多代自举验证。
+**Mio V2** 在 Mochi 字节码与虚拟机之外，已经实现面向 **macOS Apple Silicon（ARM64）** 的原生 AOT 编译，并完成纯 Mio 原生 AOT 编译器的多代自举验证。`Mio-2.1` 开发分支的编译器、三个原生后端（darwin-arm64、linux-amd64、windows-amd64）和运行时全部由 Mio 编写；Go 编写的 AOT 后端已删除。
 
-> **发布状态：** `v2.0.0` 正在准备正式 GitHub Release，尚未发布为 Stable。当前已验证的首发平台是 macOS ARM64；Linux、Windows 和分代 GC 属于后续规划。
+> **发布状态：** `v2.0.0` 的已验证首发平台是 macOS ARM64。Linux x86-64 与 Windows x86-64 原生后端在 `Mio-2.1` CI 中通过原生自举固定点与 Runtime ABI 契约测试，但仍属**实验性**，尚未作为正式发布平台提供。
 
 ## 语言与工具链
 
@@ -41,16 +41,18 @@ Mio 与 Mochi 也是项目中的两位角色：Mio 是上方的少女，Mochi �
 
 正式发布后，可从 [GitHub Releases](https://github.com/mio-kobo/mio/releases)
 
-预编译发行包**不要求安装 Go**；从源码重新构建工具链和生成首次自举 Seed 仍需要 Go。目前发行候选采用 **ad-hoc 签名，未经过 Apple notarization**，安装时可能受到 Gatekeeper 限制。
+预编译发行包**不要求安装 Go**；在没有受信任 Native Seed 的环境中从源码首次自举时，Stage A 由 Go 参考前端与参考 VM 托管纯 Mio 后端生成（go-hosted，不视为 Seed），之后各代均为原生 Mio 程序。目前发行候选采用 **ad-hoc 签名，未经过 Apple notarization**，安装时可能受到 Gatekeeper 限制。
 
 ## 平台与规划
 
 | 平台或能力 | 当前状态 |
 | --- | --- |
-| macOS ARM64 原生 AOT | 已通过 M18 与发行候选验证 |
-| Linux ARM64 / x86-64 | 规划中 |
-| Windows x86-64 | 规划中 |
-| 分代 GC、High / Balanced / Low | 规划中，未包含在 v2.0.0 |
+| macOS ARM64 原生 AOT | 已通过 M18 与发行候选验证；`Mio-2.1` CI 在 `macos-15` 上原生自举 |
+| Linux x86-64 原生（纯 Mio，静态 ELF） | 实验性：CI 中编译器/CLI 原生固定点、`mio test`、Runtime ABI 契约通过 |
+| Windows x86-64 原生（纯 Mio，PE32+） | 实验性：CI 中 CLI 原生固定点与 Runtime ABI 契约通过；`mio test`、线程等尚未支持 |
+| Linux ARM64 | 规划中 |
+| 分代 GC | darwin-arm64 已实现（Object ABI v1）；x86-64 为非分代精确标记清除。两者满足同一 [Runtime ABI 契约 RA-1](docs/runtime-abi.md) |
+| High / Balanced / Low GC 策略、并发 GC | 规划中 |
 
 完整语言教程、Bunko API、CLI 参考和运行时文档由 **Mio 官方文档网站** 统一维护。
 

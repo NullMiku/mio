@@ -29,6 +29,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+STARTED = time.monotonic()
+# Wall-clock budget for one platform (below the job timeout) so a slow host still uploads a complete report.
+BUDGET_SECONDS = int(os.environ.get("MIO_NATIVE_BUDGET_SECONDS", "6600"))
 GF4_SEED_SHA256 = "4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da"
 TARGETS = {"linux": "linux-amd64", "darwin": "darwin-arm64", "windows": "windows-amd64"}
 EXPECTED_HOST = {"linux-amd64": ("Linux", ("x86_64", "amd64")), "darwin-arm64": ("Darwin", ("arm64", "aarch64")),
@@ -115,12 +118,32 @@ def verify_host(report):
                         detected="%s/%s" % actual)
 
 
+CLI_BUILD_TIMEOUT = 1500  # a self-build that needs longer is reported FAIL (with its log), never left to hang the job
+
+
+def peak_rss_mib(err):
+    """Peak RSS from macOS `/usr/bin/time -l` (bytes) or GNU `time -v` (KiB); 0 when absent."""
+    match = re.search(r"(\d+)\s+maximum resident set size", err)
+    if match:
+        return int(match.group(1)) // (1024 * 1024)
+    match = re.search(r"Maximum resident set size \(kbytes\): (\d+)", err)
+    return int(match.group(1)) // 1024 if match else 0
+
+
 def cli_build(report, label, cli, entry, target, output, extra=()):
-    code, out, err, seconds = run(report, label, [cli, "build", entry, "--target=" + target, "-o", output, *extra])
+    argv = [cli, "build", entry, "--target=" + target, "-o", output, *extra]
+    if platform.system() == "Darwin" and Path("/usr/bin/time").exists():
+        argv = ["/usr/bin/time", "-l", *argv]  # resource usage only; the build itself is unchanged
+    code, out, err, seconds = run(report, label, argv, timeout=CLI_BUILD_TIMEOUT)
     ok = code == 0 and Path(output).is_file()
     if ok and target != "windows-amd64":
         os.chmod(output, 0o755)
-    return ok, "exit %s: %s" % (code, brief(err or out)), seconds
+    reason = "timed out after %ds" % CLI_BUILD_TIMEOUT if code is None else "exit %s: %s" % (code, brief(err or out))
+    rss = peak_rss_mib(err)
+    if rss:
+        reason += " (peak RSS %d MiB)" % rss
+    print("    %s: %.1fs%s" % (label, seconds, ", peak RSS %d MiB" % rss if rss else ""), flush=True)
+    return ok, reason, seconds
 
 
 def cli_chain(report, first, target, work, engine="native"):
@@ -132,7 +155,7 @@ def cli_chain(report, first, target, work, engine="native"):
         ok, reason, seconds = cli_build(report, "cli-" + name, paths[previous], "selfhost/cli", target, output)
         if not report.check("cli-stage-" + name, "PASS" if ok else "FAIL", engine,
                             "" if ok else "%s could not build stage %s: %s" % (previous, name, reason),
-                            seconds=round(seconds, 1), built_by=previous):
+                            seconds=round(seconds, 1), built_by=previous, detail=reason if ok else ""):
             return None
         paths[name] = output
         report.hashes["cli-" + name] = sha256(output)
@@ -142,22 +165,23 @@ def cli_chain(report, first, target, work, engine="native"):
     return paths["B"] if same else None
 
 
-def smoke(report, cli, target, work):
-    code, out, err, _ = run(report, "cli-version", [cli, "--version"])
-    report.check("cli-version", "PASS" if code == 0 and out.startswith("mio ") else "FAIL", "native",
+def smoke(report, cli, target, work, label_prefix=""):
+    Path(work).mkdir(parents=True, exist_ok=True)
+    code, out, err, _ = run(report, label_prefix + "cli-version", [cli, "--version"])
+    report.check(label_prefix + "cli-version", "PASS" if code == 0 and out.startswith("mio ") else "FAIL", "native",
                  "" if code == 0 else "exit %s: %s" % (code, brief(err)), output=out.strip())
     project = work / "hello"
     project.mkdir(exist_ok=True)
     (project / "main.mio").write_text('chant("hello from the native Mio CLI");\nkaku n = 0; kaku i = 1;\n'
                                       'aida (i <= 100) { n = n + i; i = i + 1; }\nchant(n);\n')
     image = work / ("hello-image" + EXE.get(target, ""))
-    ok, reason, _ = cli_build(report, "hello-build", cli, str(project / "main.mio"), target, image)
+    ok, reason, _ = cli_build(report, label_prefix + "hello-build", cli, str(project / "main.mio"), target, image)
     if not ok:
-        return report.check("cli-hello", "FAIL", "native", "build " + reason)
-    code, out, err, _ = run(report, "hello-run", [image], cwd=work)
+        return report.check(label_prefix + "cli-hello", "FAIL", "native", "build " + reason)
+    code, out, err, _ = run(report, label_prefix + "hello-run", [image], cwd=work)
     want = "hello from the native Mio CLI\n5050\n"
-    ok = code == 0 and out.replace("\r\n", "\n") == want
-    return report.check("cli-hello", "PASS" if ok else "FAIL", "native", "" if ok else "exit %s, stdout %r" % (code, out[:200]))
+    ok = code == 0 and out == want
+    return report.check(label_prefix + "cli-hello", "PASS" if ok else "FAIL", "native", "" if ok else "exit %s, stdout %r" % (code, out[:200]))
 
 
 def test_packages():
@@ -179,7 +203,11 @@ def native_mio_test(report, cli, skips_allowed):
     failures = []
     for package in test_packages():
         label = "mio-test-" + package.replace("/", "_")
-        code, out, err, seconds = run(report, label, [cli, "test", package], timeout=1800)
+        if time.monotonic() - STARTED > BUDGET_SECONDS:
+            report.check("mio-test " + package, "NOT_RUN", "native", "platform time budget (%ds) exhausted" % BUDGET_SECONDS)
+            failures.append(package)
+            continue
+        code, out, err, seconds = run(report, label, [cli, "test", package], timeout=900)
         text = out + err
         passed = count(r"Tests complete: (\d+) passed", text)
         failed = count(r"Tests complete: \d+ passed, (\d+) failed", text)
@@ -345,6 +373,8 @@ def follower(args, target):
     shutil.copyfile(stage_a, first)
     if target != "windows-amd64":
         os.chmod(first, 0o755)
+    # A quick signal that Stage A works on this host before the long self-builds.
+    smoke(report, first, target, work / "smoke-A", label_prefix="stage-a-")
     cli = cli_chain(report, first, target, work)
     if cli is not None:
         same = report.hashes["cli-A"] == report.hashes["cli-B"]

@@ -14,7 +14,8 @@ scripts/ci/
   verify_native.py            独立原生输出、ABI、GC 遥测
   release_isolation.py        发布源码与包清单隔离检查
   test.sh                     quality 基础设施检查
-  legacy/test.sh              保留历史 BCD/M18 检查
+  native_platforms.py         三平台 Native 验证驱动（.github/workflows/native.yml）
+tests/runtime-abi/run.py       Runtime ABI 契约（RA-1）与 VM/Native 差分语料的逐目标运行器
 selfhost/cli/test.sh           core：Mio 测试 → 独立原生验证
 selfhost/test.sh               selfhost：原生测试全集
 selfhost/bootstrap/test.sh     Mio 测试 → 原生 ABCD 固定点及复核
@@ -22,7 +23,6 @@ bunko/kiso/aot/test.sh          AOT：Mio 测试 → 原生产物/ABI 检查
 bunko/kiso/runtime/gc/test.sh   GC：Mio 测试 → 实际 GC 遥测
 bunko/kiso/**/test.sh           各个已有 Mio 测试的标准库包
 internal/test.sh               go-reference，补充参考实现
-internal/aot/test.sh           go-aot-reference，补充后端/race 检查
 tools/native-ci/test.sh        原生 archive 测试 → 既有生产流水线 → 独立清单检查
 ```
 
@@ -47,10 +47,11 @@ bash scripts/ci/run.sh macos-arm64 native-release release
 
 | target | 实际主机 | 能力 |
 | --- | --- | --- |
-| macos-arm64 | Darwin arm64 | Mio 原生框架、AOT、ABI、GC、自举及辅助检查 |
-| linux-amd64 | Linux x86_64 | 现有 Go/VM 补充参考测试；无 Mio 原生后端验收 |
+| macos-arm64 | Darwin arm64 | Mio 原生框架、AOT、ABI、GC、自举及辅助检查（Seed 模块）；native.yml 的 darwin-arm64 原生验证 |
+| linux-amd64 | Linux x86_64 | Go/VM 补充参考测试；native.yml 的 linux-amd64 原生验证（编译器/CLI 固定点、mio test、契约、差分） |
+| windows-amd64 | Windows x64 | 仅 native.yml 的 windows-amd64 原生验证（CLI 固定点、契约、差分）；`run.sh` 统一入口未接入 |
 
-会核对真实 OS 和架构。Linux ARM64、macOS AMD64、Windows 尚未接入统一原生入口。交叉编译不等于原生执行。Windows 可以独立运行基础设施自检及部分 Go 补充测试。
+会核对真实 OS 和架构。交叉编译不等于原生执行：darwin/windows 的 Stage A 由 Linux 原生 CLI 交叉构建，只在对应 runner 上执行后才计为 PASS。
 
 开发驱动要求 Bash、Python 3.9+、Git；参考测试另需 Go（版本见 go.mod）。原生测试先用主机提供的 `MIO_NATIVE_SEED` 构建当前工作树的 `selfhost/cli`，整次运行只构建一次，再由各模块复用当前源码编译器。GF4 Seed 的 SHA256 必须为：
 
@@ -73,8 +74,6 @@ bash scripts/ci/run.sh macos-arm64 native-release release
 | quality | quick, full | gofmt/vet/whitespace、负向自检、发布隔离静态检查 |
 | go-reference | quick, unit, full | 补充 Go/VM 回归；full 保留 VM 回归和 `go test` 全仓库（`Mio/selfhost/bootstrap` 除外，见下） |
 | go-bootstrap-reference | full（standalone） | `go test ./selfhost/bootstrap`：参考 VM 中的 Compiler A→B→C→D 自编译，Linux 约 56 分钟、macOS 更久；独立长时间模块，Full 用单独的 job 运行 |
-| go-aot-reference | unit, full, race | 原有 Go AOT 全集与 race；仅 macOS ARM64 |
-| legacy-bootstrap | bootstrap, fixed-point, full | 原有 BCD/M17/M18 调用；从本仓库历史恢复的 BCD/M17/M18 gate；full 也执行，不放宽历史哈希或断言 |
 | kiso/* | quick, unit, full | 每个已有 `*_test.mio` 包的原生测试；实际清单见各模块注册文件 |
 
 标准库已接入 aot/arm64、aot/lower、aot/lower/types、aot/macho、crypto/sha256、encoding/binary、encoding/json、encoding/mochi、io、math、net/tcp、path、regexp、runtime/cpu/aarch64、runtime/os/darwin、runtime/target，以及单列的 gc。`all` 调度时仅声明 `required_checks=["native"]` 的 AOT 子包可通过 `covered_by` 委托父级递归检查，单独报告 SKIP 和委托原因；arm64、macho 的独立 oracle 必须运行。显式选择子模块仍运行自己的入口。
@@ -83,7 +82,7 @@ bash scripts/ci/run.sh macos-arm64 native-release release
 
 `ci-pr.yml` 的 hosted infrastructure 统一运行 quality；Linux 运行计划中的补充参考模块；GitHub-hosted `macos-15` 在 Native Verification 暂缓期间运行适用 macOS 的补充（Go / VM 参考）模块，Native Verification 启用后另有独立的 native job 运行原生模块。避免 Quick 在 macOS 再跑相同 quality 和跨平台 Go/VM 基线；Full 仍保留两平台上的适用回归。Quick 不运行完整自举或生产验证。Go 参考工具由模块可选的 `reference_tools` 声明，在一次运行内按需构建并复用，go-reference 只需 mio；其他模块缺省保留原三工具。不跨提交缓存编译器或测试 PASS。
 
-Full 增加完整 selfhost、原生 ABCD 和历史 Go 全量补充测试。自举顺序执行，Go 包并行度为 1 或 2。原生路径使用受信任 Seed 构建的当前源码编译器。`ci-full.yml` 对 `Mio-2.1` push、手动及每周调度调用 `all full`，保留完整 Go、VM、AOT、race 和旧固定点检查，不使用 continue-on-error。定时任务显式 checkout `Mio-2.1`；手动仅允许 Mio-2.1，其他 ref 由 hosted policy job 拒绝并标 NOT_RUN。Full 不根据 PR 影响范围缩减。
+Full 增加完整 selfhost、原生 ABCD、Go/VM 参考全量测试，以及三平台 Native 验证（`native` job 调用 `native.yml`）。自举顺序执行，Go 包并行度为 1 或 2。原生路径使用受信任 Seed 构建的当前源码编译器。`ci-full.yml` 对 `Mio-2.1` push、手动及每周调度调用 `all full`，保留完整 Go/VM 参考检查，并调用 `native.yml`，不使用 continue-on-error。Go AOT 后端（internal/aot、mochi-aot）及其 go-aot-reference、legacy-bootstrap、go-aot-linux-amd64、go-linux-native、linux-runtime-reference 模块已删除，其原生覆盖由 native.yml 承担（见下节）。定时任务显式 checkout `Mio-2.1`；手动仅允许 Mio-2.1，其他 ref 由 hosted policy job 拒绝并标 NOT_RUN。Full 不根据 PR 影响范围缩减。
 
 并发：macOS 现在使用 GitHub-hosted `macos-15`，每个 job 都是全新的独立环境，因此取消了 `ci-resource-macos-arm64-shared` 这种为保护单台共享主机而设的全局串行组，job 级并发组已全部移除。Quick 外层按 PR number 分组并取消同 PR 旧提交（`cancel-in-progress: true`），不同 PR 的 Quick 互不影响；Full 外层仍按 ref 分组，`cancel-in-progress: false`、`queue: max`，等待中的 Full 不会被替换，等待数上限为 100，不会无限增长。hosted macOS 并行 job 数受 GitHub 账户配额限制。Release 工作流不变，仍使用既有持久化主机。
 
@@ -97,7 +96,7 @@ Core/AOT 独立路径调用正式 Native Seed 编译 9 参数函数、数组和�
 
 GC 独立路径复用现有 `automatic-roots/builder.mio`，由纯 Mio 生成受限堆程序。检查容器工作负载输出 `4797`，并解码 64 字节遥测：minor collections 必须大于 0，根发布、注册/退出和资源获取/释放必须满足已有协议。这是有实际回收的有限场景，不能代表长期、多 mutator、并发 old sweep 或所有内存策略均得到验证。
 
-ABCD 继续使用现有、带冻结源和哈希/签名复核的脚本；不重写自举算法。旧 BCD/M18 脚本从删除它们的提交 `d4a11b3` 的父提交恢复，保持原哈希、祖先约束、GC 见证及 golden 断言。BCD 在本次报告目录下的独立源码副本中执行，避免超时改动当前 checkout 的 bootstrap.config；两者复用本次已构建的参考工具。它们属于历史 Go 引导补充测试，不能代替纯 Mio ABCD，也不能因为源码变化导致历史固定输入失败而修改预期。
+ABCD 继续使用现有、带冻结源和哈希/签名复核的脚本；不重写自举算法。依赖 Go AOT 的历史 BCD/M18 gate 已随 Go AOT 后端删除（它们只能验证已废弃的 Go 引导路径，且在当前源码上已不可复现）；纯 Mio 的固定点由 native.yml 在三个平台上验证。
 
 尚无独立 Mio 测试的 array、bytes、convert、fs、string、testing、utf8、部分 nativefs/sign 辅助包通过原生库/集成路径间接覆盖；不创建空入口。selfhost 阶段全集有原生测试，但尚未逐阶段配置独立 oracle。外部 FFI/完整 ABI、长期 GC 压力、新平台后端仍未覆盖。原有 E5/E6 等脚本保留，其硬编码 Seed、固定 fixture、分支或恢复要求不被本次静默改写；未接入项应明确记录 NOT_RUN。
 
@@ -170,16 +169,28 @@ PR workflow 的 `Mio CI / required`（Supplementary CI Gate；名称保持不变
 
 Quick / Full / Release 三级设计、原架构审计、资源对比和管理员部署清单见 [三级 CI 调度审计](ci-scheduling-audit.md)。本地 actionlint 1.7.7 需显式兼容已受 GitHub 支持的 concurrency.queue；不能把未经兼容的 raw lint 失败写成 PASS。
 
+## 三平台 Native 验证（native.yml）
+
+`.github/workflows/native.yml`（PR、`runtime-abi/**` push、手动，以及 Full 的 `native` job）运行 `scripts/ci/native_platforms.py`，每项检查记录 engine：`native`（原生 Mio 镜像在该 runner 上执行）、`reference`（Go 参考 VM）、`go-hosted`（Stage A 引导主机）、`host`（runner 自身检查）。状态为 PASS / FAIL / SKIP / NOT_RUN / NOT_APPLICABLE，只有 PASS 计为通过；必需检查非 PASS 时 `Native / required` 失败。
+
+| 平台 / runner | 检查 |
+| --- | --- |
+| linux-amd64 / `ubuntu-24.04` | 实际 OS/arch；**Stage A = Go 参考前端 + Go VM 中运行的纯 Mio lowerlinux（go-hosted，不是 Seed）**；原生 compiler A→B→C→D（B=C=D）；compiler B 构建 CLI，CLI A→B→C→D（B=C=D）；CLI 冒烟；全部含 `*_test.mio` 包的原生 `mio test`（跳过记为 SKIP 并单列原因）；Runtime ABI 契约与差分语料（默认与 `--gc-stress`）及其 VM 差分；`linux-runtime-chain` oracle；由 CLI B、C 两代交叉构建 darwin/windows Stage A（必须一致，SHA-256 写入 manifest，非 PR 时做 Artifact Attestation） |
+| darwin-arm64 / `macos-15` | 实际 OS/arch；Stage A SHA-256 与 Linux job 输出及 manifest 三方一致；原生 CLI A→B→C→D（B=C=D），A=B（交叉构建与本机构建逐字节一致）；冒烟；全部包的原生 `mio test`（此平台任何 SKIP 都是失败）；契约与差分（默认与 `--gc-stress`）。此路径不使用 Go |
+| windows-amd64 / `windows-2025` | 同 darwin 的 Stage A 校验、CLI 固定点、A=B、冒烟、契约与差分；`mio test` 为 NOT_APPLICABLE（Windows 运行时未实现进程 spawn，同一批包在 Linux/macOS 原生运行）。此路径不使用 Go |
+
+受信任 GF4 Native Seed 在每个报告中固定为 NOT_RUN：B/C/D 固定点成立与 Seed 的独立可信性是两个不同结果。报告（`report.json`、逐检查日志、契约/差分结果）按 run ID/attempt 上传，`Native / required` 汇总三平台并写入 Step Summary。
+
 ## 暂行措施：Native Verification 推迟（临时，仅开发用 CI）
 
 **Native Seed 目前未准备好**：受信任的 GF4 Native Seed（SHA-256 `4c3f7dcbea536d756c3c4a93c18a999412625184bd5c90123f1c16a0cd9e36da`，runner 仍强制校验）无法被 GitHub-hosted Runner 取得；仓库内没有已批准的 Seed 分发来源。为了让 `ci-pr.yml` 与 `ci-full.yml` 先迁移到 GitHub-hosted Runner 并正常运行，需要 Seed 的验证被推迟。这是**临时措施**，不改变 `release.yml`。
 
 - **Native Verification 的状态是 NOT_RUN。** 所有 `engine=native` 模块（Core、AOT、GC、selfhost、ABCD、标准库原生测试及 `kiso/aot/x86-64` 等）不会启动，也不会被写成 PASS 或 SKIP 之外的成功状态；计划与报告列出它们并标 NOT_RUN。
-- **补充测试成功不等于 Native 测试成功。** 暂缓期间 `Mio CI / required` 只是 Supplementary CI Gate：infrastructure（quality、自检、发布隔离静态检查）、Linux 参考模块、hosted `macos-15` 上的 Go / VM 参考模块（Full 另含 `go-aot-reference`、`legacy-bootstrap`）。它通过时报告仍写 `native_verification: NOT_RUN`。
+- **补充测试成功不等于 Native 测试成功。** 暂缓期间 `Mio CI / required` 只是 Supplementary CI Gate：infrastructure（quality、自检、发布隔离静态检查）、Linux 参考模块、hosted `macos-15` 上的 Go / VM 参考模块。它通过时报告仍写 `native_verification: NOT_RUN`。
 - **不做的事：** 不下载或生成任何 Seed，不用 Go 编译器或参考 VM 代替 Native Seed，不运行未验证的二进制，不把参考结果写成 Native 结果。
 - **Quick：** `scripts/ci/plan.py plan` 在暂缓时把原生模块移入 `deferred_native_modules`（NOT_RUN），`macos_modules` 为 macOS 上可执行的补充模块。**Full：** `plan.py full` 为 Linux/macOS 只选 `engine != native` 的模块，原生模块列为 NOT_RUN 并写入 Step Summary 与 `full-plan` artifact。
 - **重新启用条件：** (1) 确定并批准受信任 Seed 的分发来源，且在运行前校验固定 SHA-256；(2) 在 `ci-pr.yml` 的 native job 与 Full 的 macOS job 前加入准备 Seed 并导出 `MIO_NATIVE_SEED` 的步骤（不得向 fork PR 提供生产机密）；(3) 设置仓库变量 `MIO_NATIVE_VERIFICATION=enabled`。启用后 Quick 计划恢复 `native_modules`，gate 要求 native job 与其执行报告，Full 恢复 `all full`。仅设置变量而没有 Seed 时，runner 返回 NOT_RUN/2，作业失败，不会成功。
-- **仍保留的风险：** 暂缓期间合并所依据的只有补充测试，原生编译器、AOT、GC 与自举的回归不会被 CI 发现；`Mio CI / required` 为绿色容易被误读；`legacy-bootstrap` 是基于 Go 的历史引导 gate，在 hosted macOS 上的行为尚未实测；hosted `macos-15` 的并行额度和 6 小时作业上限可能限制 Full；`queue: max` 需 GitHub 支持，本地 actionlint 1.7.7 不认识它。维护者合并涉及编译器/AOT/GC 的 PR 前仍应在受信任的 macOS ARM64 环境手动运行 `bash scripts/ci/run.sh macos-arm64 all quick`（或 full）。
+- **仍保留的风险：** 暂缓期间合并所依据的只有补充测试，原生编译器、AOT、GC 与自举的回归不会被 CI 发现；`Mio CI / required` 为绿色容易被误读；hosted `macos-15` 的并行额度和 6 小时作业上限可能限制 Full；`queue: max` 需 GitHub 支持，本地 actionlint 1.7.7 不认识它。维护者合并涉及编译器/AOT/GC 的 PR 前仍应在受信任的 macOS ARM64 环境手动运行 `bash scripts/ci/run.sh macos-arm64 all quick`（或 full）。
 - 不要把 “Native Verification” 加入必需检查，直到它真正启用：被跳过的必需检查在 GitHub 上会被当作通过。
 
 ## Full 失败修复记录（run 41825096644，ff64fd0）
@@ -198,3 +209,5 @@ Quick / Full / Release 三级设计、原架构审计、资源对比和管理员
 | macOS `go-aot-reference` 133 项失败（`static string data exceeds __const limit`、`old_sweep_enabled` 未定义） | 未修复，也不在本次范围：`m19b_generational_test.go` 复制固定的 10 个 `lower/*.mio` 文件，缺少 `old_sweep.mio` 等，导致 `old_sweep_enabled` 未定义（该函数定义在 `old_sweep.mio`）；`darwinarm64/string.go` 对静态字符串数据设了 16 KiB 页上限，而内嵌的 Mio 源码已超过。这些测试在 Linux 上被跳过，无法在此验证，是否为 9c35560 之前的基线也无法在 macOS 复核。 | 记录为已知问题，修复需要 macOS 执行；不放宽测试。 |
 
 与必需 gate 的关系：`bootstrap` job 属于 Full（push 到 Mio-2.1、手动、周计划），不属于 PR Quick；PR 的必需检查 `Mio CI / required` 不依赖它，也不会被它延迟。Full 工作流的结果是各 job 的总和（`Full / linux-amd64`、`Full / macos-arm64`、两个 `Full / bootstrap / …`），任何一个失败都使该次 Full 失败。若要把 Full 设为合并前必需，需要维护者另行配置分支规则。
+
+注：上表中的 `legacy-bcd`、`legacy-m18`、`legacy-m18-reference` 与 `go-aot-reference` 已随 Go AOT 后端一起删除（Mio-2.1 Runtime ABI 统合，见 CHANGELOG.md）；这些行仅作历史记录。

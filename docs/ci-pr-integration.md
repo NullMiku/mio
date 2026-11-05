@@ -127,3 +127,7 @@ ci_main "$@"
 `go-required` 对空测试、失败及任何 SKIP 返回非零。普通 go 检查保留现有平台跳过明细；五项必需检查分别执行，不能靠另一个 PASS 隐藏缺失测试。GNU objdump、gcc 14.2.0 等实际要求需匹配开发环境；默认 ubuntu-24.04 不保证满足 blob 重建版本。没有固定工具链时该必需检查应为 NOT_RUN，不能宣称验证完成。不要把本参考实现标成 engine=native。
 
 还应在 macOS 执行受影响 internal/aot 与 cmd/mochi-aot 的回归。#7 包含实际嵌入的 C runtime/blob；它是否符合项目正式实现边界需要维护者独立架构决定，CI 审计不能替代此决定，也不将它加入正式运行时。本方案未执行、未批准或合并该实现。
+
+## 后续状态（Mio-2.1 Runtime ABI 统合）
+
+本文的 `linux-runtime-reference`、`go-aot-linux-amd64`（internal/aot/linuxamd64）与 `go-linux-native` 接入方案已被取代：Go AOT 后端连同这些模块一起删除。Linux 运行时链 oracle 改由原生 CLI 运行，VM/Native 差分语料迁移到 `tests/native-differential`，固定点与契约测试由 `.github/workflows/native.yml` 在 linux-amd64、darwin-arm64、windows-amd64 上执行（见 [测试架构](testing.md)）。
