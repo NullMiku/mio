@@ -14,6 +14,28 @@ from verify import require, verify
 ROOT = Path(__file__).resolve().parents[2]
 
 
+class NotRunError(ValueError):
+    """A required check did not execute completely."""
+
+
+def reference_test_count(data):
+    summary = data["summary"]
+    packages = data["packages"]
+    tests = [test for package in packages for test in package["tests"]]
+    require(summary["failed"] == 0 and all(test["status"] in ("passed", "skipped") for test in tests),
+            "reference tests failed")
+    if any(test["status"] == "skipped" for test in tests):
+        raise NotRunError("required reference tests were skipped")
+    require(summary["status"] == "passed" and summary["failed"] == 0,
+            "reference test summary failed")
+    require(all(package["status"] == "passed" for package in packages),
+            "reference package failed")
+    if not tests:
+        raise NotRunError("no reference tests executed")
+    require(summary["passed"] == len(tests), "inconsistent reference test count")
+    return len(tests)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mio", type=Path, required=True)
@@ -23,16 +45,11 @@ def main():
     options = parser.parse_args()
     mio, output = options.mio.resolve(), options.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    # Only remove our six known output files; stale images must not stand in
-    # for a builder that accidentally stops producing one of the fixtures.
-    for name in ("exit42.exe", "relocated43.exe", "bss44.exe", "paged45.exe", "leaf.exe", "large-unwind.exe"):
-        (output / name).unlink(missing_ok=True)
     report_path = output / "report.json"
     # Replace any old success before starting. An interrupted run is NOT_RUN.
     report = dict(generation="NOT_RUN", structure="NOT_RUN", windows_execution="NOT_RUN",
                   mio_native_tests="NOT_RUN", reference_tests="NOT_RUN", mode=options.mode,
-                  compiler_sha256=hashlib.sha256(mio.read_bytes()).hexdigest(),
-                  writer_sha256=hashlib.sha256((ROOT / "bunko/kiso/aot/pe/pe.mio").read_bytes()).hexdigest())
+                  setup="NOT_RUN", compiler_sha256=None, writer_sha256=None)
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     env = dict(os.environ, MIO_BUNKO=str(ROOT / "bunko"))
     commands = []
@@ -47,14 +64,20 @@ def main():
         require(process.returncode == 0, label + " failed; see " + str(output))
         return process
 
-    stage = "generation"
+    stage = "setup"
     try:
+        # Invalidate old success before cleanup or reading inputs can fail.
+        for name in ("exit42.exe", "relocated43.exe", "bss44.exe", "paged45.exe", "leaf.exe", "large-unwind.exe", "builder.native"):
+            (output / name).unlink(missing_ok=True)
+        report["compiler_sha256"] = hashlib.sha256(mio.read_bytes()).hexdigest()
+        report["writer_sha256"] = hashlib.sha256((ROOT / "bunko/kiso/aot/pe/pe.mio").read_bytes()).hexdigest()
+        report["setup"] = "PASS"
+        stage = "generation"
         if options.mode == "reference":
             stage = "reference_tests"
             tested = run("reference-tests", [mio, "test", "bunko/kiso/aot/pe", "--format=json", "--lang=en-US"])
-            summary = json.loads(tested.stdout)["summary"]
-            require(summary["status"] == "passed" and summary["passed"] > 0 and summary["failed"] == 0, "nonempty reference tests")
-            report.update(reference_tests="PASS", reference_test_count=summary["passed"])
+            count = reference_test_count(json.loads(tested.stdout))
+            report.update(reference_tests="PASS", reference_test_count=count)
             stage = "generation"
             run("reference-builder", [mio, "run", ROOT / "tests/pe-writer/builder.mio"], cwd=output)
         else:
@@ -70,7 +93,7 @@ def main():
             stage = "windows_execution"
             report.update(verify(output, execute=True))
     except Exception as error:
-        report[stage] = "FAIL"
+        report[stage] = "NOT_RUN" if isinstance(error, NotRunError) else "FAIL"
         report["error"] = str(error)
         raise
     finally:

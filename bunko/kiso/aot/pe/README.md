@@ -71,3 +71,18 @@ Mio builder 使用测试专用固定指令序列，不参与正式编译路径�
 2026-11-04 Windows X64 实测：14 项 Mio 测试在 Go/VM 参考工具中 PASS；6 个 PE 独立结构检查 PASS；4 个 Windows `.exe` 执行 PASS。Mio **原生**测试、macOS/Linux 原生回归、实际异常展开、强制非首选基址加载为 NOT_RUN；完整 Windows 源语言 AOT、GC 和 Selfhost 未实现。没有新增或修改 GitHub Actions workflow。
 
 依据：[Microsoft PE/COFF](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)、[x64 exception handling](https://learn.microsoft.com/en-us/cpp/build/exception-handling-x64)。
+
+### 2026-11-05 接入修复验证
+
+修复分支合入 `Mio-2.1` 的 `8757f70`，保留 PE Writer 原始提交；解决 `.gitignore` 冲突时保留双方所有文档例外。模块入口使用现有 `ci_native_and_crosscheck`，原生层失败后仍收集独立层结果，最终保留非零状态。参考测试逐项检查结果，出现 skipped 时报告 NOT_RUN 并返回非零；清理/读取输入前先覆盖旧报告，同时移除旧 native builder，避免复用上次成功证据。
+
+Windows AMD64 开发验证（Go/Python 仅为补充工具）：
+
+- `go build -o build/pe-writer/mio-reference.exe ./cmd/mio`：PASS，当前源码参考工具。
+- `python tests/pe-writer/test_driver.py`：PASS，8 项驱动正向/负向检查；模拟检查不是原生编译/执行证据。
+- `python tests/pe-writer/run.py --mio build/pe-writer/mio-reference.exe --mode reference --execute`：参考 VM 14 项 PASS；6 个镜像结构 PASS；7 个损坏镜像全部拒绝；4 个 Windows fixture 退出码/输出 PASS。
+- `bash -n bunko/kiso/aot/pe/test.sh`、`git diff --check`：PASS。
+- `python scripts/ci/selftest.py`：FAIL，59 项中 58 项通过，1 项 ERROR。未修改的 `test_timeout_kill_survives_macos_eperm_for_zombie_only_groups` 在 Windows 读取不存在的 `os.killpg`，抛出 AttributeError；没有跳过或修改此检查。
+- Mio native 模块测试、native fixture builder、macOS/Linux 原生回归、实际异常展开、强制非首选基址加载、发布验证及远端 CI：NOT_RUN。
+
+本次未增加 Windows 源语言 AOT 或 OS Adapter；Windows fixture 执行 PASS 仅证明这些 Mio writer 产物可以在本机执行。
