@@ -47,7 +47,7 @@ Mio 与 Mochi 也是项目中的两位角色：Mio 是上方的少女，Mochi �
 
 | 平台或能力 | 当前状态 |
 | --- | --- |
-| macOS ARM64 原生 AOT | 已通过 M18 与发行候选验证；`Mio-2.1` CI 在 `macos-15` 上原生自举 |
+| macOS ARM64 原生 AOT | 已通过 M18 与发行候选验证；`Mio-2.1` 的原生 CI 在 `macos-15` 上运行（结果见 Actions） |
 | Linux x86-64 原生（纯 Mio，静态 ELF） | 实验性：CI 中编译器/CLI 原生固定点、`mio test`、Runtime ABI 契约通过 |
 | Windows x86-64 原生（纯 Mio，PE32+） | 实验性：CI 中 CLI 原生固定点与 Runtime ABI 契约通过；`mio test`、线程等尚未支持 |
 | Linux ARM64 | 规划中 |
