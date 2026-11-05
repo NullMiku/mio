@@ -137,6 +137,7 @@ waza emit_runtime(code: x86_64.Assembler) -> unit {
     emit_object_runtime(code);
     emit_box_runtime(code);
     emit_fs_runtime(code);
+    emit_map_runtime(code);
     emit_testing_runtime(code);
     emit_trap(code, "rt.trap.nil", "rt.text.nil", 25);
     emit_trap(code, "rt.trap.index", "rt.text.index", 33);
@@ -770,6 +771,10 @@ waza emit_block(code: x86_64.Assembler, file: mochi.File, analysis: types.TypeAn
             moshi (opcode == 47) { x86_64.mov_load(code, x86_64.rax, x86_64.rax, 16); push(code, x86_64.rax); }
             moshi (opcode == 48) { pop(code, x86_64.rcx); x86_64.mov_store(code, x86_64.rax, 16, x86_64.rcx); }
         }
+        moshi (opcode >= 41 && opcode <= 43) {
+            kaku map_problem = emit_map_op(code, analysis, function_id, offset, step, opcode);
+            moshi (map_problem != "") { kaesu map_problem; }
+        }
         moshi (opcode == 66) {
             // declared representation of the value on top of the stack: enforced by the analysis, no code
         }
@@ -978,7 +983,7 @@ waza nullable_scalar_descriptor(descriptor: int64) -> bool {
 }
 
 waza supported(opcode: int64) -> bool {
-    kaesu (opcode >= 1 && opcode <= 20) || opcode == 22 || (opcode >= 23 && opcode <= 27) || (opcode >= 30 && opcode <= 40) || opcode == 28 || opcode == 29 || (opcode >= 50 && opcode <= 53) || opcode == 49 || (opcode >= 44 && opcode <= 48) || opcode == 66 || opcode == 67 || opcode == 54 || opcode == 55 || (opcode >= 56 && opcode <= 65) || opcode == 21;
+    kaesu (opcode >= 1 && opcode <= 20) || opcode == 22 || (opcode >= 23 && opcode <= 27) || (opcode >= 30 && opcode <= 40) || opcode == 28 || opcode == 29 || (opcode >= 50 && opcode <= 53) || opcode == 49 || (opcode >= 44 && opcode <= 48) || opcode == 66 || opcode == 67 || (opcode >= 41 && opcode <= 43) || opcode == 54 || opcode == 55 || (opcode >= 56 && opcode <= 65) || opcode == 21;
 }
 
 
