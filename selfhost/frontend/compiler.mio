@@ -357,6 +357,33 @@ koukai waza compile_tests(root: string, entry: string, bunko_root: string) -> Te
     kaesu TestsResult { bytes: compiled.bytes, tests: state.tests, error: compiled.error };
 }
 
+// One test image per package: compiles the package's tests together with a generated dispatcher file
+// (mio_test_dispatch_test.mio, an in-memory overlay of the package directory). Its function mio_test_dispatch() calls
+// the test named by the first program argument and reports an unknown name as a failed test, so every test still runs
+// in its own process from the same image. Returns an empty result (callers then build one image per test) when the
+// package is not a plain source directory: a single file, or Bunko sources embedded in the compiler.
+koukai teisu test_dispatch_function = "mio_test_dispatch";
+koukai waza compile_tests_dispatched(root: string, entry: string, bunko_root: string, tests: []TestCase) -> TestsResult {
+    kaku probe = source_state(bunko_root, package_identity(root, entry));
+    moshi (bunko_root == "" && string.has_prefix(entry, "kiso/")) { kaesu TestsResult { bytes: [], tests: [], error: "" }; }
+    kaku directory = source_directory(probe, root, entry);
+    moshi (probe.failed[0] || fs.is_file(directory)) { kaesu TestsResult { bytes: [], tests: [], error: "" }; }
+    kaku source = string.new_builder();
+    string.write_string(source, "yobu \"kiso/os\";\nyobu \"kiso/testing\";\n");
+    string.write_string(source, "waza mio_test_dispatch() -> unit {\n    kaku selected = os.argument(1);\n");
+    string.write_string(source, "    moshi (selected == mu) { testing.expect(iie, \"E_TEST missing test selection\"); kaesu; }\n");
+    kaku at = 0;
+    aida (at < len(tests)) {
+        string.write_string(source, string.concat("    moshi (selected == \"", string.concat(tests[at].name, string.concat("\") { ", string.concat(tests[at].name, "(); kaesu; }\n")))));
+        at = at + 1;
+    }
+    string.write_string(source, "    testing.expect(iie, \"E_TEST unknown test selection\");\n}\n");
+    kaku overlay = SourceOverlay { path: path.join(directory, "mio_test_dispatch_test.mio"), bytes: string.to_bytes(string.builder_string(source)) };
+    kaku state = source_state_options(bunko_root, package_identity(root, entry), [overlay], iie);
+    kaku compiled = compile_state(state, root, entry);
+    kaesu TestsResult { bytes: compiled.bytes, tests: state.tests, error: compiled.error };
+}
+
 waza source_state(bunko_root: string, test_entry: string) -> PackageState { kaesu source_state_options(bunko_root, test_entry, [], iie); }
 waza source_state_options(bunko_root: string, test_entry: string, overlays: []SourceOverlay, analysis_mode: bool) -> PackageState {kaesu source_state_progress(bunko_root,test_entry,overlays,analysis_mode,progress.context());}
 waza source_state_progress(bunko_root: string, test_entry: string, overlays: []SourceOverlay, analysis_mode: bool, work: progress.Context) -> PackageState {

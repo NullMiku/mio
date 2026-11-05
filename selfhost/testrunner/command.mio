@@ -72,16 +72,30 @@ koukai waza command(args: []string) -> int64 {
         }
         sore {
             discovered = discovered + len(plan.tests); kaku tests = string.new_builder(); kaku ti = 0; kaku selected = 0; kaku package_failed = iie;
+            // One native image for the whole package when the dispatched plan exists: built on the first selected test,
+            // then every selected test runs in its own process from it. A build failure fails every selected test.
+            kaku shared = string.concat(temporary, string.concat("/package-", string.concat(convert.format_int(pi), ".native")));
+            kaku shared_state = 0; kaku shared_error = ""; kaku shared_code = "";
+            moshi (len(plan.dispatch) == 0) { shared_state = -1; }
             aida (ti < len(plan.tests)) {
                 kaku test = plan.tests[ti];
                 moshi (regexp.matches(filter, test.name)) {
-                    kaku value = execute(plan, package, test.name, temporary, sequence); sequence = sequence + 1;
+                    moshi (shared_state == 0) {
+                        kaku built = tester.package_image(plan); shared_state = 1;
+                        moshi (built.error != "") { shared_error = built.error; shared_code = "E0605"; }
+                        sore { shared_error = write_image(shared, built.bytes); moshi (shared_error != "") { shared_code = "E_IO"; } }
+                    }
+                    kaku value = Result { failures: [], error_code: shared_code, error: shared_error, duration_ms: 0, stdout: [], stderr: [], skipped: "" };
+                    moshi (shared_state < 0) { value = execute(plan, package, test.name, temporary, sequence); }
+                    sore { moshi (shared_error == "") { value = execute_dispatched(shared, test.name, temporary, sequence); } }
+                    sequence = sequence + 1;
                     moshi (passed(value)) { passed_count = passed_count + 1; } sore { moshi (skipped(value)) { skipped_count = skipped_count + 1; } sore { failed_count = failed_count + 1; package_failed = hai; } }
                     moshi (selected > 0) { put(tests, ","); } selected = selected + 1; put(tests, json_result(test.name, test.path, value));
                     moshi (opts.format != "json") { human_result(package, test.name, value, opts.lang, opts.format == "short", opts.verbose); }
                 }
                 ti = ti + 1;
             }
+            moshi (shared_state == 1 && shared_error == "") { moshi (os.remove(shared) != 0) { failed_count = failed_count + 1; package_failed = hai; write_diagnostic("E_IO cannot clean native test image",opts); } }
             kaku status = "passed"; moshi (package_failed) { status = "failed"; }
             put(report, json.quote(status)); put(report, ",\"tests\":["); put(report, string.builder_string(tests)); put(report, "]}");
         }
