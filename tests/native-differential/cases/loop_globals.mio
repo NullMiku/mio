@@ -1,0 +1,3 @@
+kaku sum = 0; kaku i = 1;
+aida (i <= 100) { sum = sum + i; i = i + 1; }
+chant(sum);

@@ -28,7 +28,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-CASES = HERE / "cases"
+SUITES = {"contract": HERE / "cases", "differential": ROOT / "tests" / "native-differential" / "cases"}
+# Programs whose run time is quadratic under per-allocation collection (Darwin --gc-stress): default mode only, as in
+# the former Go harness (TestLinuxAMD64PureMioLoweringUnderGCStress). Reported NOT_APPLICABLE, never PASS.
+STRESS_EXCLUDED = {"differential": {"gc_garbage", "gc_keeps_live_data"}}
 TARGETS = ("darwin-arm64", "linux-amd64", "windows-amd64")
 
 
@@ -60,6 +63,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mio", required=True, help="native Mio CLI that builds the cases")
     parser.add_argument("--target", required=True, choices=TARGETS)
+    parser.add_argument("--suite", default="contract", choices=sorted(SUITES))
     parser.add_argument("--output", required=True)
     parser.add_argument("--modes", default="normal,gc-stress")
     parser.add_argument("--cases", default="", help="comma separated subset (default: all)")
@@ -71,6 +75,7 @@ def main():
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     mio = Path(args.mio).resolve()
+    CASES = SUITES[args.suite]
     names = sorted(p.stem for p in CASES.glob("*.mio"))
     if args.cases:
         wanted = args.cases.split(",")
@@ -96,10 +101,18 @@ def main():
         source = CASES / (name + ".mio")
         expected_path = CASES / (name + ".expected")
         expected = expected_path.read_bytes() if expected_path.exists() else None
-        if expected is None or not expected.endswith((name + ": ok\n").encode()):
-            record(name, "-", "contract", "FAIL", "missing expected transcript or it does not end with '%s: ok'" % name)
+        # contract cases must succeed and end with "<name>: ok"; differential cases may end in a runtime error, whose
+        # exit class (0 or nonzero, from the reference VM) is in <name>.exit
+        exit_path = CASES / (name + ".exit")
+        want_success = args.suite == "contract" or (exit_path.exists() and exit_path.read_text().strip() == "0")
+        if expected is None or (args.suite == "contract" and not expected.endswith((name + ": ok\n").encode())) or \
+                (args.suite != "contract" and not exit_path.exists()):
+            record(name, "-", "contract", "FAIL", "missing expected transcript / exit class (contract cases must end with '%s: ok')" % name)
             continue
         for mode in args.modes.split(","):
+            if mode == "gc-stress" and name in STRESS_EXCLUDED.get(args.suite, ()):
+                record(name, mode, "native", "NOT_APPLICABLE", "excluded from gc-stress: quadratic under per-allocation collection")
+                continue
             image = output / ("%s-%s%s" % (name, mode, suffix))
             argv = [str(mio), "build", str(source.relative_to(ROOT)), "--target=" + args.target, "-o", str(image)]
             if mode == "gc-stress":
@@ -122,8 +135,9 @@ def main():
             built.update(run_seconds=round(seconds, 3), exit_code=code)
             if timed_out:
                 record(name, mode, "native", "FAIL", "timed out after %ss" % args.timeout, **built)
-            elif code != 0:
-                record(name, mode, "native", "FAIL", "exit %s: %s" % (code, err.decode(errors="replace").strip()[:300]), **built)
+            elif (code == 0) != want_success:
+                record(name, mode, "native", "FAIL", "exit %s (expected %s): %s" % (code, "0" if want_success else "nonzero",
+                       err.decode(errors="replace").strip()[:300]), **built)
             elif out != expected:
                 record(name, mode, "native", "FAIL", "stdout differs from %s" % expected_path.name, **built)
             else:
@@ -132,7 +146,7 @@ def main():
             code, out, err, seconds, timed_out = run([args.reference, str(ROOT / "bunko"), "run", str(source)], args.timeout, cwd=ROOT, env=env)
             (output / ("%s-reference.stdout" % name)).write_bytes(out)
             (output / ("%s-reference.stderr" % name)).write_bytes(err)
-            if timed_out or code != 0:
+            if timed_out or (code == 0) != want_success:
                 record(name, "vm", "reference", "FAIL", "reference VM exit %s: %s" % (code, err.decode(errors="replace").strip()[:300]))
             elif out != expected:
                 record(name, "vm", "reference", "FAIL", "reference VM stdout differs from %s" % expected_path.name)
@@ -142,7 +156,7 @@ def main():
     summary = {}
     for item in results:
         summary[item["status"]] = summary.get(item["status"], 0) + 1
-    report = dict(schema_version=1, suite="runtime-abi-contract", contract="RA-1", target=args.target, host=host,
+    report = dict(schema_version=1, suite="runtime-abi-" + args.suite, contract="RA-1", target=args.target, host=host,
                   host_platform=platform.platform(), compiler=str(mio), compiler_sha256=sha256(mio),
                   executed=execute, summary=summary, results=results)
     (output / "results.json").write_text(json.dumps(report, indent=2) + "\n")

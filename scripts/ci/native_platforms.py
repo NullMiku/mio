@@ -201,27 +201,34 @@ def native_mio_test(report, cli, skips_allowed):
     return not failures
 
 
-def contract(report, cli, target, reference=""):
-    output = report.output / "runtime-abi"
-    argv = [sys.executable, ROOT / "tests/runtime-abi/run.py", "--mio", cli, "--target", target, "--output", output]
+def contract(report, cli, target, reference="", suite="contract"):
+    """tests/runtime-abi/run.py --suite contract (RA-1 cases) or differential (former pureLowerPrograms corpus)."""
+    output = report.output / ("runtime-abi" if suite == "contract" else "native-differential")
+    argv = [sys.executable, ROOT / "tests/runtime-abi/run.py", "--suite", suite, "--mio", cli, "--target", target, "--output", output]
     if reference:
         argv += ["--reference", reference]
-    code, out, err, seconds = run(report, "runtime-abi", argv, timeout=5400)
+    code, out, err, seconds = run(report, "suite-" + suite, argv, timeout=5400)
+    native_name = "runtime-abi-contract" if suite == "contract" else "native-differential"
     try:
         results = json.loads((output / "results.json").read_text())["results"]
     except (OSError, ValueError, KeyError):
-        return report.check("runtime-abi-contract", "FAIL", "native", "runner produced no results: exit %s %s" % (code, brief(err)))
+        return report.check(native_name, "FAIL", "native", "runner produced no results: exit %s %s" % (code, brief(err)))
     ok_all = code == 0
     for engine in ("native", "reference"):
-        items = [r for r in results if r["engine"] in (engine, "contract")]
         if engine == "reference" and not reference:
             continue
-        bad = [r for r in items if r["status"] != "PASS"]
-        name = "runtime-abi-contract" if engine == "native" else "vm-native-differential"
+        items = [r for r in results if r["engine"] in (engine, "contract")]
+        bad = [r for r in items if r["status"] not in ("PASS", "NOT_APPLICABLE")]
+        excluded = [r for r in items if r["status"] == "NOT_APPLICABLE"]
+        name = native_name if engine == "native" else "vm-reference-" + suite
         report.check(name, "PASS" if items and not bad else "FAIL", engine,
                      "; ".join("%s/%s: %s" % (r["case"], r["mode"], r["reason"]) for r in bad)[:600],
-                     cases=len({r["case"] for r in items}), results=len(items), seconds=round(seconds, 1))
-        ok_all = ok_all and items and not bad
+                     cases=len({r["case"] for r in items}), passed=len([r for r in items if r["status"] == "PASS"]),
+                     seconds=round(seconds, 1))
+        if excluded:
+            report.check(name + " (excluded)", "NOT_APPLICABLE", engine,
+                         "; ".join("%s/%s: %s" % (r["case"], r["mode"], r["reason"]) for r in excluded)[:600], required=False)
+        ok_all = ok_all and bool(items) and not bad
     return ok_all
 
 
@@ -282,6 +289,7 @@ def linux(args):
     smoke(report, cli, "linux-amd64", work)
     native_mio_test(report, cli, skips_allowed=True)
     contract(report, cli, "linux-amd64", reference=str(refvm))
+    contract(report, cli, "linux-amd64", reference=str(refvm), suite="differential")
     # Stage A of the other targets, cross-built by two native generations that must agree
     seeds = report.output / "stage-a"
     seeds.mkdir(exist_ok=True)
@@ -343,6 +351,7 @@ def follower(args, target):
                          "(kiso/aot/lowerwinrt). The same Mio package tests run natively on linux-amd64 and darwin-arm64.",
                          required=False)
         contract(report, cli, target)
+        contract(report, cli, target, suite="differential")
     return finish(report)
 
 

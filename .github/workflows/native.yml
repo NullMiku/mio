@@ -63,6 +63,8 @@ jobs:
             build/native/linux-amd64/logs/
             build/native/linux-amd64/runtime-abi/results.json
             build/native/linux-amd64/runtime-abi/*.std*
+            build/native/linux-amd64/native-differential/results.json
+            build/native/linux-amd64/native-differential/*.std*
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@v4
@@ -120,6 +122,8 @@ jobs:
             build/native/${{ matrix.target }}/logs/
             build/native/${{ matrix.target }}/runtime-abi/results.json
             build/native/${{ matrix.target }}/runtime-abi/*.std*
+            build/native/${{ matrix.target }}/native-differential/results.json
+            build/native/${{ matrix.target }}/native-differential/*.std*
           if-no-files-found: error
           retention-days: 7
   summary:
