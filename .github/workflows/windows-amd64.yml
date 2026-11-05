@@ -1,0 +1,61 @@
+name: Windows AMD64 verification
+on:
+  workflow_dispatch:
+  # Dispatch needs the file on the fork default branch; push on this work branch lets it run before then.
+  push:
+    branches: [windows-amd64/native-pipeline]
+permissions:
+  contents: read
+jobs:
+  windows-x64:
+    name: Windows x64 PE evidence
+    runs-on: windows-2022
+    timeout-minutes: 40
+    env:
+      EVIDENCE: build/windows-amd64-evidence
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Record environment
+        shell: bash
+        run: |
+          mkdir -p "$EVIDENCE"
+          { echo "commit=$(git rev-parse HEAD)"; echo "ref=$GITHUB_REF"; echo "run=$GITHUB_RUN_ID";
+            uname -a; go version; python --version; } | tee "$EVIDENCE/environment.txt"
+      - name: Build reference VM tool (development oracle only)
+        shell: bash
+        run: go build -o "$EVIDENCE/mio-reference.exe" ./cmd/mio
+      - name: PE writer + winconsole (reference VM generation, native Windows execution)
+        shell: bash
+        run: python tests/pe-writer/run.py --mio "$EVIDENCE/mio-reference.exe" --mode reference --execute --output "$EVIDENCE" 2>&1 | tee "$EVIDENCE/run.log"
+      - name: Mio source -> PE cases (pure-Mio lowering hosted by the reference VM; Windows native execution)
+        shell: bash
+        run: python tests/windows-amd64/run_cases.py --mio "$EVIDENCE/mio-reference.exe" --output "$EVIDENCE/cases" --execute 2>&1 | tee "$EVIDENCE/cases.log"
+      - name: lowerwin Mio unit tests (reference VM)
+        shell: bash
+        run: |
+          "$EVIDENCE/mio-reference.exe" test bunko/kiso/aot/lowerwin --format=json --lang=en-US > "$EVIDENCE/lowerwin-tests.json" 2> "$EVIDENCE/lowerwin-tests.err"
+          "$EVIDENCE/mio-reference.exe" test bunko/kiso/aot/pe --lang=en-US 2>&1 | tail -3
+      - name: Driver negative self-tests
+        shell: bash
+        working-directory: tests/pe-writer
+        run: python test_driver.py 2>&1 | tee "../../$EVIDENCE/driver-tests.log"
+      - name: Combine layer report
+        if: always()
+        shell: bash
+        run: python tests/windows-amd64/layers.py --evidence "$EVIDENCE" --sha "$(git rev-parse HEAD)" --root . --out "$EVIDENCE/layers.json" 2>&1 | tee "$EVIDENCE/layers.log"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-amd64-evidence-${{ github.run_id }}
+          path: build/windows-amd64-evidence
+          if-no-files-found: warn
