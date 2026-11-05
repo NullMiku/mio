@@ -42,7 +42,7 @@ def sha256(path):
 
 class Report:
     def __init__(self, target, output):
-        self.target, self.output = target, Path(output)
+        self.target, self.output = target, Path(output).resolve()
         self.output.mkdir(parents=True, exist_ok=True)
         self.logs = self.output / "logs"
         self.logs.mkdir(exist_ok=True)
