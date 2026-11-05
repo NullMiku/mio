@@ -24,6 +24,10 @@ koukai kata Patch { section:int64; offset:int64; kind:int64; target:int64; targe
 // Bounded unwind model: no frame pointer, handlers or nonvolatile saves yet.
 // stack_offset is the offset AFTER the single stack allocation instruction.
 koukai kata UnwindFunction { begin:int64; end:int64; prolog_size:int64; stack_size:int64; stack_offset:int64; }
+// Frame-pointer function: `push rbp` (offsets are AFTER each instruction), `mov rbp,rsp`, optional
+// `sub rsp,alloc_size`. alloc_size==0 means no allocation and alloc_offset must be 0.
+// Unwind recovers RSP from RBP (FrameOffset 0), so later dynamic pushes and `and rsp,-16` are covered.
+koukai kata FrameFunction { begin:int64; end:int64; push_offset:int64; set_offset:int64; alloc_offset:int64; alloc_size:int64; }
 koukai kata ImageSpec {
     text:[]uint8; rdata:[]uint8; data:[]uint8; zero_fill:int64; entry:int64;
     imports:[]ImportLibrary; patches:[]Patch; unwind:[]UnwindFunction;
@@ -90,6 +94,27 @@ waza plan_imports(libraries:[]ImportLibrary) -> Imports {
 waza unwind_size(functions:[]UnwindFunction) -> int64 {
     kaku size=0;kaku i=0;
     aida(i<len(functions)){size=size+4;moshi(functions[i].stack_size>0){size=size+4;}i=i+1;}kaesu size;
+}
+waza frame_slots(f:FrameFunction) -> int64 {
+    kaku slots=2;moshi(f.alloc_size>128){slots=4;}moshi(f.alloc_size>0 && f.alloc_size<=128){slots=3;}
+    moshi(slots==3){slots=4;}kaesu slots;
+}
+waza frame_size(frames:[]FrameFunction) -> int64 {
+    kaku size=0;kaku i=0;aida(i<len(frames)){size=size+4+frame_slots(frames[i])*2;i=i+1;}kaesu size;
+}
+waza valid_frames(frames:[]FrameFunction, text_size:int64) -> bool {
+    moshi(len(frames)>4096){kaesu iie;}kaku previous=0;kaku i=0;
+    aida(i<len(frames)){
+        kaku f=frames[i];
+        moshi(f.begin<previous || f.end<=f.begin || f.end>text_size){kaesu iie;}
+        moshi(f.push_offset<=0 || f.set_offset<=f.push_offset){kaesu iie;}
+        moshi(f.alloc_size<0 || f.alloc_size>524280 || f.alloc_size-(f.alloc_size/8)*8!=0){kaesu iie;}
+        moshi(f.alloc_size==0 && f.alloc_offset!=0){kaesu iie;}
+        moshi(f.alloc_size>0 && f.alloc_offset<=f.set_offset){kaesu iie;}
+        kaku prolog=f.set_offset;moshi(f.alloc_size>0){prolog=f.alloc_offset;}
+        moshi(prolog>255 || prolog>f.end-f.begin){kaesu iie;}
+        previous=f.end;i=i+1;
+    }kaesu hai;
 }
 waza valid_unwind(functions:[]UnwindFunction, text_size:int64) -> bool {
     moshi(len(functions)>4096){kaesu iie;}kaku previous=0;kaku i=0;
@@ -181,9 +206,33 @@ waza emit_unwind(bytes:[]uint8, spec:ImageSpec, layout:Layout) -> unit {
         }i=i+1;
     }
 }
+waza emit_frames(bytes:[]uint8, spec:ImageSpec, frames:[]FrameFunction, layout:Layout) -> unit {
+    kaku pdata=section(layout,5);kaku xdata=section(layout,6);kaku text=section(layout,text_section);kaku offset=0;kaku i=0;
+    aida(i<len(frames)){
+        kaku f=frames[i];kaku at=xdata.offset+offset;kaku slots=frame_slots(f);
+        put(bytes,pdata.offset+i*12,4,text.rva+f.begin);put(bytes,pdata.offset+i*12+4,4,text.rva+f.end);put(bytes,pdata.offset+i*12+8,4,xdata.rva+offset);
+        kaku prolog=f.set_offset;kaku count=2;moshi(f.alloc_size>0){prolog=f.alloc_offset;count=3;}moshi(f.alloc_size>128){count=4;}
+        put(bytes,at,1,1);put(bytes,at+1,1,prolog);put(bytes,at+2,1,count);put(bytes,at+3,1,5);
+        kaku c=at+4;
+        moshi(f.alloc_size>0){
+            put(bytes,c,1,f.alloc_offset);
+            moshi(f.alloc_size<=128){put(bytes,c+1,1,2+((f.alloc_size-8)/8)*16);c=c+2;}
+            sore{put(bytes,c+1,1,1);put(bytes,c+2,2,f.alloc_size/8);c=c+4;}
+        }
+        put(bytes,c,1,f.set_offset);put(bytes,c+1,1,3);c=c+2;
+        put(bytes,c,1,f.push_offset);put(bytes,c+1,1,5*16);
+        offset=offset+4+slots*2;i=i+1;
+    }
+}
 waza directory(bytes:[]uint8, index:int64, rva:int64, size:int64) -> unit {put(bytes,264+index*8,4,rva);put(bytes,268+index*8,4,size);}
 
-koukai waza executable(spec:ImageSpec) -> ImageResult {
+koukai waza executable(spec:ImageSpec) -> ImageResult { kaesu executable_framed(spec,[]); }
+
+// Like executable, with unwind data for frame-pointer functions. A spec uses either spec.unwind or frames, not both.
+koukai waza executable_framed(spec:ImageSpec, frames:[]FrameFunction) -> ImageResult {
+    moshi(len(frames)>0 && len(spec.unwind)>0){kaesu failure(PEError.InvalidUnwind());}
+    moshi(!valid_frames(frames,len(spec.text))){kaesu failure(PEError.InvalidUnwind());}
+    kaku unwind_count=len(spec.unwind)+len(frames);
     moshi(len(spec.text)==0){kaesu failure(PEError.EmptyText());}
     moshi(spec.entry<0 || spec.entry>=len(spec.text)){kaesu failure(PEError.InvalidEntry());}
     // Validate bounds before addition/alignment/allocation. Every intermediate
@@ -196,7 +245,7 @@ koukai waza executable(spec:ImageSpec) -> ImageResult {
     moshi(len(spec.rdata)>0){count=count+1;}
     moshi(len(spec.data)+spec.zero_fill>0){count=count+1;}
     moshi(imports.size>0){count=count+1;}
-    moshi(len(spec.unwind)>0){count=count+2;}
+    moshi(unwind_count>0){count=count+2;}
     aida(i<len(spec.patches)){moshi(spec.patches[i].kind==va64){has_relocations=hai;}i=i+1;}
     moshi(has_relocations){count=count+1;}
     kaku headers=align(392+count*40,file_alignment);
@@ -208,9 +257,10 @@ koukai waza executable(spec:ImageSpec) -> ImageResult {
         layout=add_section(layout,data_section,".data",len(spec.data),len(spec.data)+spec.zero_fill,flags);
     }
     moshi(imports.size>0){layout=add_section(layout,import_section,".idata",imports.size,imports.size,3221225536);layout=Layout {headers_size:layout.headers_size,image_size:layout.image_size,file_size:layout.file_size,sections:layout.sections,iat_rva:section(layout,import_section).rva+imports.iat,iat_size:imports.iat_size};}
-    moshi(len(spec.unwind)>0){
-        layout=add_section(layout,5,".pdata",len(spec.unwind)*12,len(spec.unwind)*12,1073741888);
-        layout=add_section(layout,6,".xdata",unwind_size(spec.unwind),unwind_size(spec.unwind),1073741888);
+    moshi(unwind_count>0){
+        kaku xsize=unwind_size(spec.unwind)+frame_size(frames);
+        layout=add_section(layout,5,".pdata",unwind_count*12,unwind_count*12,1073741888);
+        layout=add_section(layout,6,".xdata",xsize,xsize,1073741888);
     }
     moshi(!valid_patches(spec,layout,imports)){kaesu failure(PEError.InvalidPatch());}
     kaku relocations=relocation_bytes(spec,layout);
@@ -234,7 +284,7 @@ koukai waza executable(spec:ImageSpec) -> ImageResult {
     put(bytes,220,2,3);kaku dll_flags=256;moshi(has_relocations){dll_flags=352;}put(bytes,222,2,dll_flags);
     put(bytes,224,8,1048576);put(bytes,232,8,4096);put(bytes,240,8,1048576);put(bytes,248,8,4096);put(bytes,260,4,16);
     moshi(imports.size>0){directory(bytes,1,section(layout,import_section).rva,(len(spec.imports)+1)*20);directory(bytes,12,layout.iat_rva,layout.iat_size);}
-    moshi(len(spec.unwind)>0){directory(bytes,3,section(layout,5).rva,len(spec.unwind)*12);}
+    moshi(unwind_count>0){directory(bytes,3,section(layout,5).rva,unwind_count*12);}
     moshi(has_relocations){directory(bytes,5,section(layout,7).rva,len(relocations));}
     i=0;aida(i<len(layout.sections)){
         kaku s=layout.sections[i];kaku at=392+i*40;copy_bytes(bytes,at,string.to_bytes(s.name));
@@ -243,7 +293,7 @@ koukai waza executable(spec:ImageSpec) -> ImageResult {
     copy_bytes(bytes,text.offset,spec.text);
     moshi(len(spec.rdata)>0){copy_bytes(bytes,section(layout,rdata_section).offset,spec.rdata);}
     moshi(len(spec.data)>0){copy_bytes(bytes,section(layout,data_section).offset,spec.data);}
-    emit_imports(bytes,spec,layout,imports);emit_unwind(bytes,spec,layout);
+    emit_imports(bytes,spec,layout,imports);emit_unwind(bytes,spec,layout);emit_frames(bytes,spec,frames,layout);
     moshi(has_relocations){copy_bytes(bytes,section(layout,7).offset,relocations);}
     i=0;aida(i<len(spec.patches)){
         kaku p=spec.patches[i];kaku source=section(layout,p.section);kaku value=patch_target(p,layout,imports);kaku width=4;
