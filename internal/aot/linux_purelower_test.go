@@ -699,11 +699,11 @@ func TestLinuxAMD64NativeCLIFixedPoint(t *testing.T) {
 	if leftovers, _ := filepath.Glob("/tmp/mio-test-*"); len(leftovers) > 0 {
 		t.Logf("note: temporary test files left behind: %v", leftovers)
 	}
-	// the native `mio test` runs real package suites: the encoder / ELF / runtime packages
+	// the native `mio test` runs real package suites: the encoder / ELF / runtime packages, and the platform skip
 	for _, suite := range []struct {
 		target  string
 		skipped string
-	}{{"bunko/kiso/aot/x86_64", ""}, {"bunko/kiso/aot/elf", ""}, {"bunko/kiso/runtime/cpu/amd64", ""}, {"bunko/kiso/runtime/os/linux", ""}} {
+	}{{"bunko/kiso/aot/x86_64", ""}, {"bunko/kiso/aot/elf", ""}, {"bunko/kiso/runtime/cpu/amd64", ""}, {"bunko/kiso/runtime/os/linux", ""}, {"selfhost/pipeline", "Tests skipped: 1"}} {
 		out, errOut, err := run(cli, "test", suite.target)
 		if err != nil || !strings.Contains(out, " 0 failed") {
 			t.Errorf("native mio test %s: err=%v\n%s%s", suite.target, err, out, errOut)

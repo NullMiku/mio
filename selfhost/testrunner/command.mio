@@ -54,7 +54,7 @@ koukai waza command(args: []string) -> int64 {
     kaku created = fs.create_dir(temporary); moshi (created.error != mu) { write_diagnostic("E_IO cannot create private test directory",opts); kaesu 1; }
     moshi (os.chmod(temporary, 448) != 0) { os.remove_dir(temporary); write_diagnostic("E_IO cannot protect private test directory",opts); kaesu 1; }
     kaku started = os.monotonic_ms(); kaku report = string.new_builder(); put(report, "{\"schema_version\":1,\"packages\":[");
-    kaku passed_count = 0; kaku failed_count = 0; kaku discovered = 0; kaku sequence = 0; kaku pi = 0;
+    kaku passed_count = 0; kaku failed_count = 0; kaku skipped_count = 0; kaku discovered = 0; kaku sequence = 0; kaku pi = 0;
     aida (pi < len(packages.paths)) {
         kaku package = path.clean(packages.paths[pi]); moshi (pi > 0) { put(report, ","); }
         moshi (opts.format != "json") { chant(string.concat(message(opts.lang, 0), package)); }
@@ -76,7 +76,7 @@ koukai waza command(args: []string) -> int64 {
                 kaku test = plan.tests[ti];
                 moshi (regexp.matches(filter, test.name)) {
                     kaku value = execute(plan, package, test.name, temporary, sequence); sequence = sequence + 1;
-                    moshi (passed(value)) { passed_count = passed_count + 1; } sore { failed_count = failed_count + 1; package_failed = hai; }
+                    moshi (passed(value)) { passed_count = passed_count + 1; } sore { moshi (skipped(value)) { skipped_count = skipped_count + 1; } sore { failed_count = failed_count + 1; package_failed = hai; } }
                     moshi (selected > 0) { put(tests, ","); } selected = selected + 1; put(tests, json_result(test.name, test.path, value));
                     moshi (opts.format != "json") { human_result(package, test.name, value, opts.lang, opts.format == "short", opts.verbose); }
                 }
@@ -88,18 +88,18 @@ koukai waza command(args: []string) -> int64 {
         pi = pi + 1;
     }
     moshi (os.remove_dir(temporary) != 0) { failed_count = failed_count + 1; write_diagnostic("E_IO cannot clean private test directory",opts); }
-    kaku duration = os.monotonic_ms() - started; kaku status = "passed"; moshi (failed_count > 0) { status = "failed"; } sore { moshi (passed_count == 0) { status = "no_tests"; } }
+    kaku duration = os.monotonic_ms() - started; kaku status = "passed"; moshi (failed_count > 0) { status = "failed"; } sore { moshi (passed_count == 0 && skipped_count == 0) { status = "no_tests"; } }
     put(report, "],\"summary\":{\"status\":"); put(report, json.quote(status)); put(report, ",\"passed\":"); put(report, convert.format_int(passed_count)); put(report, ",\"failed\":"); put(report, convert.format_int(failed_count)); put(report, ",\"duration_ms\":"); put(report, convert.format_int(duration)); put(report, "}}");
     moshi (opts.format == "json") { chant(string.builder_string(report)); }
     sore {
-        moshi (passed_count == 0 && failed_count == 0) {
+        moshi (passed_count == 0 && failed_count == 0 && skipped_count == 0) {
             moshi (opts.filter != "" && discovered != 0) {
                 kaku text = string.concat("no tests matched --run=", opts.filter);
                 moshi (opts.lang == 1) { text = string.concat("没有匹配 --run=", string.concat(opts.filter, " 的测试")); }
                 moshi (opts.lang == 2) { text = string.concat("--run=", string.concat(opts.filter, " に一致するテストがありません")); } chant(text);
             } sore { chant(message(opts.lang, 6)); }
         }
-        chant(summary(opts.lang, passed_count, failed_count)); chant(string.concat(message(opts.lang, 7), string.concat(": ", string.concat(seconds(duration), "s"))));
+        chant(summary(opts.lang, passed_count, failed_count)); moshi (skipped_count > 0) { chant(string.concat("Tests skipped: ", convert.format_int(skipped_count))); } chant(string.concat(message(opts.lang, 7), string.concat(": ", string.concat(seconds(duration), "s"))));
     }
     moshi (failed_count > 0) { kaesu 1; } kaesu 0;
 }

@@ -11,6 +11,9 @@ waza operand(code: []uint8, op: int64, value: int64) -> unit {
     array.push(code,uint8(op));array.push(code,uint8(value/256));array.push(code,uint8(value-(value/256)*256));
 }
 waza test_full_global_capacity_with_private_os_and_testing_state() -> unit {
+    // This test builds and executes a Mach-O image through build_signed_test (the ARM64 backend's private OS/testing state).
+    // A Mach-O image can only run on a macOS ARM64 host; the Linux backend has its own coverage of the same properties.
+    moshi (host_target() != "darwin-arm64") { testing.skip("Mach-O test image needs a macOS ARM64 host"); kaesu; }
     kaku code: []uint8=[];kaku at=0;
     aida(at<2048){operand(code,1,0);operand(code,19,at);at=at+1;}
     operand(code,25,0);array.push(code,uint8(22));operand(code,20,2047);array.push(code,uint8(22));
