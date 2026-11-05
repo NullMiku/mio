@@ -143,3 +143,15 @@ Windows CI 应扩展已有统一入口的主机映射，先运行可用的 Mio �
 | GitHub Actions | NOT_RUN | 按后续指示不处理 CI 重建，不改 workflow |
 
 模块 test.sh/ci-module.json 仅按既有贡献约定注册测试，不新增 Windows 原生目标。共享目录被其他工作切换分支并修改 CI 后，PE 工作转入独立 checkout，未携带或提交其他工作的改动。
+
+## 阶段 C：共享编码器到 Windows API 的最小链路
+
+2026-11-05 在 `codex/pe-writer-fixes` 上新增 `kiso/aot/winconsole`，复用已有 AMD64 encoder 和 PE writer。生成器接受退出码/输出字节，构造调用 GetStdHandle、WriteFile、ExitProcess 的程序。新增代码不手写指令字节，不调用外部链接器；Go/Python 只用于开发执行、独立读取及负向验证。原六个 PE 夹具及其断言完整保留。
+
+实现检查句柄及同步 WriteFile 结果，为部分写入生成循环，以 111 表示 I/O 失败。固定栈分配、第五参数、调用点对齐及 pdata/xdata 相匹配；只使用易失寄存器。限制和复现命令见 `bunko/kiso/aot/winconsole/README.md`。
+
+本机 Windows AMD64 实测：PE 的 14 项及新增 3 项 Mio 测试经参考 VM 执行 PASS；原六个镜像结构、七个损坏输入拒绝、四个执行夹具 PASS。新增四个编码器镜像结构和执行 PASS，退出码 47/48/49/50，文本及二进制 stdout/stderr 精确比较 PASS；只读 stdout 错误退出 111 PASS。新增五个 oracle 损坏输入拒绝及八个驱动回归 PASS。日志、分层 report.json、源码与产物 SHA256 位于忽略的 build/pe-writer。
+
+受信任 Mio 原生生成器构建/执行和模块测试、强制部分写入/零进度、无效句柄注入、实际异常展开、强制非首选基址加载、macOS/Linux 原生回归、完整 Windows 源语言 AOT、GC、自举、发布验收均为 NOT_RUN。未增加 Windows CLI target 或修改既有 workflow；参考 VM 生成与 Windows PE 原生执行分层报告。
+
+示例 hello.mio 生成及其 Windows 产物退出码/精确输出验证 PASS；模块发现、shell 语法及发布隔离静态检查 PASS。CI 框架自检 FAIL：59 项中 57 项通过，另有 os.killpg 缺失 ERROR 和超时子进程存活断言 FAIL。相关测试及超时实现未修改，未通过放宽断言或跳过处理；详见 winconsole README 和 build/pe-writer/ci-selftest.log。

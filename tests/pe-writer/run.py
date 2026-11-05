@@ -49,6 +49,9 @@ def main():
     # Replace any old success before starting. An interrupted run is NOT_RUN.
     report = dict(generation="NOT_RUN", structure="NOT_RUN", windows_execution="NOT_RUN",
                   mio_native_tests="NOT_RUN", reference_tests="NOT_RUN", mode=options.mode,
+                  reference_console_tests="NOT_RUN", console_structure="NOT_RUN",
+                  console_windows_execution="NOT_RUN", console_write_failure="NOT_RUN",
+                  console_oracle_negative="NOT_RUN",
                   setup="NOT_RUN", compiler_sha256=None, writer_sha256=None)
     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     env = dict(os.environ, MIO_BUNKO=str(ROOT / "bunko"))
@@ -67,10 +70,13 @@ def main():
     stage = "setup"
     try:
         # Invalidate old success before cleanup or reading inputs can fail.
-        for name in ("exit42.exe", "relocated43.exe", "bss44.exe", "paged45.exe", "leaf.exe", "large-unwind.exe", "builder.native"):
+        for name in ("exit42.exe", "relocated43.exe", "bss44.exe", "paged45.exe", "leaf.exe", "large-unwind.exe", "builder.native",
+                     "encoded-exit47.exe", "encoded-stdout48.exe", "encoded-binary49.exe", "encoded-empty50.exe"):
             (output / name).unlink(missing_ok=True)
         report["compiler_sha256"] = hashlib.sha256(mio.read_bytes()).hexdigest()
         report["writer_sha256"] = hashlib.sha256((ROOT / "bunko/kiso/aot/pe/pe.mio").read_bytes()).hexdigest()
+        report["source_sha256"] = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in (
+            "bunko/kiso/aot/x86_64/x86_64.mio", "bunko/kiso/aot/winconsole/winconsole.mio", "tests/pe-writer/builder.mio")}
         report["setup"] = "PASS"
         stage = "generation"
         if options.mode == "reference":
@@ -78,6 +84,10 @@ def main():
             tested = run("reference-tests", [mio, "test", "bunko/kiso/aot/pe", "--format=json", "--lang=en-US"])
             count = reference_test_count(json.loads(tested.stdout))
             report.update(reference_tests="PASS", reference_test_count=count)
+            stage = "reference_console_tests"
+            report[stage] = "NOT_RUN"
+            tested = run("reference-console-tests", [mio, "test", "bunko/kiso/aot/winconsole", "--format=json", "--lang=en-US"])
+            report.update(reference_console_tests="PASS", reference_console_test_count=reference_test_count(json.loads(tested.stdout)))
             stage = "generation"
             run("reference-builder", [mio, "run", ROOT / "tests/pe-writer/builder.mio"], cwd=output)
         else:
@@ -89,11 +99,16 @@ def main():
         report["generation"] = "PASS"
         stage = "structure"
         report.update(verify(output))
+        stage = "console_oracle_negative"
+        run("console-oracle-negative", [sys.executable, ROOT / "tests/pe-writer/test_console_oracle.py", output])
+        report[stage] = "PASS"
         if options.execute:
             stage = "windows_execution"
             report.update(verify(output, execute=True))
     except Exception as error:
         report[stage] = "NOT_RUN" if isinstance(error, NotRunError) else "FAIL"
+        if getattr(error, "layer", None):
+            report[error.layer] = "FAIL"
         report["error"] = str(error)
         raise
     finally:

@@ -2,6 +2,8 @@ yobu "kiso/aot/pe";
 yobu "kiso/array";
 yobu "kiso/fs";
 yobu "kiso/math";
+yobu "kiso/aot/winconsole";
+yobu "kiso/string";
 
 // Test-only golden AMD64 instruction sequences, not an instruction encoder or
 // compiler backend. Every PE header, import, fixup and unwind record is Mio.
@@ -49,3 +51,14 @@ write_image("leaf.exe",pe.ImageSpec {text:[184,46,0,0,0,195],rdata:[],data:[],ze
 write_image("large-unwind.exe",pe.ImageSpec {text:[72,129,236,136,0,0,0,72,129,196,136,0,0,0,195],rdata:[],data:[],zero_fill:0,entry:0,imports:[],patches:[],
     unwind:[pe.UnwindFunction {begin:0,end:15,prolog_size:7,stack_size:136,stack_offset:7}]});
 chant("PE fixtures written");
+
+// These images use the shared instruction encoder, not golden instruction bytes.
+waza write_console(name:string, result:winconsole.BuildResult) -> unit {
+    moshi(result.error!=""){math.fail(result.error);kaesu;}
+    kaku saved=fs.write_all(name,result.bytes);
+    moshi(saved.error!=mu){math.fail("console fixture write failed");}
+}
+write_console("encoded-exit47.exe",winconsole.exit_executable(47));
+write_console("encoded-stdout48.exe",winconsole.stdout_executable(string.to_bytes("Mio Windows AMD64\n"),48));
+write_console("encoded-binary49.exe",winconsole.stdout_executable([77,105,111,0,255,10],49));
+write_console("encoded-empty50.exe",winconsole.stdout_executable([],50));

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Independent PE reader/oracle. Consumes Mio output; never creates PE files."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import struct
 import subprocess
+import tempfile
 
 
 def require(condition, message):
@@ -195,6 +197,74 @@ class Image:
         return result
 
 
+def verify_console(directory, execute=False):
+    if execute:
+        require(platform.system() == "Windows" and platform.machine().lower() in ("amd64", "x86_64"), "execution requires real Windows AMD64")
+    executions = []
+    cases = (("encoded-exit47.exe", 47, b""),
+             ("encoded-stdout48.exe", 48, b"Mio Windows AMD64\n"),
+             ("encoded-binary49.exe", 49, b"Mio\0\xff\n"),
+             ("encoded-empty50.exe", 50, b""))
+    for name, code, output in cases:
+        image = Image((directory / name).read_bytes())
+        text = image.sections[".text"]
+        at = image.at_rva(image.entry, text["size"])
+        stack = 72 if output else 40
+        require(image.take(at, 7) == b"\x48\x81\xec" + struct.pack("<I", stack), "encoded prolog/stack allocation")
+        require(image.take(at + text["size"] - 8, 8) == b"\x48\x81\xc4" + struct.pack("<I", stack) + b"\xc3", "encoded epilog")
+        require(image.unwind == [(image.entry, image.entry + text["size"], stack)], "encoded function unwind")
+        info = image.sections[".xdata"]["offset"]
+        require(image.take(info, 6) == bytes((1, 7, 1, 0, 7, 2 + (stack // 8 - 1) * 16)), "unwind matches seven-byte sub rsp")
+        symbols = ["GetStdHandle", "WriteFile", "ExitProcess"] if output else ["ExitProcess"]
+        require(image.imports == [("KERNEL32.dll", symbols)], "encoded API imports")
+        # Each absolute operand must have a DIR64 record. IAT calls use the
+        # shared encoder's mov r11,imm64; call [r11+disp32] sequence.
+        expected = [image.base + slot for slot in image.iat_slots]
+        if output:
+            rdata = image.sections[".rdata"]
+            require(rdata["size"] == len(output), "exact output payload extent")
+            require(image.take(rdata["offset"], len(output)) == output, "exact binary output payload")
+            expected.insert(1, image.base + rdata["rva"])
+        actual = []
+        for site in image.relocations:
+            operand = image.at_rva(site, 8, ".text")
+            value = image.number(operand, "Q")
+            actual.append(value)
+            if value in [image.base + slot for slot in image.iat_slots]:
+                require(image.take(operand - 2, 2) == b"\x49\xbb" and
+                        image.take(operand + 8, 7) == b"\x41\xff\x93\0\0\0\0", "encoded IAT call operand")
+            else:
+                require(image.take(operand - 2, 2) == b"\x48\xba", "encoded rdata address operand")
+        require(actual == expected, "all IAT/data operands are relocated in code order")
+        if execute:
+            process = subprocess.run([str((directory / name).resolve())], capture_output=True, timeout=15,
+                                     env=dict(os.environ, PATH=""))
+            (directory / (name + ".stdout.log")).write_bytes(process.stdout)
+            (directory / (name + ".stderr.log")).write_bytes(process.stderr)
+            executions.append(dict(image=name, exit_code=process.returncode,
+                                   stdout_hex=process.stdout.hex(), stderr_hex=process.stderr.hex(),
+                                   image_sha256=hashlib.sha256(image.data).hexdigest()))
+            require((process.returncode, process.stdout, process.stderr) == (code, output, b""), "encoded native exit/output: " + name)
+    if execute:
+        # A real inherited read-only stdout handle makes WriteFile fail. The
+        # program must take its error exit, without silently claiming success.
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "read-only-stdout"
+            path.write_bytes(b"unchanged")
+            with path.open("rb") as readonly:
+                process = subprocess.run([str((directory / "encoded-stdout48.exe").resolve())],
+                                         stdout=readonly, stderr=subprocess.PIPE, timeout=15,
+                                         env=dict(os.environ, PATH=""))
+            require(process.returncode == 111 and process.stderr == b"" and path.read_bytes() == b"unchanged",
+                    "WriteFile failure must produce exit 111")
+            executions.append(dict(image="encoded-stdout48.exe", stdout_handle="read-only",
+                                   exit_code=process.returncode, stderr_hex=process.stderr.hex()))
+    return dict(console_structure="PASS", console_images=4,
+                console_windows_execution="PASS" if execute else "NOT_RUN",
+                console_executed_images=4 if execute else 0,
+                console_write_failure="PASS" if execute else "NOT_RUN", console_executions=executions)
+
+
 def verify(directory, execute=False):
     images = {name: Image((directory / name).read_bytes()) for name in (
         "exit42.exe", "relocated43.exe", "bss44.exe", "paged45.exe", "leaf.exe", "large-unwind.exe")}
@@ -245,6 +315,11 @@ def verify(directory, execute=False):
                                      env=dict(os.environ, PATH=""))
             require((process.returncode, process.stdout, process.stderr) == (code, b"", b""), "native exit/output: " + name)
         results.update(windows_execution="PASS", executed_images=4)
+    try:
+        results.update(verify_console(directory, execute=execute))
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        error.layer = "console_windows_execution" if execute else "console_structure"
+        raise
     return results
 
 
