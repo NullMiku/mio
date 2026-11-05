@@ -1,0 +1,475 @@
+yobu "kiso/aot/elf";
+yobu "kiso/aot/x86_64";
+yobu "kiso/array";
+yobu "kiso/string";
+
+// Linux implementation of the body-less "mio/os/runtime" functions of kiso/os.
+// The initial stack pointer (argc, argv, envp as laid out by the kernel) is saved by _start at gc_state() + 72.
+// Results follow the Darwin contract: >= 0 on success, a negative errno on failure.
+waza initial_sp_cell() -> int64 { kaesu gc_state() + 72; }
+
+waza emit_load_initial_sp(code: x86_64.Assembler, reg: int64) -> unit {
+    x86_64.mov_ri(code, reg, initial_sp_cell());
+    x86_64.mov_load(code, reg, reg, 0);
+}
+
+waza emit_os_runtime(code: x86_64.Assembler) -> unit {
+    // rt.os_argc -> rax
+    x86_64.label(code, "rt.os_argc");
+    emit_load_initial_sp(code, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 0);
+    x86_64.ret(code);
+
+    // rt.os_arg_pointer: rdi = index -> rax = pointer to the NUL-terminated argument, or 0
+    x86_64.label(code, "rt.os_arg_pointer");
+    emit_load_initial_sp(code, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 0);
+    x86_64.cmp_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.os_arg_pointer.none");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rdi);
+    x86_64.shl_ri(code, x86_64.rax, 3);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 8);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_arg_pointer.none");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+
+    // rt.os_strlen: rsi = pointer -> rax = length
+    x86_64.label(code, "rt.os_strlen");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.label(code, "rt.os_strlen.loop");
+    x86_64.mov_load8(code, x86_64.rcx, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_strlen.done");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.add_ri(code, x86_64.rax, 1);
+    x86_64.jmp(code, "rt.os_strlen.loop");
+    x86_64.label(code, "rt.os_strlen.done");
+    x86_64.ret(code);
+
+    // rt.os_arg_size: rdi = index -> rax = byte length or -1
+    x86_64.label(code, "rt.os_arg_size");
+    x86_64.call(code, "rt.os_arg_pointer");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_arg_size.none");
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.call(code, "rt.os_strlen");
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_arg_size.none");
+    x86_64.mov_ri(code, x86_64.rax, -1);
+    x86_64.ret(code);
+
+    // rt.os_arg_copy: rdi = index, rsi = byte array -> rax = length copied, or -1
+    x86_64.label(code, "rt.os_arg_copy");
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.os_arg_pointer");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_arg_size.none");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.call(code, "rt.os_strlen");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 16);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_g, "rt.os_arg_size.none");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rdi, 40);
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.rep_movsb(code);
+    x86_64.ret(code);
+
+    // rt.os_exit: rdi = status
+    x86_64.label(code, "rt.os_exit");
+    x86_64.mov_eax_imm(code, 231);
+    x86_64.syscall(code);
+
+    // path operations: rdi = path string, rsi = mode (chmod) -> rax = 0 or -errno
+    emit_os_path_call(code, "rt.os_chmod", 90);
+    emit_os_path_call(code, "rt.os_remove", 87);
+    emit_os_path_call(code, "rt.os_rmdir", 84);
+
+    // rt.os_pid
+    x86_64.label(code, "rt.os_pid");
+    x86_64.mov_eax_imm(code, 39);
+    x86_64.syscall(code);
+    x86_64.ret(code);
+
+    // rt.os_monotonic_ms: milliseconds of CLOCK_MONOTONIC
+    x86_64.label(code, "rt.os_monotonic_ms");
+    x86_64.sub_ri(code, x86_64.rsp, 16);
+    x86_64.mov_ri(code, x86_64.rdi, 1);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rsp);
+    x86_64.mov_eax_imm(code, 228);
+    x86_64.syscall(code);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 0);
+    x86_64.mov_ri(code, x86_64.rcx, 1000);
+    x86_64.imul_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsp, 8);
+    x86_64.mov_ri(code, x86_64.rcx, 1000000);
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.div_r(code, x86_64.rcx);
+    x86_64.add_rr(code, x86_64.rax, x86_64.r8);
+    x86_64.add_ri(code, x86_64.rsp, 16);
+    x86_64.ret(code);
+
+    // rt.os_stdin_wait: rdi = timeout in ms (-1 waits forever) -> rax = poll result (>0 ready, 0 idle) or -errno
+    x86_64.label(code, "rt.os_stdin_wait");
+    x86_64.cmp_ri(code, x86_64.rdi, -1);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_stdin_wait.go");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_l, "rt.os_stdin_wait.invalid");
+    x86_64.mov_ri(code, x86_64.rax, 2147483647);
+    x86_64.cmp_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_g, "rt.os_stdin_wait.invalid");
+    x86_64.label(code, "rt.os_stdin_wait.go");
+    x86_64.sub_ri(code, x86_64.rsp, 16);
+    x86_64.mov_ri(code, x86_64.rax, 1);
+    x86_64.mov_store(code, x86_64.rsp, 0, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rdx, x86_64.rdi);
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rsp);
+    x86_64.mov_ri(code, x86_64.rsi, 1);
+    x86_64.mov_eax_imm(code, 7);
+    x86_64.syscall(code);
+    x86_64.add_ri(code, x86_64.rsp, 16);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_stdin_wait.invalid");
+    x86_64.mov_ri(code, x86_64.rax, -22);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_stdin_ready");
+    x86_64.mov_ri(code, x86_64.rdi, 0);
+    x86_64.jmp(code, "rt.os_stdin_wait");
+
+    emit_os_environment(code);
+    emit_os_real_path(code);
+    emit_os_spawn(code);
+}
+
+waza emit_os_path_call(code: x86_64.Assembler, name: string, number: int64) -> unit {
+    x86_64.label(code, name);
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.fs_cpath");
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, string.concat(name, ".bad"));
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_eax_imm(code, number);
+    x86_64.syscall(code);
+    x86_64.ret(code);
+    x86_64.label(code, string.concat(name, ".bad"));
+    x86_64.mov_ri(code, x86_64.rax, -22);
+    x86_64.ret(code);
+}
+
+// rt.os_find_env: rdi = name string -> rax = pointer to the value (after '='), or 0
+waza emit_os_environment(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.os_find_env");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    emit_load_initial_sp(code, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 0);
+    x86_64.lea(code, x86_64.rcx, x86_64.rcx, 16);
+    x86_64.shl_ri(code, x86_64.rax, 3);
+    x86_64.add_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.mov_load(code, x86_64.r8, x86_64.rdi, 16);
+    x86_64.lea(code, x86_64.r9, x86_64.rdi, 24);
+    x86_64.label(code, "rt.os_find_env.next");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rcx, 0);
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_find_env.none");
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.label(code, "rt.os_find_env.compare");
+    x86_64.cmp_rr(code, x86_64.rdx, x86_64.r8);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.os_find_env.tail");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rax, 0);
+    x86_64.mov_rr(code, x86_64.r10, x86_64.r9);
+    x86_64.add_rr(code, x86_64.r10, x86_64.rdx);
+    x86_64.mov_load8(code, x86_64.r10, x86_64.r10, 0);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.r10);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.os_find_env.skip");
+    x86_64.add_ri(code, x86_64.rdx, 1);
+    x86_64.jmp(code, "rt.os_find_env.compare");
+    x86_64.label(code, "rt.os_find_env.tail");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.add_rr(code, x86_64.rax, x86_64.r8);
+    x86_64.mov_load8(code, x86_64.r10, x86_64.rax, 0);
+    x86_64.cmp_ri(code, x86_64.r10, 61);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.os_find_env.skip");
+    x86_64.add_ri(code, x86_64.rax, 1);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_find_env.skip");
+    x86_64.add_ri(code, x86_64.rcx, 8);
+    x86_64.jmp(code, "rt.os_find_env.next");
+    x86_64.label(code, "rt.os_find_env.none");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.ret(code);
+    // rt.os_env_size: rdi = name -> rax = value length or -1
+    x86_64.label(code, "rt.os_env_size");
+    x86_64.call(code, "rt.os_find_env");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_arg_size.none");
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.call(code, "rt.os_strlen");
+    x86_64.ret(code);
+    // rt.os_env_copy: rdi = name, rsi = byte array -> rax = length copied, or -1
+    x86_64.label(code, "rt.os_env_copy");
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.os_find_env");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_arg_size.none");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.call(code, "rt.os_strlen");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rdi, 16);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_g, "rt.os_arg_size.none");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rdi, 40);
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.rep_movsb(code);
+    x86_64.ret(code);
+}
+
+// rt.os_real_path: rdi = path, rsi = byte array -> rax = length of the physical absolute path, or a negative errno.
+// An O_PATH descriptor is resolved through /proc/self/fd/<n>.
+waza emit_os_real_path(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.os_real_path");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 64);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rsi);
+    x86_64.call(code, "rt.fs_cpath");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_real_path.invalid");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 2621440);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_eax_imm(code, 2);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.os_real_path.done");
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rax);
+    // "/proc/self/fd/" followed by the decimal descriptor, NUL-terminated, in a frame buffer
+    kaku text = string.to_bytes("/proc/self/fd/");
+    kaku at = 0;
+    aida (at < len(text)) {
+        x86_64.mov_ri(code, x86_64.rdx, int64(text[at]));
+        x86_64.mov_store8(code, x86_64.rbp, -64 + at, x86_64.rdx);
+        at = at + 1;
+    }
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -16);
+    x86_64.mov_ri(code, x86_64.rcx, 10);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.div_r(code, x86_64.rcx);
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rdx);
+    x86_64.add_ri(code, x86_64.r8, 48);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_real_path.one_digit");
+    x86_64.add_ri(code, x86_64.rax, 48);
+    x86_64.mov_store8(code, x86_64.rbp, -64 + at, x86_64.rax);
+    x86_64.mov_store8(code, x86_64.rbp, -64 + at + 1, x86_64.r8);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store8(code, x86_64.rbp, -64 + at + 2, x86_64.rdx);
+    x86_64.jmp(code, "rt.os_real_path.link");
+    x86_64.label(code, "rt.os_real_path.one_digit");
+    x86_64.mov_store8(code, x86_64.rbp, -64 + at, x86_64.r8);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store8(code, x86_64.rbp, -64 + at + 1, x86_64.rdx);
+    x86_64.label(code, "rt.os_real_path.link");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.lea(code, x86_64.rdi, x86_64.rbp, -64);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsi, 16);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rsi, 40);
+    x86_64.mov_eax_imm(code, 89);
+    x86_64.syscall(code);
+    x86_64.mov_store(code, x86_64.rbp, -24, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -16);
+    x86_64.mov_eax_imm(code, 3);
+    x86_64.syscall(code);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -24);
+    x86_64.label(code, "rt.os_real_path.done");
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_real_path.invalid");
+    x86_64.mov_ri(code, x86_64.rax, -22);
+    x86_64.jmp(code, "rt.os_real_path.done");
+}
+
+// rt.os_argv: rdi = path string, rsi = array of strings -> rax = pointer to a NUL-terminated pointer table
+// (the program path is argv[0] by the caller's contract); r8 = the C path. Allocated from the managed heap.
+// rt.os_spawn: rdi = path, rsi = arguments -> exit status of the child, or a negative errno
+// rt.os_exec:  rdi = path, rsi = arguments -> only returns (-errno) when execve fails
+waza emit_os_spawn(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.os_prepare_exec");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 32);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rsi);
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.call(code, "rt.fs_cpath");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_prepare_exec.invalid");
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rax);
+    // argv table: (count + 1) pointers
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsi, 16);
+    x86_64.add_ri(code, x86_64.rax, 3);
+    x86_64.shl_ri(code, x86_64.rax, 3);
+    x86_64.add_ri(code, x86_64.rax, 16);
+    x86_64.mov_store(code, x86_64.rbp, -24, x86_64.rax);
+    x86_64.call(code, "rt.alloc");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -24);
+    x86_64.shl_ri(code, x86_64.rcx, 8);
+    x86_64.add_ri(code, x86_64.rcx, 4);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rbp, -24, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rcx, 0);
+    x86_64.mov_store(code, x86_64.rbp, -32, x86_64.rcx);
+    x86_64.label(code, "rt.os_prepare_exec.arg");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -32);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rsi, 16);
+    x86_64.cmp_rr(code, x86_64.rcx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.os_prepare_exec.ready");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rsi, 40);
+    x86_64.shl_ri(code, x86_64.rcx, 3);
+    x86_64.add_rr(code, x86_64.rdi, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rdi, 0);
+    x86_64.call(code, "rt.fs_cpath");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_prepare_exec.invalid");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -32);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rbp, -24);
+    x86_64.shl_ri(code, x86_64.rcx, 3);
+    x86_64.add_rr(code, x86_64.rdx, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rdx, 16, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -32);
+    x86_64.add_ri(code, x86_64.rcx, 1);
+    x86_64.mov_store(code, x86_64.rbp, -32, x86_64.rcx);
+    x86_64.jmp(code, "rt.os_prepare_exec.arg");
+    x86_64.label(code, "rt.os_prepare_exec.ready");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -16);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -24);
+    x86_64.add_ri(code, x86_64.rsi, 16);
+    emit_load_initial_sp(code, x86_64.rdx);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdx, 0);
+    x86_64.lea(code, x86_64.rdx, x86_64.rdx, 16);
+    x86_64.shl_ri(code, x86_64.rax, 3);
+    x86_64.add_rr(code, x86_64.rdx, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_prepare_exec.invalid");
+    x86_64.mov_ri(code, x86_64.rdi, 0);
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+
+    x86_64.label(code, "rt.os_exec");
+    x86_64.call(code, "rt.os_prepare_exec");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_exec.invalid");
+    x86_64.mov_eax_imm(code, 59);
+    x86_64.syscall(code);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_exec.invalid");
+    x86_64.mov_ri(code, x86_64.rax, -22);
+    x86_64.ret(code);
+
+    x86_64.label(code, "rt.os_spawn");
+    x86_64.call(code, "rt.os_prepare_exec");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_exec.invalid");
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.push_r(code, x86_64.rdx);
+    x86_64.mov_eax_imm(code, 57);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.os_spawn.fork_failed");
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_spawn.child");
+    x86_64.add_ri(code, x86_64.rsp, 24);
+    x86_64.sub_ri(code, x86_64.rsp, 16);
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rsp);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_ri(code, x86_64.r10, 0);
+    x86_64.mov_eax_imm(code, 61);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.os_spawn.wait_failed");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 0);
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.and_ri(code, x86_64.rcx, 127);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.os_spawn.signaled");
+    x86_64.shr_ri(code, x86_64.rax, 8);
+    x86_64.and_ri(code, x86_64.rax, 255);
+    x86_64.add_ri(code, x86_64.rsp, 16);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_spawn.signaled");
+    x86_64.add_ri(code, x86_64.rcx, 128);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.add_ri(code, x86_64.rsp, 16);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_spawn.wait_failed");
+    x86_64.add_ri(code, x86_64.rsp, 16);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_spawn.fork_failed");
+    x86_64.add_ri(code, x86_64.rsp, 24);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_spawn.child");
+    x86_64.pop_r(code, x86_64.rdx);
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.mov_eax_imm(code, 59);
+    x86_64.syscall(code);
+    x86_64.mov_ri(code, x86_64.rdi, 127);
+    x86_64.mov_eax_imm(code, 231);
+    x86_64.syscall(code);
+}
+
+
+// Unsupported process helpers fail loudly at run time instead of being skipped.
+waza emit_os_unsupported(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.os_unsupported");
+    emit_write_literal(code, "rt.text.os_unsupported", 40, 2);
+    emit_exit(code, 1);
+    data_string(code, "rt.text.os_unsupported", "runtime error: unsupported OS operation\n");
+}
+
+waza os_routine(operation: string) -> string {
+    moshi (operation == "argc") { kaesu "rt.os_argc"; }
+    moshi (operation == "arg_size") { kaesu "rt.os_arg_size"; }
+    moshi (operation == "arg_copy") { kaesu "rt.os_arg_copy"; }
+    moshi (operation == "exit") { kaesu "rt.os_exit"; }
+    moshi (operation == "chmod") { kaesu "rt.os_chmod"; }
+    moshi (operation == "remove") { kaesu "rt.os_remove"; }
+    moshi (operation == "rmdir") { kaesu "rt.os_rmdir"; }
+    moshi (operation == "pid") { kaesu "rt.os_pid"; }
+    moshi (operation == "real_path") { kaesu "rt.os_real_path"; }
+    moshi (operation == "env_size") { kaesu "rt.os_env_size"; }
+    moshi (operation == "env_copy") { kaesu "rt.os_env_copy"; }
+    moshi (operation == "monotonic_ms") { kaesu "rt.os_monotonic_ms"; }
+    moshi (operation == "stdin_ready") { kaesu "rt.os_stdin_ready"; }
+    moshi (operation == "stdin_wait") { kaesu "rt.os_stdin_wait"; }
+    moshi (operation == "spawn") { kaesu "rt.os_spawn"; }
+    moshi (operation == "exec") { kaesu "rt.os_exec"; }
+    kaesu "";
+}

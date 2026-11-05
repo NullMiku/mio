@@ -166,3 +166,81 @@ waza test_immediate_boundaries_and_negative_immediates() -> unit {
     a = assembler(); add_ri(a, rax, -2147483649);
     testing.expect(assemble(a).error == "INVALID_IMMEDIATE", "imm32 lower bound");
 }
+
+waza test_signed_divide_negate_and_byte_store_golden() -> unit {
+    kaku a = assembler(); idiv_r(a, rcx);
+    testing.expect(same(bytes_of(a), [72, 247, 249]), "idiv rcx");
+    a = assembler(); idiv_r(a, r9);
+    testing.expect(same(bytes_of(a), [73, 247, 249]), "idiv r9");
+    a = assembler(); cqo(a);
+    testing.expect(same(bytes_of(a), [72, 153]), "cqo");
+    a = assembler(); neg_r(a, rax);
+    testing.expect(same(bytes_of(a), [72, 247, 216]), "neg rax");
+    a = assembler(); mov_store8(a, rsi, 0, rdx);
+    testing.expect(same(bytes_of(a), [64, 136, 150, 0, 0, 0, 0]), "mov [rsi],dl");
+    a = assembler(); mov_store8(a, rbp, -1, r8);
+    testing.expect(same(bytes_of(a), [68, 136, 133, 255, 255, 255, 255]), "mov [rbp-1],r8b");
+}
+
+waza test_zero_extending_byte_load_golden() -> unit {
+    kaku a = assembler(); mov_load8(a, rax, rcx, 0);
+    testing.expect(same(bytes_of(a), [72, 15, 182, 129, 0, 0, 0, 0]), "movzx rax,[rcx]");
+    a = assembler(); mov_load8(a, r9, r11, 5);
+    testing.expect(same(bytes_of(a), [77, 15, 182, 139, 5, 0, 0, 0]), "movzx r9,[r11+5]");
+}
+
+waza test_immediate_logic_shifts_and_string_copy_golden() -> unit {
+    kaku a = assembler(); and_ri(a, rax, -8);
+    testing.expect(same(bytes_of(a), [72, 129, 224, 248, 255, 255, 255]), "and rax,-8");
+    a = assembler(); cmp_ri(a, rcx, 4);
+    testing.expect(same(bytes_of(a), [72, 129, 249, 4, 0, 0, 0]), "cmp rcx,4");
+    a = assembler(); shl_ri(a, rdx, 8);
+    testing.expect(same(bytes_of(a), [72, 193, 226, 8]), "shl rdx,8");
+    a = assembler(); shr_ri(a, r8, 3);
+    testing.expect(same(bytes_of(a), [73, 193, 232, 3]), "shr r8,3");
+    a = assembler(); sar_ri(a, rax, 63);
+    testing.expect(same(bytes_of(a), [72, 193, 248, 63]), "sar rax,63");
+    a = assembler(); rep_movsb(a);
+    testing.expect(same(bytes_of(a), [243, 164]), "rep movsb");
+}
+
+waza test_sse_scalar_golden() -> unit {
+    kaku a = assembler(); movq_xmm_r(a, 0, rax);
+    testing.expect(same(bytes_of(a), [102, 72, 15, 110, 192]), "movq xmm0,rax");
+    a = assembler(); movq_r_xmm(a, rax, 0);
+    testing.expect(same(bytes_of(a), [102, 72, 15, 126, 192]), "movq rax,xmm0");
+    a = assembler(); movd_xmm_r(a, 1, rcx);
+    testing.expect(same(bytes_of(a), [102, 15, 110, 201]), "movd xmm1,ecx");
+    a = assembler(); movd_r_xmm(a, rcx, 1);
+    testing.expect(same(bytes_of(a), [102, 15, 126, 201]), "movd ecx,xmm1");
+    a = assembler(); sse_arith(a, hai, 88, 0, 1);
+    testing.expect(same(bytes_of(a), [242, 15, 88, 193]), "addsd xmm0,xmm1");
+    a = assembler(); sse_arith(a, hai, 92, 0, 1);
+    testing.expect(same(bytes_of(a), [242, 15, 92, 193]), "subsd xmm0,xmm1");
+    a = assembler(); sse_arith(a, hai, 89, 0, 1);
+    testing.expect(same(bytes_of(a), [242, 15, 89, 193]), "mulsd xmm0,xmm1");
+    a = assembler(); sse_arith(a, hai, 94, 0, 1);
+    testing.expect(same(bytes_of(a), [242, 15, 94, 193]), "divsd xmm0,xmm1");
+    a = assembler(); sse_arith(a, iie, 88, 0, 1);
+    testing.expect(same(bytes_of(a), [243, 15, 88, 193]), "addss xmm0,xmm1");
+    a = assembler(); sse_arith(a, hai, 81, 0, 0);
+    testing.expect(same(bytes_of(a), [242, 15, 81, 192]), "sqrtsd xmm0,xmm0");
+    a = assembler(); ucomis(a, hai, 0, 1);
+    testing.expect(same(bytes_of(a), [102, 15, 46, 193]), "ucomisd xmm0,xmm1");
+    a = assembler(); ucomis(a, iie, 1, 0);
+    testing.expect(same(bytes_of(a), [15, 46, 200]), "ucomiss xmm1,xmm0");
+    a = assembler(); cvtsi2s(a, hai, 0, rax);
+    testing.expect(same(bytes_of(a), [242, 72, 15, 42, 192]), "cvtsi2sd xmm0,rax");
+    a = assembler(); cvtts2si(a, hai, rax, 0);
+    testing.expect(same(bytes_of(a), [242, 72, 15, 44, 192]), "cvttsd2si rax,xmm0");
+    a = assembler(); cvtsd2ss(a, 0, 0);
+    testing.expect(same(bytes_of(a), [242, 15, 90, 192]), "cvtsd2ss xmm0,xmm0");
+    a = assembler(); cvtss2sd(a, 0, 0);
+    testing.expect(same(bytes_of(a), [243, 15, 90, 192]), "cvtss2sd xmm0,xmm0");
+    a = assembler(); rounds(a, hai, 0, 0, 9);
+    testing.expect(same(bytes_of(a), [102, 15, 58, 11, 192, 9]), "roundsd xmm0,xmm0,floor");
+    a = assembler(); rounds(a, iie, 0, 0, 11);
+    testing.expect(same(bytes_of(a), [102, 15, 58, 10, 192, 11]), "roundss xmm0,xmm0,trunc");
+    a = assembler(); movq_xmm_r(a, 9, r10);
+    testing.expect(same(bytes_of(a), [102, 77, 15, 110, 202]), "movq xmm9,r10");
+}

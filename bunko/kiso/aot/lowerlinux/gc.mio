@@ -1,0 +1,621 @@
+yobu "kiso/aot/elf";
+yobu "kiso/aot/lower/types";
+yobu "kiso/aot/x86_64";
+yobu "kiso/array";
+yobu "kiso/convert";
+yobu "kiso/encoding/mochi";
+yobu "kiso/string";
+
+// Precise, non-moving, stop-the-world mark & sweep collector for the single-threaded Linux backend.
+//
+// Object header: [0] = kind | total_bytes << 8 (kind 0 = free block), [8] = mark word.
+// Roots: Mochi globals (rt.globals_map) and every frame of the rbp chain. The collector runs only at poll
+// points (function entry, loop back-edges); each call/poll site is followed by `jmp over; descriptor; over:`
+// where the descriptor lists the rbp-relative slots of that frame that hold references, so a frame is scanned
+// from its return address alone. No collection happens inside runtime routines, so their temporaries need no roots.
+//
+// Data segment layout (offsets from elf.data_base):
+//   0 heap_next, 8 heap_end, 16.. NativeFS handle table (64 x 24), 1552.. directory table (64 x 32),
+//   3600.. collector state, 8192.. directory buffers (64 x 32 KiB), then the Mochi globals.
+waza gc_state() -> int64 { kaesu elf.data_base + 3600; }
+koukai waza directory_buffers() -> int64 { kaesu elf.data_base + 8192; }
+koukai waza globals_base() -> int64 { kaesu elf.data_base + 8192 + 2097152; }
+// collector state words: +0 free list head, +8 bytes allocated since the last collection, +16 threshold,
+// +24 heap base, +32 mark stack top, +40 mark stack limit, +48 mark stack base, +56 collections, +64 minimum threshold
+waza gc_base_register() -> int64 { kaesu x86_64.rcx; }
+
+waza emit_gc_init(code: x86_64.Assembler) -> unit {
+    // rt.init: reserve the heap (1 GiB) and the mark stack (512 MiB), both lazily committed.
+    x86_64.label(code, "rt.init");
+    x86_64.mov_ri(code, x86_64.rdi, 0);
+    x86_64.mov_ri(code, x86_64.rsi, 8589934592);
+    x86_64.mov_ri(code, x86_64.rdx, 3);
+    x86_64.mov_ri(code, x86_64.r10, 16418);
+    x86_64.mov_ri(code, x86_64.r8, -1);
+    x86_64.mov_ri(code, x86_64.r9, 0);
+    x86_64.mov_eax_imm(code, 9);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.trap.memory");
+    x86_64.mov_ri(code, x86_64.rcx, elf.data_base);
+    x86_64.mov_store(code, x86_64.rcx, 0, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rdx, gc_state());
+    x86_64.mov_store(code, x86_64.rdx, 24, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 8589934592);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.mov_store(code, x86_64.rcx, 8, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rdi, 0);
+    x86_64.mov_ri(code, x86_64.rsi, 536870912);
+    x86_64.mov_ri(code, x86_64.rdx, 3);
+    x86_64.mov_ri(code, x86_64.r10, 16418);
+    x86_64.mov_ri(code, x86_64.r8, -1);
+    x86_64.mov_ri(code, x86_64.r9, 0);
+    x86_64.mov_eax_imm(code, 9);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.trap.memory");
+    x86_64.mov_ri(code, x86_64.rdx, gc_state());
+    x86_64.mov_store(code, x86_64.rdx, 32, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rdx, 48, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 536870912);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.mov_store(code, x86_64.rdx, 40, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 33554432);
+    x86_64.mov_store(code, x86_64.rdx, 16, x86_64.rax);
+    // crash reporting: SIGSEGV, SIGBUS and SIGFPE print the faulting instruction and address, then exit with 139
+    x86_64.sub_ri(code, x86_64.rsp, 32);
+    x86_64.lea_label(code, x86_64.rax, "rt.signal_handler");
+    x86_64.mov_store(code, x86_64.rsp, 0, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 67108868);
+    x86_64.mov_store(code, x86_64.rsp, 8, x86_64.rax);
+    x86_64.lea_label(code, x86_64.rax, "rt.signal_restorer");
+    x86_64.mov_store(code, x86_64.rsp, 16, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.rsp, 24, x86_64.rax);
+    kaku signals: []int64 = [11, 7, 8];
+    kaku at = 0;
+    aida (at < len(signals)) {
+        x86_64.mov_ri(code, x86_64.rdi, signals[at]);
+        x86_64.mov_rr(code, x86_64.rsi, x86_64.rsp);
+        x86_64.mov_ri(code, x86_64.rdx, 0);
+        x86_64.mov_ri(code, x86_64.r10, 8);
+        x86_64.mov_eax_imm(code, 13);
+        x86_64.syscall(code);
+        at = at + 1;
+    }
+    x86_64.add_ri(code, x86_64.rsp, 32);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.signal_restorer");
+    x86_64.mov_eax_imm(code, 15);
+    x86_64.syscall(code);
+    // handler(sig, info, ucontext): "fault rip=<hex> addr=<hex> rbp=<hex> rsp=<hex>\n" on stderr
+    x86_64.label(code, "rt.signal_handler");
+    x86_64.mov_rr(code, x86_64.r12, x86_64.rdx);
+    x86_64.mov_load(code, x86_64.r13, x86_64.rsi, 16);
+    emit_write_literal(code, "rt.text.fault_rip", 10, 2);
+    x86_64.mov_load(code, x86_64.rax, x86_64.r12, 168);
+    x86_64.call(code, "rt.print_hex");
+    emit_write_literal(code, "rt.text.fault_addr", 6, 2);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.r13);
+    x86_64.call(code, "rt.print_hex");
+    emit_write_literal(code, "rt.text.fault_rbp", 5, 2);
+    x86_64.mov_load(code, x86_64.rax, x86_64.r12, 120);
+    x86_64.call(code, "rt.print_hex");
+    emit_write_literal(code, "rt.text.fault_rsp", 5, 2);
+    x86_64.mov_load(code, x86_64.rax, x86_64.r12, 160);
+    x86_64.call(code, "rt.print_hex");
+    kaku shown: []int64 = [144, 152, 136, 40, 48];
+    kaku shown_at = 0;
+    aida (shown_at < len(shown)) {
+        emit_write_literal(code, "rt.text.newline", 1, 2);
+        x86_64.mov_load(code, x86_64.rax, x86_64.r12, shown[shown_at]);
+        x86_64.call(code, "rt.print_hex");
+        shown_at = shown_at + 1;
+    }
+    emit_write_literal(code, "rt.text.newline", 1, 2);
+    emit_exit(code, 139);
+    // rt.print_hex: rax = value -> 16 hex digits on stderr
+    x86_64.label(code, "rt.print_hex");
+    x86_64.sub_ri(code, x86_64.rsp, 24);
+    x86_64.mov_ri(code, x86_64.rcx, 16);
+    x86_64.label(code, "rt.print_hex.digit");
+    x86_64.mov_rr(code, x86_64.rdx, x86_64.rax);
+    x86_64.and_ri(code, x86_64.rdx, 15);
+    x86_64.cmp_ri(code, x86_64.rdx, 10);
+    x86_64.jcc(code, x86_64.cc_b, "rt.print_hex.numeric");
+    x86_64.add_ri(code, x86_64.rdx, 39);
+    x86_64.label(code, "rt.print_hex.numeric");
+    x86_64.add_ri(code, x86_64.rdx, 48);
+    x86_64.sub_ri(code, x86_64.rcx, 1);
+    x86_64.lea(code, x86_64.rsi, x86_64.rsp, 0);
+    x86_64.add_rr(code, x86_64.rsi, x86_64.rcx);
+    x86_64.mov_store8(code, x86_64.rsi, 0, x86_64.rdx);
+    x86_64.shr_ri(code, x86_64.rax, 4);
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.print_hex.digit");
+    x86_64.mov_eax_imm(code, 1);
+    x86_64.mov_ri(code, x86_64.rdi, 2);
+    x86_64.lea(code, x86_64.rsi, x86_64.rsp, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 16);
+    x86_64.syscall(code);
+    x86_64.add_ri(code, x86_64.rsp, 24);
+    x86_64.ret(code);
+    data_string(code, "rt.text.fault_rip", "fault rip=");
+    data_string(code, "rt.text.fault_addr", " addr=");
+    data_string(code, "rt.text.fault_rbp", " rbp=");
+    data_string(code, "rt.text.fault_rsp", " rsp=");
+}
+
+// Free blocks live in segregated lists: one exact-size list per block size 16..512 (bins), and one list for larger
+// blocks (collector state +0). Both are singly linked through word +16 of the free block, pushed at the front.
+waza bins_base() -> int64 { kaesu elf.data_base + 4096; }
+
+// rt.alloc: rax = byte size (multiple of 8, at least 16) -> rax = zeroed block. Clobbers rcx, rdx, r8 only.
+// Small requests pop an exact-size bin, or split the first non-empty bin of size >= need + 24; everything else
+// (and every request above 512 bytes) takes the first fitting block of the large list, then falls back to bump allocation.
+waza emit_gc_alloc(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.alloc");
+    x86_64.push_r(code, x86_64.r9);
+    x86_64.push_r(code, x86_64.r10);
+    x86_64.mov_ri(code, x86_64.rcx, gc_state());
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rcx, 8);
+    x86_64.add_rr(code, x86_64.rdx, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rcx, 8, x86_64.rdx);
+    x86_64.cmp_ri(code, x86_64.rax, 512);
+    x86_64.jcc(code, x86_64.cc_a, "rt.alloc.large");
+    x86_64.mov_ri(code, x86_64.r8, bins_base());
+    x86_64.add_rr(code, x86_64.r8, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.r8, 0);
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.alloc.bigger");
+    x86_64.mov_load(code, x86_64.r9, x86_64.rdx, 16);
+    x86_64.mov_store(code, x86_64.r8, 0, x86_64.r9);
+    x86_64.jmp(code, "rt.alloc.zero");
+    // a bigger bin: its block is split, the remainder (at least 24 bytes) goes back into its own bin
+    x86_64.label(code, "rt.alloc.bigger");
+    x86_64.lea(code, x86_64.r10, x86_64.rax, 24);
+    x86_64.label(code, "rt.alloc.bigger_scan");
+    x86_64.cmp_ri(code, x86_64.r10, 512);
+    x86_64.jcc(code, x86_64.cc_a, "rt.alloc.large");
+    x86_64.mov_ri(code, x86_64.r8, bins_base());
+    x86_64.add_rr(code, x86_64.r8, x86_64.r10);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.r8, 0);
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.alloc.bigger_found");
+    x86_64.add_ri(code, x86_64.r10, 8);
+    x86_64.jmp(code, "rt.alloc.bigger_scan");
+    x86_64.label(code, "rt.alloc.bigger_found");
+    x86_64.mov_load(code, x86_64.r9, x86_64.rdx, 16);
+    x86_64.mov_store(code, x86_64.r8, 0, x86_64.r9);
+    x86_64.sub_rr(code, x86_64.r10, x86_64.rax);
+    x86_64.jmp(code, "rt.alloc.remainder");
+    // large list: first block with size == need or size >= need + 24, unlinked; remainder re-inserted
+    x86_64.label(code, "rt.alloc.large");
+    x86_64.mov_ri(code, x86_64.rcx, gc_state());
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rcx, 0);
+    x86_64.label(code, "rt.alloc.large_scan");
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.alloc.bump");
+    x86_64.mov_load(code, x86_64.r10, x86_64.rdx, 0);
+    x86_64.shr_ri(code, x86_64.r10, 8);
+    x86_64.sub_rr(code, x86_64.r10, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_b, "rt.alloc.large_next");
+    x86_64.jcc(code, x86_64.cc_e, "rt.alloc.large_take");
+    x86_64.cmp_ri(code, x86_64.r10, 24);
+    x86_64.jcc(code, x86_64.cc_b, "rt.alloc.large_next");
+    x86_64.label(code, "rt.alloc.large_take");
+    x86_64.mov_load(code, x86_64.r9, x86_64.rdx, 16);
+    x86_64.cmp_rr(code, x86_64.r8, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.alloc.large_unlink");
+    x86_64.mov_store(code, x86_64.rcx, 0, x86_64.r9);
+    x86_64.jmp(code, "rt.alloc.remainder");
+    x86_64.label(code, "rt.alloc.large_unlink");
+    x86_64.mov_store(code, x86_64.r8, 16, x86_64.r9);
+    x86_64.jmp(code, "rt.alloc.remainder");
+    x86_64.label(code, "rt.alloc.large_next");
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rdx);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rdx, 16);
+    x86_64.jmp(code, "rt.alloc.large_scan");
+    // rdx = the block, r10 = remainder size (0 or >= 24): re-insert the remainder at rdx + need
+    x86_64.label(code, "rt.alloc.remainder");
+    x86_64.test_rr(code, x86_64.r10, x86_64.r10);
+    x86_64.jcc(code, x86_64.cc_e, "rt.alloc.zero");
+    x86_64.lea(code, x86_64.r9, x86_64.rdx, 0);
+    x86_64.add_rr(code, x86_64.r9, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.r10);
+    x86_64.shl_ri(code, x86_64.rcx, 8);
+    x86_64.mov_store(code, x86_64.r9, 0, x86_64.rcx);
+    x86_64.mov_ri(code, x86_64.rcx, 0);
+    x86_64.mov_store(code, x86_64.r9, 8, x86_64.rcx);
+    x86_64.cmp_ri(code, x86_64.r10, 512);
+    x86_64.jcc(code, x86_64.cc_a, "rt.alloc.remainder_large");
+    x86_64.mov_ri(code, x86_64.r8, bins_base());
+    x86_64.add_rr(code, x86_64.r8, x86_64.r10);
+    x86_64.jmp(code, "rt.alloc.remainder_push");
+    x86_64.label(code, "rt.alloc.remainder_large");
+    x86_64.mov_ri(code, x86_64.r8, gc_state());
+    x86_64.label(code, "rt.alloc.remainder_push");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.r8, 0);
+    x86_64.mov_store(code, x86_64.r9, 16, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.r8, 0, x86_64.r9);
+    x86_64.label(code, "rt.alloc.zero");
+    x86_64.mov_rr(code, x86_64.r9, x86_64.rax);
+    x86_64.shr_ri(code, x86_64.r9, 3);
+    x86_64.mov_rr(code, x86_64.r8, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.rcx, 0);
+    x86_64.label(code, "rt.alloc.zero_loop");
+    x86_64.mov_store(code, x86_64.r8, 0, x86_64.rcx);
+    x86_64.add_ri(code, x86_64.r8, 8);
+    x86_64.sub_ri(code, x86_64.r9, 1);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.alloc.zero_loop");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.pop_r(code, x86_64.r10);
+    x86_64.pop_r(code, x86_64.r9);
+    x86_64.ret(code);
+    // bump allocation from untouched (already zero) memory
+    x86_64.label(code, "rt.alloc.bump");
+    x86_64.mov_ri(code, x86_64.rcx, elf.data_base);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rcx, 0);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.mov_load(code, x86_64.r8, x86_64.rcx, 8);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.r8);
+    x86_64.jcc(code, x86_64.cc_a, "rt.trap.memory");
+    x86_64.mov_store(code, x86_64.rcx, 0, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.pop_r(code, x86_64.r10);
+    x86_64.pop_r(code, x86_64.r9);
+    x86_64.ret(code);
+}
+
+// rt.gc_mark: rdi = candidate pointer. Marks heap objects and queues them; ignores 0, constants and misaligned values.
+// Clobbers rax, rcx, rdx only.
+waza emit_gc_mark(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.gc_mark");
+    x86_64.mov_ri(code, x86_64.rcx, gc_state());
+    x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 24);
+    x86_64.cmp_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_b, "rt.gc_mark.done");
+    x86_64.mov_ri(code, x86_64.rdx, elf.data_base);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rdx, 0);
+    x86_64.cmp_rr(code, x86_64.rdi, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.gc_mark.done");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rdi);
+    x86_64.and_ri(code, x86_64.rax, 7);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.gc_mark.done");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 8);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.gc_mark.done");
+    x86_64.mov_ri(code, x86_64.rax, 1);
+    x86_64.mov_store(code, x86_64.rdi, 8, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 32);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rcx, 40);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.trap.memory");
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rdi);
+    x86_64.add_ri(code, x86_64.rax, 8);
+    x86_64.mov_store(code, x86_64.rcx, 32, x86_64.rax);
+    x86_64.label(code, "rt.gc_mark.done");
+    x86_64.ret(code);
+}
+
+// Marks the word at [base_reg + disp] (preserves rsi, rdi, r8-r11).
+waza mark_word(code: x86_64.Assembler, base: int64, disp: int64) -> unit {
+    x86_64.mov_load(code, x86_64.rdi, base, disp);
+    x86_64.call(code, "rt.gc_mark");
+}
+
+// rt.gc_drain: process queued objects until the mark stack is empty.
+waza emit_gc_drain(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.gc_drain");
+    x86_64.label(code, "rt.gc_drain.next");
+    x86_64.mov_ri(code, x86_64.rcx, gc_state());
+    x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 32);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rcx, 48);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.empty");
+    x86_64.sub_ri(code, x86_64.rax, 8);
+    x86_64.mov_store(code, x86_64.rcx, 32, x86_64.rax);
+    x86_64.mov_load(code, x86_64.r8, x86_64.rax, 0);
+    x86_64.mov_load(code, x86_64.rax, x86_64.r8, 0);
+    x86_64.and_ri(code, x86_64.rax, 255);
+    // structs and enums: payload words flagged in the bitmap
+    x86_64.cmp_ri(code, x86_64.rax, 1);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.record");
+    x86_64.cmp_ri(code, x86_64.rax, 2);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.record");
+    x86_64.cmp_ri(code, x86_64.rax, 3);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.array");
+    x86_64.cmp_ri(code, x86_64.rax, 7);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.closure");
+    x86_64.cmp_ri(code, x86_64.rax, 8);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.environment");
+    x86_64.cmp_ri(code, x86_64.rax, 10);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.cell");
+    x86_64.jmp(code, "rt.gc_drain.next");
+    x86_64.label(code, "rt.gc_drain.record");
+    x86_64.mov_load(code, x86_64.r9, x86_64.r8, 16);
+    x86_64.mov_load(code, x86_64.r10, x86_64.r8, 24);
+    x86_64.lea(code, x86_64.rsi, x86_64.r8, 40);
+    x86_64.label(code, "rt.gc_drain.record_loop");
+    x86_64.test_rr(code, x86_64.r9, x86_64.r9);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.next");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.r10);
+    x86_64.and_ri(code, x86_64.rax, 1);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.record_skip");
+    mark_word(code, x86_64.rsi, 0);
+    x86_64.label(code, "rt.gc_drain.record_skip");
+    x86_64.add_ri(code, x86_64.rsi, 8);
+    x86_64.shr_ri(code, x86_64.r10, 1);
+    x86_64.sub_ri(code, x86_64.r9, 1);
+    x86_64.jmp(code, "rt.gc_drain.record_loop");
+    // arrays: the backing store, and the elements when they are references
+    x86_64.label(code, "rt.gc_drain.array");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.r8, 40);
+    x86_64.sub_ri(code, x86_64.rdi, 16);
+    x86_64.call(code, "rt.gc_mark");
+    x86_64.mov_load(code, x86_64.rax, x86_64.r8, 32);
+    x86_64.shr_ri(code, x86_64.rax, 8);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.next");
+    x86_64.mov_load(code, x86_64.r9, x86_64.r8, 16);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.r8, 40);
+    x86_64.label(code, "rt.gc_drain.array_loop");
+    x86_64.test_rr(code, x86_64.r9, x86_64.r9);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.next");
+    mark_word(code, x86_64.rsi, 0);
+    x86_64.add_ri(code, x86_64.rsi, 8);
+    x86_64.sub_ri(code, x86_64.r9, 1);
+    x86_64.jmp(code, "rt.gc_drain.array_loop");
+    x86_64.label(code, "rt.gc_drain.closure");
+    mark_word(code, x86_64.r8, 40);
+    x86_64.jmp(code, "rt.gc_drain.next");
+    x86_64.label(code, "rt.gc_drain.cell");
+    mark_word(code, x86_64.r8, 16);
+    x86_64.jmp(code, "rt.gc_drain.next");
+    x86_64.label(code, "rt.gc_drain.environment");
+    x86_64.mov_load(code, x86_64.r9, x86_64.r8, 16);
+    x86_64.lea(code, x86_64.rsi, x86_64.r8, 24);
+    x86_64.label(code, "rt.gc_drain.environment_loop");
+    x86_64.test_rr(code, x86_64.r9, x86_64.r9);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.next");
+    mark_word(code, x86_64.rsi, 0);
+    x86_64.add_ri(code, x86_64.rsi, 8);
+    x86_64.sub_ri(code, x86_64.r9, 1);
+    x86_64.jmp(code, "rt.gc_drain.environment_loop");
+    x86_64.label(code, "rt.gc_drain.empty");
+    x86_64.ret(code);
+}
+
+// rt.gc: called from a poll site. [rsp] is the return address inside the polling function (whose descriptor follows
+// the jmp at that address); rbp is that function's frame pointer.
+waza emit_gc_collect(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.gc");
+    x86_64.mov_load(code, x86_64.r11, x86_64.rsp, 0);
+    x86_64.mov_rr(code, x86_64.r10, x86_64.rbp);
+    // roots 1: Mochi globals
+    x86_64.lea_label(code, x86_64.rsi, "rt.globals_map");
+    x86_64.mov_load(code, x86_64.r9, x86_64.rsi, 0);
+    x86_64.add_ri(code, x86_64.rsi, 8);
+    x86_64.mov_ri(code, x86_64.r8, globals_base());
+    x86_64.label(code, "rt.gc.globals");
+    x86_64.test_rr(code, x86_64.r9, x86_64.r9);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc.frames");
+    x86_64.mov_load8(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc.globals_skip");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.r8, 0);
+    x86_64.call(code, "rt.gc_mark");
+    x86_64.label(code, "rt.gc.globals_skip");
+    x86_64.add_ri(code, x86_64.rsi, 1);
+    x86_64.add_ri(code, x86_64.r8, 8);
+    x86_64.sub_ri(code, x86_64.r9, 1);
+    x86_64.jmp(code, "rt.gc.globals");
+    // roots 2: the frame chain. r10 = frame pointer, r11 = return address identifying the call site in that frame
+    x86_64.label(code, "rt.gc.frames");
+    x86_64.test_rr(code, x86_64.r10, x86_64.r10);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc.marked");
+    x86_64.lea(code, x86_64.rsi, x86_64.r11, 5);
+    x86_64.mov_load(code, x86_64.r9, x86_64.rsi, 0);
+    x86_64.add_ri(code, x86_64.rsi, 8);
+    x86_64.label(code, "rt.gc.slots");
+    x86_64.test_rr(code, x86_64.r9, x86_64.r9);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc.next_frame");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsi, 0);
+    x86_64.add_rr(code, x86_64.rax, x86_64.r10);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rax, 0);
+    x86_64.call(code, "rt.gc_mark");
+    x86_64.add_ri(code, x86_64.rsi, 8);
+    x86_64.sub_ri(code, x86_64.r9, 1);
+    x86_64.jmp(code, "rt.gc.slots");
+    x86_64.label(code, "rt.gc.next_frame");
+    x86_64.mov_load(code, x86_64.r11, x86_64.r10, 8);
+    x86_64.mov_load(code, x86_64.r10, x86_64.r10, 0);
+    x86_64.jmp(code, "rt.gc.frames");
+    x86_64.label(code, "rt.gc.marked");
+    x86_64.call(code, "rt.gc_drain");
+    emit_gc_sweep(code);
+    x86_64.ret(code);
+}
+
+// Sweep: walk the heap, clear marks, coalesce dead runs into free blocks and rebuild the free list.
+waza emit_gc_sweep(code: x86_64.Assembler) -> unit {
+    x86_64.mov_ri(code, x86_64.rcx, gc_state());
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.rcx, 0, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rdx, bins_base());
+    x86_64.mov_ri(code, x86_64.r8, 66);
+    x86_64.label(code, "rt.gc.clear_bins");
+    x86_64.mov_store(code, x86_64.rdx, 0, x86_64.rax);
+    x86_64.add_ri(code, x86_64.rdx, 8);
+    x86_64.sub_ri(code, x86_64.r8, 1);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.gc.clear_bins");
+    x86_64.mov_load(code, x86_64.r8, x86_64.rcx, 24);
+    x86_64.mov_ri(code, x86_64.rdx, elf.data_base);
+    x86_64.mov_load(code, x86_64.r9, x86_64.rdx, 0);
+    x86_64.mov_ri(code, x86_64.r11, 0);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.label(code, "rt.gc.sweep");
+    x86_64.cmp_rr(code, x86_64.r8, x86_64.r9);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.gc.sweep_end");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.r8, 0);
+    x86_64.shr_ri(code, x86_64.rdi, 8);
+    x86_64.cmp_ri(code, x86_64.rdi, 16);
+    x86_64.jcc(code, x86_64.cc_b, "rt.trap.memory");
+    x86_64.mov_load(code, x86_64.rax, x86_64.r8, 8);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc.sweep_dead");
+    x86_64.call(code, "rt.gc.close_run");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.r8, 8, x86_64.rax);
+    x86_64.add_rr(code, x86_64.rsi, x86_64.rdi);
+    x86_64.add_rr(code, x86_64.r8, x86_64.rdi);
+    x86_64.jmp(code, "rt.gc.sweep");
+    x86_64.label(code, "rt.gc.sweep_dead");
+    x86_64.test_rr(code, x86_64.r11, x86_64.r11);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.gc.sweep_advance");
+    x86_64.mov_rr(code, x86_64.r11, x86_64.r8);
+    x86_64.label(code, "rt.gc.sweep_advance");
+    x86_64.add_rr(code, x86_64.r8, x86_64.rdi);
+    x86_64.jmp(code, "rt.gc.sweep");
+    x86_64.label(code, "rt.gc.sweep_end");
+    // a dead run reaching the end of the heap becomes a free block like any other (its memory is not zero)
+    x86_64.call(code, "rt.gc.close_run");
+    x86_64.mov_ri(code, x86_64.rcx, gc_state());
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.rcx, 8, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 56);
+    x86_64.add_ri(code, x86_64.rax, 1);
+    x86_64.mov_store(code, x86_64.rcx, 56, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rcx, 64);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.gc.threshold");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.label(code, "rt.gc.threshold");
+    x86_64.mov_store(code, x86_64.rcx, 16, x86_64.rax);
+    x86_64.jmp(code, "rt.gc.swept");
+    // close_run: turn the pending dead run [r11, r8) into a free block (r10 = last link cell)
+    x86_64.label(code, "rt.gc.close_run");
+    x86_64.test_rr(code, x86_64.r11, x86_64.r11);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc.close_done");
+    x86_64.mov_rr(code, x86_64.rax, x86_64.r8);
+    x86_64.sub_rr(code, x86_64.rax, x86_64.r11);
+    x86_64.mov_rr(code, x86_64.rdx, x86_64.rax);
+    x86_64.shl_ri(code, x86_64.rdx, 8);
+    x86_64.mov_store(code, x86_64.r11, 0, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store(code, x86_64.r11, 8, x86_64.rdx);
+    x86_64.cmp_ri(code, x86_64.rax, 24);
+    x86_64.jcc(code, x86_64.cc_b, "rt.gc.close_reset");
+    x86_64.cmp_ri(code, x86_64.rax, 512);
+    x86_64.jcc(code, x86_64.cc_a, "rt.gc.close_large");
+    x86_64.mov_ri(code, x86_64.rdx, bins_base());
+    x86_64.add_rr(code, x86_64.rdx, x86_64.rax);
+    x86_64.jmp(code, "rt.gc.close_push");
+    x86_64.label(code, "rt.gc.close_large");
+    x86_64.mov_ri(code, x86_64.rdx, gc_state());
+    x86_64.label(code, "rt.gc.close_push");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdx, 0);
+    x86_64.mov_store(code, x86_64.r11, 16, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rdx, 0, x86_64.r11);
+    x86_64.label(code, "rt.gc.close_reset");
+    x86_64.mov_ri(code, x86_64.r11, 0);
+    x86_64.label(code, "rt.gc.close_done");
+    x86_64.ret(code);
+    x86_64.label(code, "rt.gc.swept");
+}
+
+waza emit_gc_runtime(code: x86_64.Assembler) -> unit {
+    emit_gc_init(code);
+    emit_gc_alloc(code);
+    emit_gc_mark(code);
+    emit_gc_drain(code);
+    emit_gc_collect(code);
+}
+
+// ---- compile-time side: poll points and frame descriptors ----------------------------------------------------------
+
+waza emit_signed_word(code: x86_64.Assembler, value: int64) -> unit {
+    moshi (value >= 0) { emit_word(code, value); kaesu; }
+    kaku rest = -(value + 1);
+    kaku at = 0;
+    aida (at < 8) {
+        kaku low = rest - (rest / 256) * 256;
+        x86_64.byte(code, 255 - low);
+        rest = rest / 256;
+        at = at + 1;
+    }
+}
+
+// Frame descriptor after a call/poll site: `jmp over; count; offsets...; over:`.
+// Lists the rbp-relative slots holding references: the locals of the function and its operand stack at `offset`.
+waza emit_frame_descriptor(code: x86_64.Assembler, file: mochi.File, analysis: types.TypeAnalysis, function_id: int64,
+    offset: int64, parameters: int64) -> string {
+    kaku offsets: []int64 = [];
+    kaku locals = 0;
+    moshi (function_id >= 0) {
+        kaku function = file.functions[function_id];
+        locals = function.local_count - parameters;
+        kaku slot = 0;
+        aida (slot < function.local_count) {
+            kaku captured = slot < len(analysis.cells[function_id]) && analysis.cells[function_id][slot];
+            kaku reference = captured;
+            moshi (!captured) {
+                kaku node = analysis.locals[function_id][slot];
+                moshi (node >= 0 && types.type_kind(analysis, node) == types.type_unknown) { reference = iie; }
+                moshi (node >= 0 && types.type_kind(analysis, node) != types.type_unknown) { reference = is_reference_node(analysis, node); }
+            }
+            moshi (reference) { array.push(offsets, local_disp(parameters, slot)); }
+            slot = slot + 1;
+        }
+    }
+    kaku entries = analysis.blocks[function_id + 1].entry[offset];
+    kaku index = 0;
+    aida (index < len(entries)) {
+        kaku node = entries[index];
+        moshi (node < 0) { kaesu "UNSAFE_GC_MISSING_TYPE"; }
+        kaku kind = types.type_kind(analysis, node);
+        moshi (kind == types.type_unknown) { kaesu string.concat("UNSAFE_GC_UNKNOWN_STACK_TYPE at ", convert.format_int(offset)); }
+        moshi (is_reference_node(analysis, node)) { array.push(offsets, -8 * locals - 8 * (index + 1)); }
+        index = index + 1;
+    }
+    kaku over = block_label("gc_over", len(code.bytes));
+    x86_64.jmp(code, over);
+    emit_word(code, len(offsets));
+    kaku at = 0;
+    aida (at < len(offsets)) { emit_signed_word(code, offsets[at]); at = at + 1; }
+    x86_64.label(code, over);
+    kaesu "";
+}
+
+// Poll: collect when the allocation volume since the last collection exceeds the threshold.
+waza emit_poll(code: x86_64.Assembler, file: mochi.File, analysis: types.TypeAnalysis, function_id: int64,
+    offset: int64, parameters: int64) -> string {
+    kaku skip = block_label("gc_poll_skip", len(code.bytes));
+    x86_64.mov_ri(code, x86_64.rcx, gc_state());
+    x86_64.mov_load(code, x86_64.rax, x86_64.rcx, 8);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rcx, 16);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_b, skip);
+    x86_64.call(code, "rt.gc");
+    kaku problem = emit_frame_descriptor(code, file, analysis, function_id, offset, parameters);
+    moshi (problem != "") { kaesu problem; }
+    x86_64.label(code, skip);
+    kaesu "";
+}
+
+// Globals that hold references: one byte per global after a count word.
+waza emit_globals_map(code: x86_64.Assembler, file: mochi.File, analysis: types.TypeAnalysis) -> unit {
+    x86_64.label(code, "rt.globals_map");
+    emit_word(code, file.global_count);
+    kaku index = 0;
+    aida (index < file.global_count) {
+        kaku flag = 0;
+        moshi (index < len(analysis.globals)) {
+            kaku node = analysis.globals[index];
+            moshi (node >= 0 && types.type_kind(analysis, node) != types.type_unknown && is_reference_node(analysis, node)) { flag = 1; }
+        }
+        x86_64.byte(code, flag);
+        index = index + 1;
+    }
+}
