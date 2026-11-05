@@ -82,7 +82,13 @@ def main():
         entry["status"] = "BUILT"
         if o.execute or o.emulate:
             if o.execute:
-                r = subprocess.run([str(exe)], capture_output=True, timeout=120)
+                try:
+                    r = subprocess.run([str(exe)], capture_output=True, timeout=120)
+                except OSError as error:
+                    entry.update(status="FAIL", error="cannot start: %s" % error)
+                    failures.append("%s: cannot start the image: %s" % (name, error))
+                    results.append(entry)
+                    continue
                 got = (r.returncode, r.stdout, r.stderr, [])
             else:
                 import emu

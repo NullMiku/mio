@@ -58,7 +58,14 @@ def main():
             continue
         entry["status"] = "GENERATED"
         if o.execute:
-            r = subprocess.run([str(exe)], capture_output=True, timeout=60, cwd=out)
+            try:
+                r = subprocess.run([str(exe)], capture_output=True, timeout=60, cwd=out)
+            except OSError as error:  # e.g. WinError 193: the loader rejected the image
+                exec_ok = False
+                entry.update(status="FAIL", error="cannot start: %s" % error)
+                failures.append("%s: cannot start the image: %s" % (name, error))
+                report["cases"].append(entry)
+                continue
             entry.update(exit_code=r.returncode, stdout_hex=r.stdout.hex(), stderr_hex=r.stderr.hex())
             if (r.returncode, r.stdout, r.stderr) == (code, stdout, stderr):
                 entry["status"] = "PASS"

@@ -45,6 +45,11 @@ jobs:
       - name: Heap-capable lowering (lowerwinrt) - exit/stdout cases on Windows
         shell: bash
         run: python tests/windows-amd64/run_cases.py --mio "$EVIDENCE/refvm.exe" --backend lowerwinrt --output "$EVIDENCE/cases-rt" --execute 2>&1 | tee "$EVIDENCE/cases-rt.log"
+      - name: Loader diagnostic for lowerwinrt images (runs only after a failure; does not change the result)
+        if: failure()
+        shell: bash
+        run: |
+          for f in "$EVIDENCE"/cases-rt/exit42.exe; do [ -f "$f" ] && python tests/windows-amd64/load_probe.py "$f" | tee "$EVIDENCE/load-probe.log"; done; true
       - name: Heap-capable lowering (lowerwinrt) - differential vs Go VM on Windows (arrays, structs, enums, maps, closures, floats, GC)
         shell: bash
         run: python tests/windows-amd64/differential.py --mio "$EVIDENCE/refvm.exe" --execute --output "$EVIDENCE/differential" 2>&1 | tee "$EVIDENCE/differential.log"

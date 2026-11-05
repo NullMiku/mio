@@ -122,7 +122,7 @@ def verify(data, expect_relocations=True):
         dll = struct.unpack_from("<H", data, struct.unpack_from("<I", data, 60)[0] + 24 + 70)[0]
         require(img["dirs"][5] == (0, 0) and not dll & 0x40, "fixed-base image: no relocations and no DYNAMIC_BASE")
         data_sec = secs[".data"]
-        require(data_sec["rva"] == 0x2000000 and data_sec["flags"] & 0x80000000, ".data is RW at the fixed RVA")
+        require(data_sec["rva"] == 0x1000 and data_sec["flags"] & 0x80000000 and secs[".text"]["rva"] == data_sec["rva"] + ((data_sec["vsize"] + 0xFFF) & ~0xFFF), ".data is RW at 0x1000 and .text follows without a gap")
         return dict(functions=len(functions), relocations=0, image_size=img["size_image"])
     # every movabs imm64 holding an in-image VA must be a DIR64 relocation
     rr, rsz = img["dirs"][5]
