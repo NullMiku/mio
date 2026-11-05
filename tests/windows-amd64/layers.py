@@ -46,6 +46,8 @@ def main():
         "heap_lowering_differential_windows_execution": "NOT_RUN",
         "backend_driver_chain_windows": "NOT_RUN",
         "windows_compiler_chain_windows": "NOT_RUN",
+        "windows_bootstrap_reference_start_windows": "NOT_RUN",
+        "selfhost_cli_windows": "NOT_RUN",
         "source_to_pe_reject_cases": "NOT_RUN",
         "selfhost_bootstrap": "NOT_RUN",
     }
@@ -65,16 +67,17 @@ def main():
         statuses = {x["status"] for x in d["programs"]}
         layers["heap_lowering_differential_windows_execution"] = "PASS" if d["mode"] == "windows" and statuses == {"PASS"} and not d["failures"] else "FAIL"
     for key, rel in (("backend_driver_chain_windows", "driver-chain/chain-report.json"),
-                     ("windows_compiler_chain_windows", "compiler-chain/compiler-chain-report.json")):
+                     ("windows_compiler_chain_windows", "compiler-chain/compiler-chain-report.json"),
+                     ("windows_bootstrap_reference_start_windows", "bootstrap-chain/bootstrap-report.json")):
         cp = o.evidence / rel
         if cp.exists():
             c = json.loads(cp.read_text(encoding="utf-8"))
             layers[key] = "PASS" if c.get("mode") == "windows" and c.get("result") == "PASS" else "FAIL"
     files = {}
-    for f in sorted(list(o.evidence.glob("*.exe")) + list((o.evidence / "cases").glob("*.exe")) + list((o.evidence / "cases-rt").glob("*.exe")) + list((o.evidence / "differential").glob("*.exe")) + list((o.evidence / "driver-chain").glob("*.exe")) + list((o.evidence / "compiler-chain").glob("*.exe"))):
+    for f in sorted(list(o.evidence.glob("*.exe")) + list((o.evidence / "cases").glob("*.exe")) + list((o.evidence / "cases-rt").glob("*.exe")) + list((o.evidence / "differential").glob("*.exe")) + list((o.evidence / "driver-chain").glob("*.exe")) + list((o.evidence / "compiler-chain").glob("*.exe")) + list((o.evidence / "bootstrap-chain").glob("*.exe"))):
         files["pe/" + f.parent.name + "/" + f.name] = sha(f)
     for rel in ("bunko/kiso/aot/pe/pe.mio", "bunko/kiso/aot/x86_64/x86_64.mio",
-                "bunko/kiso/aot/winconsole/winconsole.mio", "bunko/kiso/aot/lowerwin/lowerwin.mio", "bunko/kiso/aot/lowerwinrt/lowerwinrt.mio", "bunko/kiso/aot/lowerwinrt/winos.mio", "bunko/kiso/aot/lowerwinrt/gc.mio", "bunko/kiso/aot/lowerwinrt/runtime_fs.mio", "selfhost/windows-compiler/main.mio", "selfhost/native-aot-windows/main.mio", "tests/windows-amd64/compiler_chain.py", "tests/windows-amd64/driver_chain.py", "tests/windows-amd64/differential.py", "tests/windows-amd64/programs.json", "tests/windows-amd64/build_pe.py", "tests/windows-amd64/cases.py", "tests/pe-writer/builder.mio",
+                "bunko/kiso/aot/winconsole/winconsole.mio", "bunko/kiso/aot/lowerwin/lowerwin.mio", "bunko/kiso/aot/lowerwinrt/lowerwinrt.mio", "bunko/kiso/aot/lowerwinrt/winos.mio", "bunko/kiso/aot/lowerwinrt/gc.mio", "bunko/kiso/aot/lowerwinrt/runtime_fs.mio", "selfhost/windows-compiler/main.mio", "selfhost/native-aot-windows/main.mio", "tests/windows-amd64/compiler_chain.py", "tests/windows-amd64/bootstrap_chain.py", "bunko/kiso/aot/lowerwinrt/runtime_os.mio", "bunko/kiso/aot/lowerwinrt/winos.mio", "tests/windows-amd64/driver_chain.py", "tests/windows-amd64/differential.py", "tests/windows-amd64/programs.json", "tests/windows-amd64/build_pe.py", "tests/windows-amd64/cases.py", "tests/pe-writer/builder.mio",
                 "tests/pe-writer/run.py", "tests/pe-writer/verify.py"):
         files["src/" + rel] = sha(o.root / rel)
     for f in o.evidence.glob("mio-reference*"):

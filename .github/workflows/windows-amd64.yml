@@ -59,6 +59,9 @@ jobs:
       - name: Windows compiler chain A-B-C-D (parser+typecheck+codegen+lowering, native on Windows)
         shell: bash
         run: python tests/windows-amd64/compiler_chain.py --refvm "$EVIDENCE/refvm.exe" --execute --output "$GITHUB_WORKSPACE/build/windows-amd64-evidence/compiler-chain" 2>&1 | tee "$EVIDENCE/compiler-chain.log"
+      - name: Bootstrap evidence (A,B,C,D + GC-pressure compiler + applications + diagnostics; empty PATH; reference-VM start)
+        shell: bash
+        run: python tests/windows-amd64/bootstrap_chain.py --refvm "$EVIDENCE/refvm.exe" --execute --output "$GITHUB_WORKSPACE/build/windows-amd64-evidence/bootstrap-chain" 2>&1 | tee "$EVIDENCE/bootstrap-chain.log"
       - name: lowerwin Mio unit tests (reference VM)
         shell: bash
         run: |
