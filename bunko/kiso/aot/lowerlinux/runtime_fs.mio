@@ -757,6 +757,7 @@ waza emit_fs_runtime(code: x86_64.Assembler) -> unit {
     emit_fs_dir_next(code);
     emit_fs_dir_current(code);
     emit_os_runtime(code);
+    emit_socket_runtime(code);
     emit_os_unsupported(code);
     x86_64.label(code, "rt.fs_dir_status");
     x86_64.jmp(code, "rt.fs_file_status");
