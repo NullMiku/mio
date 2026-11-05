@@ -149,6 +149,7 @@ waza emit_os_runtime(code: x86_64.Assembler) -> unit {
     emit_os_environment(code);
     emit_os_real_path(code);
     emit_os_spawn(code);
+    emit_os_spawn_test(code);
 }
 
 waza emit_os_path_call(code: x86_64.Assembler, name: string, number: int64) -> unit {
@@ -446,6 +447,156 @@ waza emit_os_spawn(code: x86_64.Assembler) -> unit {
 }
 
 
+// rt.os_redirect: rdi = path string, rsi = target descriptor -> rax = 1 when the file was opened for writing
+// (O_WRONLY|O_CREAT|O_TRUNC, mode 0600) and installed as that descriptor, else 0. Used in the child before exec.
+waza emit_os_redirect(code: x86_64.Assembler) -> unit {
+    x86_64.label(code, "rt.os_redirect");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 16);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rsi);
+    x86_64.call(code, "rt.fs_cpath");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_redirect.fail");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 577);
+    x86_64.mov_ri(code, x86_64.rdx, 384);
+    x86_64.mov_eax_imm(code, 2);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.os_redirect.fail");
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.cmp_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_redirect.ok");
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_eax_imm(code, 33);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.os_redirect.fail");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -16);
+    x86_64.mov_eax_imm(code, 3);
+    x86_64.syscall(code);
+    x86_64.label(code, "rt.os_redirect.ok");
+    x86_64.mov_ri(code, x86_64.rax, 1);
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_redirect.fail");
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+}
+
+// rt.os_spawn_test: rdi = path, rsi = arguments, rdx = stdout file, rcx = stderr file, r8 = records file (fd 3),
+// r9 = CPU seconds (1..3600). The child gets an RLIMIT_CPU of that many seconds and an ITIMER_REAL wall deadline of
+// the same length (so a test blocked in read or sleep is also stopped), has its three outputs redirected to files and is
+// executed; the parent waits and returns the exit status, 128 + signal when killed (SIGALRM 142, SIGXCPU 152, SIGKILL 137),
+// or a negative errno when the child could not be created. exec failure exits 127, setup failure exits 126.
+waza emit_os_spawn_test(code: x86_64.Assembler) -> unit {
+    emit_os_redirect(code);
+    x86_64.label(code, "rt.os_spawn_test");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 160);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rdx);
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rbp, -24, x86_64.r8);
+    x86_64.mov_store(code, x86_64.rbp, -32, x86_64.r9);
+    x86_64.cmp_ri(code, x86_64.r9, 1);
+    x86_64.jcc(code, x86_64.cc_l, "rt.os_spawn_test.invalid");
+    x86_64.cmp_ri(code, x86_64.r9, 3600);
+    x86_64.jcc(code, x86_64.cc_g, "rt.os_spawn_test.invalid");
+    x86_64.call(code, "rt.os_prepare_exec");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_spawn_test.invalid");
+    x86_64.mov_store(code, x86_64.rbp, -40, x86_64.rdi);
+    x86_64.mov_store(code, x86_64.rbp, -48, x86_64.rsi);
+    x86_64.mov_store(code, x86_64.rbp, -56, x86_64.rdx);
+    x86_64.mov_eax_imm(code, 57);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.os_spawn_test.done");
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_spawn_test.child");
+    // parent: wait for the child, retrying when interrupted
+    x86_64.mov_store(code, x86_64.rbp, -64, x86_64.rax);
+    x86_64.label(code, "rt.os_spawn_test.wait");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -64);
+    x86_64.lea(code, x86_64.rsi, x86_64.rbp, -72);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_ri(code, x86_64.r10, 0);
+    x86_64.mov_eax_imm(code, 61);
+    x86_64.syscall(code);
+    x86_64.cmp_ri(code, x86_64.rax, -4);
+    x86_64.jcc(code, x86_64.cc_e, "rt.os_spawn_test.wait");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.os_spawn_test.done");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -72);
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.and_ri(code, x86_64.rcx, 127);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.os_spawn_test.signaled");
+    x86_64.shr_ri(code, x86_64.rax, 8);
+    x86_64.and_ri(code, x86_64.rax, 255);
+    x86_64.jmp(code, "rt.os_spawn_test.done");
+    x86_64.label(code, "rt.os_spawn_test.signaled");
+    x86_64.add_ri(code, x86_64.rcx, 128);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.label(code, "rt.os_spawn_test.done");
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.os_spawn_test.invalid");
+    x86_64.mov_ri(code, x86_64.rax, -22);
+    x86_64.jmp(code, "rt.os_spawn_test.done");
+    // child
+    x86_64.label(code, "rt.os_spawn_test.child");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -32);
+    x86_64.mov_store(code, x86_64.rbp, -80, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rbp, -72, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rdi, 0);
+    x86_64.lea(code, x86_64.rsi, x86_64.rbp, -80);
+    x86_64.mov_eax_imm(code, 160);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.os_spawn_test.setup_failed");
+    x86_64.mov_ri(code, x86_64.rcx, 0);
+    x86_64.mov_store(code, x86_64.rbp, -112, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rbp, -104, x86_64.rcx);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -32);
+    x86_64.mov_store(code, x86_64.rbp, -96, x86_64.rax);
+    x86_64.mov_store(code, x86_64.rbp, -88, x86_64.rcx);
+    x86_64.mov_ri(code, x86_64.rdi, 0);
+    x86_64.lea(code, x86_64.rsi, x86_64.rbp, -112);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_eax_imm(code, 38);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.os_spawn_test.setup_failed");
+    kaku slots: []int64 = [-8, -16, -24];
+    kaku at = 0;
+    aida (at < 3) {
+        x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, slots[at]);
+        x86_64.mov_ri(code, x86_64.rsi, at + 1);
+        x86_64.call(code, "rt.os_redirect");
+        x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+        x86_64.jcc(code, x86_64.cc_e, "rt.os_spawn_test.setup_failed");
+        at = at + 1;
+    }
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -40);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -48);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rbp, -56);
+    x86_64.mov_eax_imm(code, 59);
+    x86_64.syscall(code);
+    x86_64.mov_ri(code, x86_64.rdi, 127);
+    x86_64.mov_eax_imm(code, 231);
+    x86_64.syscall(code);
+    x86_64.label(code, "rt.os_spawn_test.setup_failed");
+    x86_64.mov_ri(code, x86_64.rdi, 126);
+    x86_64.mov_eax_imm(code, 231);
+    x86_64.syscall(code);
+}
+
 // Unsupported process helpers fail loudly at run time instead of being skipped.
 waza emit_os_unsupported(code: x86_64.Assembler) -> unit {
     x86_64.label(code, "rt.os_unsupported");
@@ -471,5 +622,6 @@ waza os_routine(operation: string) -> string {
     moshi (operation == "stdin_wait") { kaesu "rt.os_stdin_wait"; }
     moshi (operation == "spawn") { kaesu "rt.os_spawn"; }
     moshi (operation == "exec") { kaesu "rt.os_exec"; }
+    moshi (operation == "spawn_test") { kaesu "rt.os_spawn_test"; }
     kaesu "";
 }

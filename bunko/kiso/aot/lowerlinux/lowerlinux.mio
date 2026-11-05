@@ -137,6 +137,7 @@ waza emit_runtime(code: x86_64.Assembler) -> unit {
     emit_object_runtime(code);
     emit_box_runtime(code);
     emit_fs_runtime(code);
+    emit_testing_runtime(code);
     emit_trap(code, "rt.trap.nil", "rt.text.nil", 25);
     emit_trap(code, "rt.trap.index", "rt.text.index", 33);
     emit_trap(code, "rt.trap.convert", "rt.text.convert", 36);
@@ -1112,6 +1113,17 @@ waza emit_function(code: x86_64.Assembler, file: mochi.File, analysis: types.Typ
     moshi (!reachable) { x86_64.call(code, "rt.trap.unreachable"); kaesu ""; }
     x86_64.push_r(code, x86_64.rbp);
     x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    moshi (len(function.instructions) == 0 && (types.is_testing_report(function.name) || types.is_testing_packet(function.name))) {
+        moshi (function.parameter_count != 2 || function.returns_value || len(function.captures) != 0) { kaesu "INVALID_TESTING_REPORT"; }
+        x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, local_disp(2, 0));
+        unbox_node(code, analysis, analysis.locals[index][0], x86_64.rdi);
+        x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, local_disp(2, 1));
+        x86_64.mov_ri(code, x86_64.rdx, 0);
+        moshi (types.is_testing_packet(function.name)) { x86_64.mov_ri(code, x86_64.rdx, 1); }
+        x86_64.call(code, "rt.testing_report");
+        x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp); x86_64.pop_r(code, x86_64.rbp); x86_64.ret(code);
+        kaesu "";
+    }
     moshi (len(function.instructions) == 0) {
         kaku operation = native_operation(function.name);
         kaku routine = native_routine(operation);
@@ -1173,6 +1185,11 @@ koukai waza compile_with_gc_threshold(file: mochi.File, gc_threshold: int64) -> 
     x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
     kaku problem = emit_block(code, file, analysis, file.instructions, "main", -1, 0);
     moshi (problem != "") { kaesu failed(problem); }
+    moshi (uses_testing(file)) {
+        x86_64.mov_ri(code, x86_64.rdi, 0);
+        moshi (uses_testing_packet(file)) { x86_64.mov_ri(code, x86_64.rdi, 1); }
+        x86_64.call(code, "rt.testing_finish");
+    }
     emit_exit(code, 0);
     kaku reached = types.reachable_functions(file);
     kaku index = 0;

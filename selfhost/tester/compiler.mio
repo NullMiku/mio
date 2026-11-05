@@ -33,5 +33,5 @@ koukai waza image(plan: TestPlan, entry: string, name: string) -> pipeline.Nativ
     kaku instructions = array.clone(file.instructions);
     array.push(instructions, uint8(25)); array.push(instructions, uint8(selected / 256)); array.push(instructions, uint8(selected - (selected / 256) * 256));
     kaku module = mochi.File { version: file.version, constants: file.constants, global_count: file.global_count, instructions: instructions, functions: file.functions };
-    kaesu pipeline.build_signed_test(mochi.canonical_bytes(module));
+    kaesu pipeline.build_host_test(mochi.canonical_bytes(module));
 }
