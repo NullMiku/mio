@@ -332,6 +332,26 @@ waza emit_gc_drain(code: x86_64.Assembler) -> unit {
     x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.environment");
     x86_64.cmp_ri(code, x86_64.rax, 10);
     x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.cell");
+    x86_64.cmp_ri(code, x86_64.rax, 12);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.map");
+    x86_64.cmp_ri(code, x86_64.rax, 13);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.entry");
+    x86_64.jmp(code, "rt.gc_drain.next");
+    // maps: the head entry; entries: the next entry, the key when it is a reference, the value when it is a reference
+    x86_64.label(code, "rt.gc_drain.map");
+    mark_word(code, x86_64.r8, 16);
+    x86_64.jmp(code, "rt.gc_drain.next");
+    x86_64.label(code, "rt.gc_drain.entry");
+    mark_word(code, x86_64.r8, 16);
+    x86_64.mov_load(code, x86_64.r9, x86_64.r8, 40);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.r9);
+    x86_64.and_ri(code, x86_64.rax, 1);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.entry_value");
+    mark_word(code, x86_64.r8, 24);
+    x86_64.label(code, "rt.gc_drain.entry_value");
+    x86_64.and_ri(code, x86_64.r9, 2);
+    x86_64.jcc(code, x86_64.cc_e, "rt.gc_drain.next");
+    mark_word(code, x86_64.r8, 32);
     x86_64.jmp(code, "rt.gc_drain.next");
     x86_64.label(code, "rt.gc_drain.record");
     x86_64.mov_load(code, x86_64.r9, x86_64.r8, 16);

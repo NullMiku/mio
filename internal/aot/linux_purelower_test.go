@@ -295,6 +295,42 @@ aida (i < 300000) {
 kaku total = 0; kaku j = 0;
 aida (j < len(rows)) { total = total + depth(rows, j) + len(rows[j].tags); j = j + 1; }
 chant(churn); chant(total); chant(tick()); chant(rows[29999].name);`,
+	"maps": `kaku ages = Map[string, int64]();
+ages["ann"] = 31; ages["bob"] = 42; ages["ann"] = 32;
+kaku a = ages["ann"]; moshi (a != mu) { chant(a); }
+kaku b = ages["bob"]; moshi (b != mu) { chant(b); }
+chant(ages["nobody"] == mu);
+kaku names = Map[int64, string]();
+kaku i = 0;
+aida (i < 50) { names[i * 7] = "n"; i = i + 1; }
+names[14] = "fourteen";
+kaku n = names[14]; moshi (n != mu) { chant(n); }
+chant(names[15] == mu);
+kaku flags = Map[bool, int64](); flags[hai] = 1; flags[iie] = 0;
+kaku t = flags[hai]; moshi (t != mu) { chant(t); }
+kaku z = flags[iie]; moshi (z != mu) { chant(z); }
+kaku key = "dy"; ages[string_join(key)] = 7;
+waza string_join(s: string) -> string { kaesu s; }`,
+	"gc_maps": `yobu "kiso/array";
+kata Box { id: int64; name: string; }
+kaku keep = Map[int64, Box]();
+kaku i = 0;
+aida (i < 300) { keep[i] = Box { id: i, name: "box" }; i = i + 1; }
+kaku strings = Map[string, string](); strings["k"] = "kept";
+kaku round = 0; kaku checksum = 0;
+aida (round < 3000) {
+    kaku temp = Map[int64, Box]();
+    kaku j = 0;
+    aida (j < 40) { temp[j] = Box { id: j + round, name: "temp" }; j = j + 1; }
+    kaku junk = array.make[int64](500, round);
+    kaku probe = temp[39]; moshi (probe != mu) { checksum = checksum + probe.id; }
+    checksum = checksum + junk[499] - round;
+    round = round + 1;
+}
+kaku sum = 0; kaku k = 0;
+aida (k < 300) { kaku b = keep[k]; moshi (b != mu) { sum = sum + b.id; } k = k + 1; }
+chant(checksum); chant(sum);
+kaku kept = strings["k"]; moshi (kept != mu) { chant(kept); }`,
 	"divide_by_zero": `kaku zero = 0; chant(1); chant(10 / zero); chant(2);`,
 }
 
