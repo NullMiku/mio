@@ -1092,7 +1092,6 @@ waza emit_call(code: arm64.Assembler, patches: []macho.AddressPatch,
 
 waza emit_block(code: arm64.Assembler, patches: []macho.AddressPatch, file: mochi.File,
     type_result: types.TypeAnalysis, ids: []int64, data: []uint8, prefix: string, function_id: int64) -> LowerError? {
-    kaku main_heap = iie; moshi (function_id < 0) { main_heap = file_uses_heap(file); }
     kaku offset = 0;
     aida (offset < len(data)) {
         arm64.assembler_label(code, block_label(prefix, offset));
@@ -1159,20 +1158,9 @@ waza emit_block(code: arm64.Assembler, patches: []macho.AddressPatch, file: moch
             moshi (constant_problem != mu) { kaesu constant_problem; }
         }
         moshi (opcode == 2 || opcode == 4 || opcode == 5 || opcode == 6) { emit_binary(code, opcode, type_result, type_result.blocks[function_id + 1].entry[offset]); }
-        moshi (opcode == 3) {
-            pop_register(code, 9);
-            moshi (function_id < 0) {
-                kaku entries = type_result.blocks[0].entry[offset]; kaku node = entries[len(entries) - 1];
-                kaku kind = types.type_kind(type_result, node);
-                moshi (kind == types.type_unknown) { kaesu LowerError.UnsafeType(offset * 100 + opcode); }
-                kaku tag = kind; moshi (types.type_nullable(type_result, node)) { tag = tag + 128; }
-                move_x(code, 25, 9); emit(code, arm64.movz_x(26, tag, 0));
-                moshi (main_heap) {
-                    moshi (types.type_is_heap_reference(type_result, node)) { emit(code, arm64.str_x(9, 24, 16)); }
-                    sore { emit(code, arm64.str_x(31, 24, 16)); }
-                }
-            }
-        }
+        // A discarded expression value is not program output on any native target (Runtime ABI RA-1): only chant
+        // writes to stdout. Echoing the last top-level value is a feature of the reference `mio run` REPL display.
+        moshi (opcode == 3) { pop_register(code, 9); }
         moshi (opcode == 7) {
             pop_register(code, 9); kaku entries = type_result.blocks[function_id + 1].entry[offset]; kaku node = entries[len(entries) - 1];
             emit_unbox_register(code, type_result, node, 9); kaku kind = types.type_kind(type_result, node);
@@ -1514,34 +1502,6 @@ waza emit_block(code: arm64.Assembler, patches: []macho.AddressPatch, file: moch
     }
     arm64.assembler_label(code, block_label(prefix, len(data)));
     kaesu mu;
-}
-
-// Match the CLI's basic-value display rules for ordinary expressions.
-// Composite results are errors, never addresses printed as integers.
-waza emit_last_result(code: arm64.Assembler) -> unit {
-    move_x(code, 0, 25);
-    emit(code, arm64.cmp_imm_x(26, 128, iie)); arm64.assembler_b_cond(code, 3, "last_result_dispatch");
-    emit(code, arm64.sub_imm_x(26, 26, 128, iie)); arm64.assembler_cbz_x(code, 0, "last_result_nil");
-    emit(code, arm64.cmp_imm_x(26, 5, iie)); arm64.assembler_b_cond(code, 2, "last_result_dispatch");
-    emit(code, arm64.ldr_x(0, 0, 8));
-    arm64.assembler_label(code, "last_result_dispatch");
-    emit(code, arm64.cmp_imm_x(26, 1, iie)); arm64.assembler_b_cond(code, 0, "last_result_integer");
-    emit(code, arm64.cmp_imm_x(26, 2, iie)); arm64.assembler_b_cond(code, 0, "last_result_float32");
-    emit(code, arm64.cmp_imm_x(26, 3, iie)); arm64.assembler_b_cond(code, 0, "last_result_float64");
-    emit(code, arm64.cmp_imm_x(26, 4, iie)); arm64.assembler_b_cond(code, 0, "last_result_bool");
-    emit(code, arm64.cmp_imm_x(26, 5, iie)); arm64.assembler_b_cond(code, 0, "last_result_string");
-    emit(code, arm64.cmp_imm_x(26, 10, iie)); arm64.assembler_b_cond(code, 0, "last_result_nil");
-    // An unsupported display is a runtime error just as in the reference CLI.
-    kaku message = string.to_bytes("cannot display composite runtime value\n");
-    adjust_sp(code, 64, hai); kaku at = 0;
-    aida (at < len(message)) { emit(code, arm64.movz_x(9, int64(message[at]), 0)); emit(code, arm64.strb_w(9, 31, at)); at = at + 1; }
-    emit(code, arm64.movz_x(0, 2, 0)); emit(code, arm64.add_imm_x(1, 31, 0, iie)); emit(code, arm64.movz_x(2, len(message), 0)); emit(code, arm64.movz_x(16, 4, 0)); emit(code, arm64.svc(128)); adjust_sp(code, 64, iie); arm64.assembler_b(code, "runtime_error");
-    arm64.assembler_label(code, "last_result_integer"); arm64.assembler_bl(code, "print_int64"); arm64.assembler_b(code, "normal_exit");
-    arm64.assembler_label(code, "last_result_float32"); emit(code, arm64.movz_x(1, 3, 0)); arm64.assembler_bl(code, "print_float"); arm64.assembler_b(code, "normal_exit");
-    arm64.assembler_label(code, "last_result_float64"); emit(code, arm64.movz_x(1, 4, 0)); arm64.assembler_bl(code, "print_float"); arm64.assembler_b(code, "normal_exit");
-    arm64.assembler_label(code, "last_result_bool"); arm64.assembler_bl(code, "print_bool"); arm64.assembler_b(code, "normal_exit");
-    arm64.assembler_label(code, "last_result_string"); arm64.assembler_bl(code, "print_string"); arm64.assembler_b(code, "normal_exit");
-    arm64.assembler_label(code, "last_result_nil"); arm64.assembler_bl(code, "print_nil"); arm64.assembler_b(code, "normal_exit");
 }
 
 waza emit_main_prologue(code: arm64.Assembler) -> unit {
@@ -2313,8 +2273,6 @@ waza compile_worker_impl(input_file: mochi.File, gc_stress: bool, capacity: int6
     }
     kaku problem = emit_block(code, patches, file, type_result, ids, file.instructions, "main_", -1);
     moshi (problem != mu) { kaesu failed(problem); }
-    arm64.assembler_cbz_x(code, 26, "normal_exit");
-    emit_last_result(code);
     arm64.assembler_label(code, "normal_exit");
     // Completion cannot precede outstanding user callbacks or their reports.
     moshi(worker_roots_enabled(code)){arm64.assembler_bl(code,"attached_workers_join_all");}
