@@ -1,0 +1,7 @@
+yobu "tests/windows-amd64/apps/modules/geometry";
+yobu "kiso/string";
+kaku r = geometry.Rect { w: 6, h: 7 };
+chant(geometry.area(r));
+chant(geometry.label(geometry.area(r)));
+chant(geometry.label(500));
+chant(string.concat("mod", "ules"));

@@ -20,7 +20,7 @@ class Exit(Exception):
 
 
 class Emu:
-    def __init__(self, data, files=None, stack_size=1024 * 1024, max_instructions=2_000_000_000, stdin=b""):
+    def __init__(self, data, files=None, stack_size=1024 * 1024, max_instructions=2_000_000_000, stdin=b"", command_line="program.exe", environment=None):
         self.out = bytearray()
         self.err = bytearray()
         self.exit_code = None
@@ -34,6 +34,8 @@ class Emu:
         self.dirs = set()
         self.finds = {}
         self.stdin = bytearray(stdin)
+        self.command_line = command_line
+        self.environment = dict(environment or {})
         self.stdin_pos = 0
         self.last_error = 0
         self.reserved = []
@@ -356,6 +358,54 @@ class Emu:
             return 0
         self.uc.mem_write(dst, data)
         return len(data)
+
+    # ---- process environment ----
+    def _wide_alloc(self, text_or_list):
+        data = b"".join((t + "\0").encode("utf-16-le") for t in text_or_list) if isinstance(text_or_list, list) else (text_or_list + "\0").encode("utf-16-le")
+        data += b"\0\0" if isinstance(text_or_list, list) else b""
+        base = self.next_region
+        self.next_region += (len(data) + 0xFFFF) & ~0xFFFF
+        self.uc.mem_map(base, (len(data) + 0xFFF) & ~0xFFF, UC_PROT_ALL)
+        self.uc.mem_write(base, data)
+        return base
+
+    def api_GetCommandLineW(self, a, s):
+        return self._wide_alloc(self.command_line)
+
+    def api_GetEnvironmentStringsW(self, a, s):
+        return self._wide_alloc(["%s=%s" % kv for kv in self.environment.items()])
+
+    def api_DeleteFileW(self, a, s):
+        name = self._canonical(self._read_wide(a[0]))
+        if name in self.files:
+            del self.files[name]
+            return 1
+        self.last_error = 2
+        return 0
+
+    def api_RemoveDirectoryW(self, a, s):
+        name = self._read_wide(a[0])
+        if self._is_dir(name) and not self._children(name):
+            self.dirs.discard(name)
+            return 1
+        self.last_error = 2
+        return 0
+
+    def api_GetCurrentProcessId(self, a, s):
+        return 4242
+
+    def api_GetTickCount64(self, a, s):
+        return 123456
+
+    def api_GetFullPathNameW(self, a, s):
+        name = self._read_wide(a[0])
+        full = "C:\\work\\" + self._norm(name).replace("/", "\\") if not (len(name) > 1 and name[1] == ":") else name
+        full = full.rstrip("\\.") if name in (".", "") else full
+        wide = (full + "\0").encode("utf-16-le")
+        if len(wide) // 2 > a[1] & 0xFFFFFFFF:
+            return len(wide) // 2
+        self.uc.mem_write(a[2], wide)
+        return len(full)
 
     def api_ExitProcess(self, a, s):
         self.exit_code = a[0] & 0xFFFFFFFF

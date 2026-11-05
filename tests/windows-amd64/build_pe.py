@@ -56,7 +56,7 @@ def frontend_command(host, command, source, output=None):
     return [str(host), "run", str(source)]
 
 
-def build(mio, source, output, backend="lowerwin"):
+def build(mio, source, output, backend="lowerwin", gc_threshold=None):
     """Returns (ok, message). A lowering error is reported verbatim, never turned into an image."""
     output = Path(output).resolve()
     output.unlink(missing_ok=True)
@@ -68,7 +68,10 @@ def build(mio, source, output, backend="lowerwin"):
         if compiled.returncode != 0:
             return False, "frontend: " + compiled.stderr.strip()
         driver = tmp / "driver.mio"
-        driver.write_text(DRIVER.replace("BACKEND", backend) % ('"%s"' % output.as_posix(), '"%s"' % mochi.as_posix()), encoding="utf-8")
+        text = DRIVER.replace("BACKEND", backend)
+        if gc_threshold:
+            text = text.replace("%s.compile(shimmed(file))" % backend, "%s.compile_with_gc_threshold(shimmed(file), %d)" % (backend, gc_threshold))
+        driver.write_text(text % ('"%s"' % output.as_posix(), '"%s"' % mochi.as_posix()), encoding="utf-8")
         ran = subprocess.run(frontend_command(mio, "run", driver), cwd=ROOT, capture_output=True, text=True, timeout=1800)
         out = ran.stdout.strip()
         if ran.returncode != 0:
