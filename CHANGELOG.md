@@ -17,6 +17,13 @@
 - Fixed truncated (`nil reference`, `index out of range`) and over-long (`invalid call`) runtime trap messages on Linux
   and Windows.
 
+- Behaviour change (darwin-arm64): native programs no longer print the value of the last top-level expression
+  statement at exit; on every target a compiled program writes only its `chant` output. The REPL-style display
+  remains a feature of the reference `mio run`.
+- Darwin runtime: the OS memory-pressure level is re-queried at most once per 256 allocations and after every
+  collection instead of on every allocation (one `sysctlbyname` per allocation made allocation-heavy programs spend
+  about a third of their time in the kernel). Uses a previously unused metadata word (offset 2880).
+
 ### CI
 
 - `.github/workflows/native.yml`, also run by Full: native compiler and CLI fixed points, native `mio test`, Runtime ABI
