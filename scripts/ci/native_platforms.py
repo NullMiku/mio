@@ -184,6 +184,29 @@ def smoke(report, cli, target, work, label_prefix=""):
     return report.check(label_prefix + "cli-hello", "PASS" if ok else "FAIL", "native", "" if ok else "exit %s, stdout %r" % (code, out[:200]))
 
 
+def mio_test_protocol(report, cli, work):
+    """mio test builds one image per package and selects each test by argument: a failing assertion must still fail
+    exactly that test, passing tests must pass, the exit status must be non-zero, and --run must select tests."""
+    project = work / "test-protocol"
+    (project / "mixed").mkdir(parents=True, exist_ok=True)
+    link = project / "bunko"
+    if not link.exists():
+        link.symlink_to(ROOT / "bunko", target_is_directory=True)
+    (project / "mixed" / "m_test.mio").write_text(
+        'yobu "kiso/testing";\n'
+        'waza test_good() -> unit { testing.expect(1 + 1 == 2, "math"); }\n'
+        'waza test_bad() -> unit { testing.expect(1 == 2, "one is not two"); }\n'
+        'waza test_also_good() -> unit { testing.expect(hai, "ok"); }\n')
+    code, out, err, _ = run(report, "mio-test-protocol-all", [cli, "test", "mixed"], cwd=project)
+    text = out + err
+    ok = (code != 0 and "Tests complete: 2 passed, 1 failed" in text and "FAIL: test_bad" in text and
+          "assertion failed: one is not two" in text and "PASS: test_good" in text and "PASS: test_also_good" in text)
+    code2, out2, err2, _ = run(report, "mio-test-protocol-filter", [cli, "test", "mixed", "--run=good"], cwd=project)
+    ok2 = code2 == 0 and "Tests complete: 2 passed, 0 failed" in out2 + err2 and "test_bad" not in out2 + err2
+    report.check("mio-test-protocol", "PASS" if ok and ok2 else "FAIL", "native",
+                 "" if ok and ok2 else "unexpected result: %s | %s" % (brief(text), brief(out2 + err2)))
+
+
 def test_packages():
     found = set()
     for top in ("bunko", "selfhost"):
@@ -315,6 +338,7 @@ def linux(args):
     if cli is None:
         return finish(report)
     smoke(report, cli, "linux-amd64", work)
+    mio_test_protocol(report, cli, work)
     native_mio_test(report, cli, skips_allowed=True)
     contract(report, cli, "linux-amd64", reference=str(refvm))
     contract(report, cli, "linux-amd64", reference=str(refvm), suite="differential")
@@ -383,6 +407,7 @@ def follower(args, target):
         smoke(report, cli, target, work)
         if target == "darwin-arm64":
             darwin_profile(report, cli, work)
+            mio_test_protocol(report, cli, work)
             native_mio_test(report, cli, skips_allowed=False)
         else:
             report.check("mio-test", "NOT_APPLICABLE", "native",
