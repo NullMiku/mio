@@ -121,10 +121,12 @@ waza emit_print_bool(code: x86_64.Assembler) -> unit {
     x86_64.ret(code);
 }
 
-waza emit_trap(code: x86_64.Assembler, label: string, text: string, length: int64) -> unit {
+// A trap writes its complete message (length taken from the text itself) to stderr and exits with status 1.
+waza emit_trap(code: x86_64.Assembler, label: string, text_label: string, text: string) -> unit {
     x86_64.label(code, label);
-    emit_write_literal(code, text, length, 2);
+    emit_write_literal(code, text_label, len(string.to_bytes(text)), 2);
     emit_exit(code, 1);
+    data_string(code, text_label, text);
 }
 
 waza emit_runtime(code: x86_64.Assembler) -> unit {
@@ -139,16 +141,11 @@ waza emit_runtime(code: x86_64.Assembler) -> unit {
     emit_fs_runtime(code);
     emit_map_runtime(code);
     emit_testing_runtime(code);
-    emit_trap(code, "rt.trap.nil", "rt.text.nil", 25);
-    emit_trap(code, "rt.trap.index", "rt.text.index", 33);
-    emit_trap(code, "rt.trap.convert", "rt.text.convert", 36);
-    emit_trap(code, "rt.trap.unreachable", "rt.text.unreachable", 37);
-    data_string(code, "rt.text.unreachable", "runtime error: unsupported operation\n");
-    emit_trap(code, "rt.trap.call", "rt.text.call", 29);
-    data_string(code, "rt.text.call", "runtime error: invalid call\n");
-    data_string(code, "rt.text.nil", "runtime error: nil reference\n");
-    data_string(code, "rt.text.index", "runtime error: index out of range\n");
-    data_string(code, "rt.text.convert", "runtime error: integer out of range\n");
+    emit_trap(code, "rt.trap.nil", "rt.text.nil", "runtime error: nil reference\n");
+    emit_trap(code, "rt.trap.index", "rt.text.index", "runtime error: index out of range\n");
+    emit_trap(code, "rt.trap.convert", "rt.text.convert", "runtime error: integer out of range\n");
+    emit_trap(code, "rt.trap.unreachable", "rt.text.unreachable", "runtime error: unsupported operation\n");
+    emit_trap(code, "rt.trap.call", "rt.text.call", "runtime error: invalid call\n");
     x86_64.label(code, "rt.trap.memory");
     emit_write_literal(code, "rt.text.memory", 22, 2);
     emit_exit(code, 1);
