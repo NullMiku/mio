@@ -196,3 +196,23 @@ waza test_frame_pointer_unwind_rejects_bad_records() -> unit {
     testing.expect(executable_framed(frame_spec(),[good,good]).error!=mu,"overlapping records");
     testing.expect(executable(ImageSpec {text:[195],rdata:[],data:[],zero_fill:0,entry:0,imports:[],patches:[],unwind:[UnwindFunction {begin:0,end:1,prolog_size:0,stack_size:0,stack_offset:0}]}).error==mu,"legacy unwind still works");
 }
+
+waza test_stack_reserve_is_configurable_and_validated() -> unit {
+    kaku image=executable_sized(frame_spec(),[],67108864);
+    testing.expect(image.error==mu && u64(image.bytes,224)==67108864,"stack reserve written to the optional header");
+    testing.expect(u64(executable_framed(frame_spec(),[]).bytes,224)==1048576,"default stays 1 MiB");
+    testing.expect(executable_sized(frame_spec(),[],1000).error!=mu && executable_sized(frame_spec(),[],0).error!=mu,"invalid reserve rejected");
+}
+
+waza test_fixed_data_rva_placement() -> unit {
+    kaku spec=ImageSpec {text:[195],rdata:[],data:[],zero_fill:64,entry:0,imports:[],patches:[],unwind:[]};
+    kaku image=executable_placed(spec,[],1048576,33554432);
+    testing.expect(image.error==mu,"fixed data rva accepted");
+    kaku data=0;kaku i=0;aida(i<len(image.layout.sections)){moshi(image.layout.sections[i].kind==data_section){data=image.layout.sections[i].rva;}i=i+1;}
+    testing.expect(data==33554432 && image.layout.image_size==33558528,"data section sits at the requested RVA");
+    testing.expect(len(image.bytes)==1024,"the RVA gap costs no file bytes");
+    testing.expect(executable_placed(spec,[],1048576,100).error!=mu,"unaligned rva rejected");
+    testing.expect(executable_placed(spec,[],1048576,4096).error!=mu,"rva overlapping text rejected");
+    testing.expect(executable_placed(spec,[],1048576,8192).error==mu,"rva right after text accepted");
+    testing.expect(executable_placed(spec,[],1048576,0).error==mu,"zero keeps sequential layout");
+}

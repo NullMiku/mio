@@ -229,7 +229,16 @@ waza directory(bytes:[]uint8, index:int64, rva:int64, size:int64) -> unit {put(b
 koukai waza executable(spec:ImageSpec) -> ImageResult { kaesu executable_framed(spec,[]); }
 
 // Like executable, with unwind data for frame-pointer functions. A spec uses either spec.unwind or frames, not both.
-koukai waza executable_framed(spec:ImageSpec, frames:[]FrameFunction) -> ImageResult {
+koukai waza executable_framed(spec:ImageSpec, frames:[]FrameFunction) -> ImageResult { kaesu executable_sized(spec,frames,1048576); }
+
+// stack_reserve is the PE SizeOfStackReserve of the main thread (a multiple of 65536, at most 1 GiB).
+koukai waza executable_sized(spec:ImageSpec, frames:[]FrameFunction, stack_reserve:int64) -> ImageResult { kaesu executable_placed(spec,frames,stack_reserve,0); }
+
+// data_rva > 0 places .data at that RVA (a multiple of 4096, not below the end of .text/.rdata), so generated code may
+// embed absolute data addresses (image_base + data_rva) as constants. 0 keeps the sequential layout.
+koukai waza executable_placed(spec:ImageSpec, frames:[]FrameFunction, stack_reserve:int64, data_rva:int64) -> ImageResult {
+    moshi(data_rva<0 || data_rva-(data_rva/4096)*4096!=0 || data_rva>maximum_image_size){kaesu failure(PEError.InvalidEntry());}
+    moshi(stack_reserve<65536 || stack_reserve>1073741824 || stack_reserve-(stack_reserve/65536)*65536!=0){kaesu failure(PEError.ImageTooLarge());}
     moshi(len(frames)>0 && len(spec.unwind)>0){kaesu failure(PEError.InvalidUnwind());}
     moshi(!valid_frames(frames,len(spec.text))){kaesu failure(PEError.InvalidUnwind());}
     kaku unwind_count=len(spec.unwind)+len(frames);
@@ -253,6 +262,8 @@ koukai waza executable_framed(spec:ImageSpec, frames:[]FrameFunction) -> ImageRe
     layout=add_section(layout,text_section,".text",len(spec.text),len(spec.text),1610612768);
     moshi(len(spec.rdata)>0){layout=add_section(layout,rdata_section,".rdata",len(spec.rdata),len(spec.rdata),1073741888);}
     moshi(len(spec.data)+spec.zero_fill>0){
+        moshi(data_rva>0 && data_rva<layout.image_size){kaesu failure(PEError.ImageTooLarge());}
+        moshi(data_rva>0){layout=Layout {headers_size:layout.headers_size,image_size:data_rva,file_size:layout.file_size,sections:layout.sections,iat_rva:layout.iat_rva,iat_size:layout.iat_size};}
         kaku flags=3221225536;moshi(len(spec.data)==0){flags=3221225600;}
         layout=add_section(layout,data_section,".data",len(spec.data),len(spec.data)+spec.zero_fill,flags);
     }
@@ -282,7 +293,7 @@ koukai waza executable_framed(spec:ImageSpec, frames:[]FrameFunction) -> ImageRe
     put(bytes,184,4,section_alignment);put(bytes,188,4,file_alignment);
     put(bytes,192,2,6);put(bytes,200,2,6);put(bytes,208,4,layout.image_size);put(bytes,212,4,headers);
     put(bytes,220,2,3);kaku dll_flags=256;moshi(has_relocations){dll_flags=352;}put(bytes,222,2,dll_flags);
-    put(bytes,224,8,1048576);put(bytes,232,8,4096);put(bytes,240,8,1048576);put(bytes,248,8,4096);put(bytes,260,4,16);
+    put(bytes,224,8,stack_reserve);put(bytes,232,8,4096);put(bytes,240,8,1048576);put(bytes,248,8,4096);put(bytes,260,4,16);
     moshi(imports.size>0){directory(bytes,1,section(layout,import_section).rva,(len(spec.imports)+1)*20);directory(bytes,12,layout.iat_rva,layout.iat_size);}
     moshi(unwind_count>0){directory(bytes,3,section(layout,5).rva,unwind_count*12);}
     moshi(has_relocations){directory(bytes,5,section(layout,7).rva,len(relocations));}
