@@ -1,0 +1,480 @@
+yobu "kiso/aot/x86_64";
+yobu "kiso/array";
+yobu "kiso/convert";
+yobu "kiso/string";
+
+// Linux IPv4 stream sockets for the body-less "mio/sys/socket" functions (kiso/net/tcp). Sockets share the NativeFS
+// generation-checked handle table. Status codes: 0 ok, 1 invalid argument, 2 closed, 3 timed out, 4 connection refused,
+// 5 connection reset, 6 address in use, 7 permission denied, 8 would block, 9 other.
+waza socket_message_text(code: int64) -> string {
+    moshi (code == 1) { kaesu "invalid argument"; }
+    moshi (code == 2) { kaesu "socket closed"; }
+    moshi (code == 3) { kaesu "connection timed out"; }
+    moshi (code == 4) { kaesu "connection refused"; }
+    moshi (code == 5) { kaesu "connection reset"; }
+    moshi (code == 6) { kaesu "address already in use"; }
+    moshi (code == 7) { kaesu "permission denied"; }
+    moshi (code == 8) { kaesu "operation would block"; }
+    kaesu "socket error";
+}
+waza socket_message_label(code: int64) -> string { kaesu string.concat("rt.sock.message.", convert.format_int(code)); }
+
+waza emit_socket_runtime(code: x86_64.Assembler) -> unit {
+    kaku code_number = 0;
+    aida (code_number < 10) {
+        kaku text = "";
+        moshi (code_number != 0) { text = socket_message_text(code_number); }
+        emit_string_object(code, socket_message_label(code_number), text);
+        code_number = code_number + 1;
+    }
+    // rt.sock_classify: rax = positive errno -> rax = socket status code
+    x86_64.label(code, "rt.sock_classify");
+    kaku errnos: []int64 = [22, 97, 9, 88, 110, 111, 104, 32, 98, 13, 1, 11];
+    kaku codes: []int64 = [1, 1, 2, 2, 3, 4, 5, 5, 6, 7, 7, 8];
+    kaku at = 0;
+    aida (at < len(errnos)) {
+        kaku next = string.concat("rt.sock_classify.next.", convert.format_int(at));
+        x86_64.cmp_ri(code, x86_64.rax, errnos[at]);
+        x86_64.jcc(code, x86_64.cc_ne, next);
+        x86_64.mov_ri(code, x86_64.rax, codes[at]);
+        x86_64.ret(code);
+        x86_64.label(code, next);
+        at = at + 1;
+    }
+    x86_64.mov_ri(code, x86_64.rax, 9);
+    x86_64.ret(code);
+
+    // rt.sock_message: rax = code -> rax = message string
+    x86_64.label(code, "rt.sock_message");
+    at = 0;
+    aida (at < 9) {
+        kaku next = string.concat("rt.sock_message.next.", convert.format_int(at));
+        x86_64.cmp_ri(code, x86_64.rax, at);
+        x86_64.jcc(code, x86_64.cc_ne, next);
+        x86_64.lea_label(code, x86_64.rax, socket_message_label(at));
+        x86_64.ret(code);
+        x86_64.label(code, next);
+        at = at + 1;
+    }
+    x86_64.lea_label(code, x86_64.rax, socket_message_label(9));
+    x86_64.ret(code);
+
+    // rt.sock_status_one: rdi = status array (>= 1 byte), rsi = code -> rax = message
+    x86_64.label(code, "rt.sock_status_one");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 40);
+    x86_64.mov_store8(code, x86_64.rax, 0, x86_64.rsi);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rsi);
+    x86_64.jmp(code, "rt.sock_message");
+
+    // rt.sock_status_io: rdi = status array (10 bytes), rsi = count, rdx = eof, rcx = code -> rax = message
+    x86_64.label(code, "rt.sock_status_io");
+    x86_64.test_rr(code, x86_64.rdi, x86_64.rdi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rdi, 40);
+    x86_64.mov_store(code, x86_64.rax, 0, x86_64.rsi);
+    x86_64.mov_store8(code, x86_64.rax, 8, x86_64.rdx);
+    x86_64.mov_store8(code, x86_64.rax, 9, x86_64.rcx);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.jmp(code, "rt.sock_message");
+
+    // rt.sock_fd: rdi = token -> rax = descriptor (>= 0) of an open socket, or -code for a failed or closed handle
+    x86_64.label(code, "rt.sock_fd");
+    x86_64.call(code, "rt.fs_lookup");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.sock_fd.closed");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rax, 8);
+    x86_64.cmp_ri(code, x86_64.rcx, 10);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.sock_fd.failed");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rax, 0);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.sock_fd.failed");
+    x86_64.sub_ri(code, x86_64.rcx, 10);
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.sub_rr(code, x86_64.rax, x86_64.rcx);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.sock_fd.closed");
+    x86_64.mov_ri(code, x86_64.rax, -2);
+    x86_64.ret(code);
+
+    // rt.sock_wrap: rax = descriptor or negative errno of a creating call -> rax = token (a failed handle keeps the code)
+    x86_64.label(code, "rt.sock_wrap");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.sock_wrap.failed");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 1);
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.call(code, "rt.fs_alloc");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.sock_wrap.done");
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.mov_eax_imm(code, 3);
+    x86_64.syscall(code);
+    x86_64.pop_r(code, x86_64.rax);
+    x86_64.label(code, "rt.sock_wrap.done");
+    x86_64.ret(code);
+    x86_64.label(code, "rt.sock_wrap.failed");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.sock_classify");
+    x86_64.lea(code, x86_64.rsi, x86_64.rax, 10);
+    x86_64.mov_ri(code, x86_64.rdi, -1);
+    x86_64.call(code, "rt.fs_alloc");
+    x86_64.ret(code);
+
+    // rt.sock_open: -> token. SO_REUSEADDR is set like the reference runtime; SIGPIPE is avoided with MSG_NOSIGNAL on send.
+    x86_64.label(code, "rt.sock_open");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 16);
+    x86_64.mov_ri(code, x86_64.rdi, 2);
+    x86_64.mov_ri(code, x86_64.rsi, 1);
+    x86_64.mov_ri(code, x86_64.rdx, 6);
+    x86_64.mov_eax_imm(code, 41);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.sock_open.done");
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rax);
+    x86_64.call(code, "rt.sock_reuse");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.sock_open.configured");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -8);
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rax);
+    x86_64.mov_eax_imm(code, 3);
+    x86_64.syscall(code);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -16);
+    x86_64.jmp(code, "rt.sock_open.done");
+    x86_64.label(code, "rt.sock_open.configured");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -8);
+    x86_64.label(code, "rt.sock_open.done");
+    x86_64.call(code, "rt.sock_wrap");
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+
+    // rt.sock_reuse: rax = descriptor (preserved in [rbp-8] of the caller) ... sets SO_REUSEADDR, returns 0 or a negative errno
+    x86_64.label(code, "rt.sock_reuse");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 16);
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 1);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 1);
+    x86_64.mov_ri(code, x86_64.rdx, 2);
+    x86_64.lea(code, x86_64.r10, x86_64.rbp, -8);
+    x86_64.mov_ri(code, x86_64.r8, 4);
+    x86_64.mov_eax_imm(code, 54);
+    x86_64.syscall(code);
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+
+    // rt.sock_status: rdi = token, rsi = status array -> message
+    x86_64.label(code, "rt.sock_status");
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.sock_fd");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ge, "rt.sock_status.go");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.label(code, "rt.sock_status.go");
+    x86_64.jmp(code, "rt.sock_status_one");
+
+    // rt.sock_address: shared by bind and connect. rdi = token, rsi = address bytes, rdx = port, rcx = status array,
+    // r8 = syscall number (49 bind, 42 connect) -> message
+    x86_64.label(code, "rt.sock_address");
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 64);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.r8);
+    x86_64.mov_store(code, x86_64.rbp, -24, x86_64.rsi);
+    x86_64.mov_store(code, x86_64.rbp, -32, x86_64.rdx);
+    x86_64.call(code, "rt.sock_fd");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.sock_address.state");
+    x86_64.mov_store(code, x86_64.rbp, -40, x86_64.rax);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -24);
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.sock_address.invalid");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsi, 16);
+    x86_64.cmp_ri(code, x86_64.rax, 4);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.sock_address.invalid");
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rbp, -32);
+    x86_64.cmp_ri(code, x86_64.rdx, 0);
+    x86_64.jcc(code, x86_64.cc_l, "rt.sock_address.invalid");
+    x86_64.cmp_ri(code, x86_64.rdx, 65535);
+    x86_64.jcc(code, x86_64.cc_g, "rt.sock_address.invalid");
+    // sockaddr_in: family (2 bytes), port big endian (2), address (4), zero padding (8)
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rsi, 40);
+    x86_64.mov_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.and_ri(code, x86_64.rax, 255);
+    x86_64.shl_ri(code, x86_64.rax, 8);
+    x86_64.shr_ri(code, x86_64.rdx, 8);
+    x86_64.add_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.shl_ri(code, x86_64.rax, 16);
+    x86_64.add_ri(code, x86_64.rax, 2);
+    kaku octet = 0;
+    aida (octet < 4) {
+        x86_64.mov_load8(code, x86_64.rcx, x86_64.rsi, octet);
+        x86_64.shl_ri(code, x86_64.rcx, 32 + 8 * octet);
+        x86_64.add_rr(code, x86_64.rax, x86_64.rcx);
+        octet = octet + 1;
+    }
+    x86_64.mov_store(code, x86_64.rbp, -64, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rax, 0);
+    x86_64.mov_store(code, x86_64.rbp, -56, x86_64.rax);
+    x86_64.label(code, "rt.sock_address.call");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -40);
+    x86_64.lea(code, x86_64.rsi, x86_64.rbp, -64);
+    x86_64.mov_ri(code, x86_64.rdx, 16);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rbp, -16);
+    x86_64.syscall(code);
+    x86_64.cmp_ri(code, x86_64.rax, -4);
+    x86_64.jcc(code, x86_64.cc_e, "rt.sock_address.call");
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ge, "rt.sock_address.done");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.sock_classify");
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.jmp(code, "rt.sock_address.done");
+    x86_64.label(code, "rt.sock_address.invalid");
+    x86_64.mov_ri(code, x86_64.rsi, 1);
+    x86_64.jmp(code, "rt.sock_address.done");
+    x86_64.label(code, "rt.sock_address.state");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.label(code, "rt.sock_address.done");
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -8);
+    x86_64.call(code, "rt.sock_status_one");
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+    x86_64.label(code, "rt.sock_bind");
+    x86_64.mov_ri(code, x86_64.r8, 49);
+    x86_64.jmp(code, "rt.sock_address");
+    x86_64.label(code, "rt.sock_connect");
+    x86_64.mov_ri(code, x86_64.r8, 42);
+    x86_64.jmp(code, "rt.sock_address");
+
+    // rt.sock_listen: rdi = token, rsi = backlog, rdx = status array -> message
+    x86_64.label(code, "rt.sock_listen");
+    x86_64.push_r(code, x86_64.rdx);
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.sock_fd");
+    x86_64.pop_r(code, x86_64.rsi);
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.push_r(code, x86_64.rdi);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.sock_listen.state");
+    x86_64.cmp_ri(code, x86_64.rsi, 0);
+    x86_64.jcc(code, x86_64.cc_l, "rt.sock_listen.invalid");
+    x86_64.cmp_ri(code, x86_64.rsi, 65535);
+    x86_64.jcc(code, x86_64.cc_g, "rt.sock_listen.invalid");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_eax_imm(code, 50);
+    x86_64.syscall(code);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ge, "rt.sock_listen.done");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.sock_classify");
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.jmp(code, "rt.sock_listen.done");
+    x86_64.label(code, "rt.sock_listen.invalid");
+    x86_64.mov_ri(code, x86_64.rsi, 1);
+    x86_64.jmp(code, "rt.sock_listen.done");
+    x86_64.label(code, "rt.sock_listen.state");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.label(code, "rt.sock_listen.done");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.call(code, "rt.sock_status_one");
+    x86_64.ret(code);
+
+    // rt.sock_accept: rdi = token -> token of the accepted connection (a failed handle carries the error)
+    x86_64.label(code, "rt.sock_accept");
+    x86_64.call(code, "rt.sock_fd");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.sock_accept.state");
+    x86_64.mov_rr(code, x86_64.r9, x86_64.rax);
+    x86_64.label(code, "rt.sock_accept.again");
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.r9);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_eax_imm(code, 43);
+    x86_64.syscall(code);
+    x86_64.cmp_ri(code, x86_64.rax, -4);
+    x86_64.jcc(code, x86_64.cc_e, "rt.sock_accept.again");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, "rt.sock_wrap");
+    x86_64.push_r(code, x86_64.rax);
+    x86_64.call(code, "rt.sock_reuse");
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.pop_r(code, x86_64.rax);
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, "rt.sock_wrap");
+    x86_64.push_r(code, x86_64.rcx);
+    x86_64.mov_rr(code, x86_64.rdi, x86_64.rax);
+    x86_64.mov_eax_imm(code, 3);
+    x86_64.syscall(code);
+    x86_64.pop_r(code, x86_64.rax);
+    x86_64.jmp(code, "rt.sock_wrap");
+    x86_64.label(code, "rt.sock_accept.state");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.lea(code, x86_64.rsi, x86_64.rax, 10);
+    x86_64.mov_ri(code, x86_64.rdi, -1);
+    x86_64.call(code, "rt.fs_alloc");
+    x86_64.ret(code);
+
+    // rt.sock_read / rt.sock_write: rdi = token, rsi = byte array, rdx = offset, rcx = length, r8 = status array -> message
+    emit_socket_transfer(code, "rt.sock_read", hai);
+    emit_socket_transfer(code, "rt.sock_write", iie);
+
+    // rt.sock_close: rdi = token, rsi = status array -> message
+    x86_64.label(code, "rt.sock_close");
+    x86_64.push_r(code, x86_64.rsi);
+    x86_64.call(code, "rt.fs_lookup");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.sock_close.closed");
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rax, 8);
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rax, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_store(code, x86_64.rax, 8, x86_64.rdx);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.cmp_ri(code, x86_64.rcx, 1);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.sock_close.done");
+    x86_64.mov_eax_imm(code, 3);
+    x86_64.syscall(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_ge, "rt.sock_close.done");
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.sock_classify");
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.label(code, "rt.sock_close.done");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.jmp(code, "rt.sock_status_one");
+    x86_64.label(code, "rt.sock_close.closed");
+    x86_64.pop_r(code, x86_64.rdi);
+    x86_64.mov_ri(code, x86_64.rsi, 2);
+    x86_64.jmp(code, "rt.sock_status_one");
+}
+
+waza emit_socket_transfer(code: x86_64.Assembler, name: string, reading: bool) -> unit {
+    x86_64.label(code, name);
+    x86_64.push_r(code, x86_64.rbp);
+    x86_64.mov_rr(code, x86_64.rbp, x86_64.rsp);
+    x86_64.sub_ri(code, x86_64.rsp, 48);
+    x86_64.mov_store(code, x86_64.rbp, -8, x86_64.rsi);
+    x86_64.mov_store(code, x86_64.rbp, -16, x86_64.rdx);
+    x86_64.mov_store(code, x86_64.rbp, -24, x86_64.rcx);
+    x86_64.mov_store(code, x86_64.rbp, -32, x86_64.r8);
+    x86_64.test_rr(code, x86_64.r8, x86_64.r8);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.call(code, "rt.sock_fd");
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, string.concat(name, ".state"));
+    x86_64.mov_store(code, x86_64.rbp, -40, x86_64.rax);
+    // the whole byte range must lie inside the array, or nothing is touched
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -8);
+    x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
+    x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rbp, -16);
+    x86_64.mov_load(code, x86_64.rcx, x86_64.rbp, -24);
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsi, 16);
+    x86_64.test_rr(code, x86_64.rdx, x86_64.rdx);
+    x86_64.jcc(code, x86_64.cc_l, string.concat(name, ".range"));
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_l, string.concat(name, ".range"));
+    x86_64.cmp_rr(code, x86_64.rdx, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_g, string.concat(name, ".range"));
+    x86_64.sub_rr(code, x86_64.rax, x86_64.rdx);
+    x86_64.cmp_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_g, string.concat(name, ".range"));
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_e, string.concat(name, ".empty"));
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rsi, 40);
+    x86_64.add_rr(code, x86_64.rsi, x86_64.rdx);
+    x86_64.label(code, string.concat(name, ".again"));
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -40);
+    x86_64.mov_load(code, x86_64.rdx, x86_64.rbp, -24);
+    moshi (reading) { x86_64.mov_eax_imm(code, 0); }
+    moshi (!reading) {
+        x86_64.mov_eax_imm(code, 44);
+        x86_64.mov_ri(code, x86_64.r10, 16384);
+        x86_64.mov_ri(code, x86_64.r8, 0);
+        x86_64.mov_ri(code, x86_64.r9, 0);
+    }
+    x86_64.mov_store(code, x86_64.rbp, -48, x86_64.rsi);
+    x86_64.syscall(code);
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, -48);
+    x86_64.cmp_ri(code, x86_64.rax, -4);
+    x86_64.jcc(code, x86_64.cc_e, string.concat(name, ".again"));
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_l, string.concat(name, ".errno"));
+    x86_64.mov_rr(code, x86_64.rsi, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    moshi (reading) {
+        x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+        x86_64.jcc(code, x86_64.cc_ne, string.concat(name, ".reported"));
+        x86_64.mov_ri(code, x86_64.rdx, 1);
+    }
+    x86_64.label(code, string.concat(name, ".reported"));
+    x86_64.mov_ri(code, x86_64.rcx, 0);
+    x86_64.jmp(code, string.concat(name, ".status"));
+    x86_64.label(code, string.concat(name, ".empty"));
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.mov_ri(code, x86_64.rcx, 0);
+    x86_64.jmp(code, string.concat(name, ".status"));
+    x86_64.label(code, string.concat(name, ".errno"));
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.call(code, "rt.sock_classify");
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.jmp(code, string.concat(name, ".status"));
+    x86_64.label(code, string.concat(name, ".range"));
+    x86_64.mov_ri(code, x86_64.rcx, 1);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.jmp(code, string.concat(name, ".status"));
+    x86_64.label(code, string.concat(name, ".state"));
+    x86_64.neg_r(code, x86_64.rax);
+    x86_64.mov_rr(code, x86_64.rcx, x86_64.rax);
+    x86_64.mov_ri(code, x86_64.rsi, 0);
+    x86_64.mov_ri(code, x86_64.rdx, 0);
+    x86_64.label(code, string.concat(name, ".status"));
+    x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, -32);
+    x86_64.call(code, "rt.sock_status_io");
+    x86_64.mov_rr(code, x86_64.rsp, x86_64.rbp);
+    x86_64.pop_r(code, x86_64.rbp);
+    x86_64.ret(code);
+}
+
+// "$mma::mio/sys/socket::<name>::<hash>" -> routine, or "" when the function is not a socket primitive.
+waza socket_routine(function_name: string) -> string {
+    kaku prefix = "$mma::mio/sys/socket::";
+    moshi (!string.has_prefix(function_name, prefix)) { kaesu ""; }
+    kaku bytes = string.to_bytes(function_name);
+    kaku at = string.byte_len(prefix);
+    kaku output: []uint8 = [];
+    aida (at < len(bytes) && bytes[at] != uint8(58)) { array.push(output, bytes[at]); at = at + 1; }
+    kaku name = string.from_utf8(output);
+    moshi (name == mu) { kaesu ""; }
+    moshi (name == "open") { kaesu "rt.sock_open"; }
+    moshi (name == "status") { kaesu "rt.sock_status"; }
+    moshi (name == "bind_ipv4") { kaesu "rt.sock_bind"; }
+    moshi (name == "connect_ipv4") { kaesu "rt.sock_connect"; }
+    moshi (name == "listen") { kaesu "rt.sock_listen"; }
+    moshi (name == "accept") { kaesu "rt.sock_accept"; }
+    moshi (name == "read") { kaesu "rt.sock_read"; }
+    moshi (name == "write") { kaesu "rt.sock_write"; }
+    moshi (name == "close") { kaesu "rt.sock_close"; }
+    kaesu "";
+}
