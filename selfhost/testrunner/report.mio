@@ -10,12 +10,13 @@ koukai waza json_error(code: string, message: string) -> string {
 }
 koukai waza json_result(name: string, path: string, value: Result) -> string {
     kaku builder = string.new_builder(); put(builder, "{\"name\":"); put(builder, json.quote(name)); put(builder, ",\"path\":"); put(builder, json.quote(path)); put(builder, ",\"status\":");
-    kaku status = "failed"; moshi (passed(value)) { status = "passed"; } put(builder, json.quote(status)); put(builder, ",\"duration_ms\":"); put(builder, convert.format_int(value.duration_ms));
+    kaku status = "failed"; moshi (passed(value)) { status = "passed"; } moshi (skipped(value)) { status = "skipped"; } put(builder, json.quote(status)); put(builder, ",\"duration_ms\":"); put(builder, convert.format_int(value.duration_ms));
     moshi (len(value.failures) > 0) {
         put(builder, ",\"failures\":["); kaku at = 0;
         aida (at < len(value.failures)) { moshi (at > 0) { put(builder, ","); } put(builder, json_error("E0602", value.failures[at])); at = at + 1; } put(builder, "]");
     }
     moshi (value.error != "") { put(builder, ",\"error\":"); put(builder, json_error(value.error_code, value.error)); }
+    moshi (skipped(value)) { put(builder, ",\"skip_reason\":"); put(builder, json.quote(value.skipped)); }
     put(builder, "}"); kaesu string.builder_string(builder);
 }
 koukai waza seconds(milliseconds: int64) -> string {
@@ -47,10 +48,11 @@ koukai waza message(lang: int64, key: int64) -> string {
 koukai waza human_result(package: string, name: string, value: Result, lang: int64, short: bool, verbose: bool) -> unit {
     moshi (len(value.stdout) > 0) { fs.write_all("/dev/stdout", value.stdout); }
     moshi (verbose && len(value.stderr) > 0) { fs.write_all("/dev/stderr", value.stderr); }
-    kaku status = message(lang, 2); moshi (passed(value)) { status = message(lang, 1); }
+    kaku status = message(lang, 2); moshi (passed(value)) { status = message(lang, 1); } moshi (skipped(value)) { status = "SKIP"; }
     kaku prefix = string.concat("--- ", string.concat(status, string.concat(": ", name)));
     moshi (short) { prefix = string.concat(package, string.concat(":", string.concat(name, string.concat(": ", status)))); }
     chant(string.concat(prefix, string.concat(" (", string.concat(seconds(value.duration_ms), "s)"))));
+    moshi (skipped(value)) { chant(string.concat("    skipped: ", value.skipped)); }
     kaku at = 0;
     aida (at < len(value.failures)) {
         kaku lead = string.concat("    ", message(lang, 3)); moshi (short) { lead = string.concat(package, string.concat(":", string.concat(name, ": E0602"))); }

@@ -4,6 +4,13 @@ koukai waza expect(condition: bool, message: string) -> unit {
     runtime.report(condition, message);
 }
 
+// A skipped test is neither a pass nor a failure: the runner reports it as SKIP with the reason and counts it
+// separately. A skip is two records: the fixed marker, then the reason. Call it before any other expectation.
+koukai waza skip(reason: string) -> unit {
+    runtime.report(iie, "@@mio-test-skip@@");
+    runtime.report(iie, reason);
+}
+
 koukai waza fail(message: string) -> unit {
     runtime.report(iie, message);
 }

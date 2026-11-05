@@ -5,11 +5,21 @@ yobu "kiso/convert";
 yobu "kiso/array";
 yobu "selfhost/tester";
 
-koukai kata Result { failures: []string; error_code: string; error: string; duration_ms: int64; stdout: []uint8; stderr: []uint8; }
+koukai kata Result { failures: []string; error_code: string; error: string; duration_ms: int64; stdout: []uint8; stderr: []uint8; skipped: string; }
 waza result(failures: []string, code: string, message: string, duration: int64, stdout: []uint8, stderr: []uint8) -> Result {
-    kaesu Result { failures: failures, error_code: code, error: message, duration_ms: duration, stdout: stdout, stderr: stderr };
+    kaesu Result { failures: failures, error_code: code, error: message, duration_ms: duration, stdout: stdout, stderr: stderr, skipped: "" };
 }
-koukai waza passed(value: Result) -> bool { kaesu len(value.failures) == 0 && value.error == ""; }
+koukai waza passed(value: Result) -> bool { kaesu len(value.failures) == 0 && value.error == "" && value.skipped == ""; }
+koukai waza skipped(value: Result) -> bool { kaesu value.skipped != "" && value.error == ""; }
+// A test that reported exactly the skip marker followed by its reason (testing.skip) was not run to a verdict.
+// Any other record makes it a normal result.
+waza skip_reason(failures: []string) -> string {
+    moshi (len(failures) == 0 || failures[0] != "@@mio-test-skip@@") { kaesu ""; }
+    moshi (len(failures) == 1) { kaesu "skipped"; }
+    moshi (len(failures) != 2) { kaesu ""; }
+    moshi (string.byte_len(failures[1]) == 0) { kaesu "skipped"; }
+    kaesu failures[1];
+}
 koukai waza execute(plan: tester.TestPlan, package: string, name: string, temporary: string, sequence: int64) -> Result {
     kaku started = os.monotonic_ms();
     kaku prefix = string.concat(temporary, string.concat("/test-", convert.format_int(sequence)));
@@ -35,6 +45,10 @@ koukai waza execute(plan: tester.TestPlan, package: string, name: string, tempor
     moshi (status == 137 || status == 142 || status == 152) { kaesu result(packets.failures, "E0604", "native test CPU/wall resource limit", duration, captured_out.data, captured_err.data); }
     moshi (!packets.complete || (status != 0 && (status != 1 || len(packets.failures) == 0))) {
         kaesu result(packets.failures, "E0603", string.concat("native test terminated without normal completion; status=", convert.format_int(status)), duration, captured_out.data, captured_err.data);
+    }
+    kaku skip = skip_reason(packets.failures);
+    moshi (skip != "") {
+        kaesu Result { failures: [], error_code: "", error: "", duration_ms: duration, stdout: captured_out.data, stderr: captured_err.data, skipped: skip };
     }
     kaesu result(packets.failures, "", "", duration, captured_out.data, captured_err.data);
 }
