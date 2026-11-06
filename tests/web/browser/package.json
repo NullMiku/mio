@@ -1,0 +1,11 @@
+{
+  "name": "mio-web-playground-browser-tests",
+  "private": true,
+  "description": "Playwright tests for the static Mio Web playground (build/web).",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}
