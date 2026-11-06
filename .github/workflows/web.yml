@@ -1,0 +1,81 @@
+name: Mio Web / Playground
+# The browser playground and its Web reference VM (Go reference front end + Mochi codec + reference VM
+# compiled to js/wasm). This is not a native AOT backend; the native workflows are unaffected.
+on:
+  pull_request:
+    branches: [Mio-2.1]
+  push:
+    branches: [Mio-2.1]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: web-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  web:
+    name: Web / linux-amd64 + Chromium
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Mochi codec, reference VM and Web engine unit tests
+        run: go test -count=1 ./internal/code ./internal/mochi ./internal/vm ./internal/bunko ./internal/playground
+      - name: Web engine builds for js/wasm and vets clean
+        run: |
+          go run ./cmd/mio-wasm/stage bunko cmd/mio-wasm/library
+          GOOS=js GOARCH=wasm go vet ./cmd/mio-wasm ./internal/playground
+      - name: Build the static playground
+        run: bash scripts/web/build.sh build/web
+      - name: Check the static build is self-contained
+        run: |
+          for f in index.html app.js client.js worker.js style.css examples.json mio.wasm wasm_exec.js manifest.json; do
+            test -s "build/web/$f" || { echo "missing build/web/$f"; exit 1; }
+          done
+          if grep -RInE "https?://" build/web/index.html build/web/app.js build/web/client.js build/web/worker.js; then
+            echo "the static build must not reference external URLs"; exit 1
+          fi
+      - name: Build the reference CLI and the native linux-amd64 CLI (Mochi producers)
+        run: |
+          go build -o build/reference/mio ./cmd/mio
+          bash scripts/web/native-cli.sh build/native-cli
+      - name: Native CLI -> Web VM compatibility and Web VM / reference VM differential
+        run: >-
+          python tests/web/differential.py --reference-mio build/reference/mio --native-mio build/native-cli/mio
+          --fixtures build/web-fixtures --output build/web-report/differential.json
+      - name: Install Playwright and Chromium
+        working-directory: tests/web/browser
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Real-browser tests (Chromium)
+        working-directory: tests/web/browser
+        run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/web-report/
+            tests/web/browser/test-results/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: mio-web-playground-${{ github.sha }}
+          path: build/web/
+          if-no-files-found: error
+          retention-days: 14
