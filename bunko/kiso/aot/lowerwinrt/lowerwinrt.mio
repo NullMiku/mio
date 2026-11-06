@@ -1111,6 +1111,19 @@ waza emit_function(code: x86_64.Assembler, ctx: WinContext, file: mochi.File, an
         close_frame(code, ctx, dead, 0);
         kaesu "";
     }
+    moshi (len(function.instructions) == 0 && (types.is_testing_report(function.name) || types.is_testing_packet(function.name))) {
+        moshi (function.parameter_count != 2 || function.returns_value || len(function.captures) != 0) { kaesu "INVALID_TESTING_REPORT"; }
+        kaku report_begin = open_frame(code, function_label(index), 0);
+        x86_64.mov_load(code, x86_64.rdi, x86_64.rbp, local_disp(2, 0));
+        unbox_node(code, analysis, analysis.locals[index][0], x86_64.rdi);
+        x86_64.mov_load(code, x86_64.rsi, x86_64.rbp, local_disp(2, 1));
+        x86_64.mov_ri(code, x86_64.rdx, 0);
+        moshi (types.is_testing_packet(function.name)) { x86_64.mov_ri(code, x86_64.rdx, 1); }
+        x86_64.call(code, "rt.testing_report");
+        emit_epilogue(code);
+        close_frame(code, ctx, report_begin, 0);
+        kaesu "";
+    }
     moshi (len(function.instructions) == 0) {
         kaku operation = native_operation(function.name);
         kaku routine = native_routine(operation);
@@ -1179,6 +1192,11 @@ koukai waza compile_with_gc_threshold(file: mochi.File, gc_threshold: int64) -> 
     x86_64.mov_store(code, x86_64.rcx, 64, x86_64.rax);
     kaku problem = emit_block(code, file, analysis, file.instructions, "main", -1, 0);
     moshi (problem != "") { kaesu failed(string.concat("main: ", problem)); }
+    moshi (uses_testing(file)) {
+        x86_64.mov_ri(code, x86_64.rdi, 0);
+        moshi (uses_testing_packet(file)) { x86_64.mov_ri(code, x86_64.rdi, 1); }
+        x86_64.call(code, "rt.testing_finish");
+    }
     emit_exit(code, 0);
     emit_epilogue(code);
     close_frame(code, ctx, begin, 0);
@@ -1196,7 +1214,7 @@ koukai waza compile_with_gc_threshold(file: mochi.File, gc_threshold: int64) -> 
     moshi (assembled.error != "") { kaesu failed(assembled.error); }
     kaku bss = 8192 + 2097152 + 131072 + 8 * file.global_count + 32;
     kaku image = pe.executable_placed(pe.ImageSpec { text: assembled.bytes, rdata: [], data: [], zero_fill: bss, entry: 0,
-        imports: [pe.ImportLibrary { name: "KERNEL32.dll", symbols: ["GetStdHandle", "WriteFile", "ExitProcess", "VirtualAlloc", "CreateFileW", "ReadFile", "CloseHandle", "MultiByteToWideChar", "GetLastError", "GetFileAttributesW", "CreateDirectoryW", "FindFirstFileW", "FindNextFileW", "FindClose", "WideCharToMultiByte", "GetCommandLineW", "GetEnvironmentStringsW", "DeleteFileW", "RemoveDirectoryW", "GetCurrentProcessId", "GetTickCount64", "GetFullPathNameW", "GetModuleFileNameW"] }],
+        imports: [pe.ImportLibrary { name: "KERNEL32.dll", symbols: ["GetStdHandle", "WriteFile", "ExitProcess", "VirtualAlloc", "CreateFileW", "ReadFile", "CloseHandle", "MultiByteToWideChar", "GetLastError", "GetFileAttributesW", "CreateDirectoryW", "FindFirstFileW", "FindNextFileW", "FindClose", "WideCharToMultiByte", "GetCommandLineW", "GetEnvironmentStringsW", "DeleteFileW", "RemoveDirectoryW", "GetCurrentProcessId", "GetTickCount64", "GetFullPathNameW", "GetModuleFileNameW", "CreateProcessW", "WaitForSingleObject", "GetExitCodeProcess", "TerminateProcess", "GetStartupInfoW", "PeekNamedPipe", "GetFileType", "Sleep"] }],
         patches: ctx.patches, unwind: [] }, ctx.frames, 67108864, data_rva);
     moshi (image.error != mu) { kaesu failed("PE_IMAGE_ERROR"); }
     kaesu LowerResult { bytes: image.bytes, error: "" };
