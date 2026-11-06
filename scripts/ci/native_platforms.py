@@ -202,6 +202,47 @@ def mio_run_protocol(report, cli, work):
                  "" if ok else "exit %s (expected %d), stdout %r, stderr %r" % (code, len(values) + 41, out[:300], brief(err)))
 
 
+def os_process_protocol(report, cli, work):
+    """kiso/os process operations with a real child, built for the host: spawn passes the argument strings unchanged and
+    returns the child's exit status, a program that cannot be started reports 127, and exec replaces the caller
+    (Windows: starts, waits and exits with the child's status), so the caller's exit status is the child's."""
+    project = work / "os-process"
+    project.mkdir(parents=True, exist_ok=True)
+    child, parent = project / ("child" + EXE.get(report.target, "")), project / ("parent" + EXE.get(report.target, ""))
+    (project / "child.mio").write_text(
+        'yobu "kiso/os";\nyobu "kiso/string";\n'
+        'kaku args = os.arguments(); kaku i = 1;\n'
+        'aida (i < len(args)) { chant(string.concat("<", string.concat(args[i], ">"))); i = i + 1; }\n'
+        'os.exit(len(args) + 20);\n', encoding="utf-8")
+    (project / "parent.mio").write_text(
+        'yobu "kiso/os";\n'
+        'kaku args = os.arguments(); kaku child = args[1]; kaku missing = args[2];\n'
+        'chant(os.spawn(child, [child, "a b", "", "q\\"x", "\u65e5\u672c"]));\n'
+        'chant(os.spawn(missing, [missing]));\n'
+        'os.exec(child, [child, "exec"]);\n'
+        'chant("exec returned");\n', encoding="utf-8")
+    built = all(cli_build(report, "os-process-" + name, cli, str(project / (name + ".mio")), report.target, image)[0]
+                for name, image in (("child", child), ("parent", parent)))
+    if not built:
+        return report.check("os-process-protocol", "FAIL", "native", "the protocol programs did not build")
+    code, out, err, _ = run(report, "os-process-protocol", [parent, child, project / "no-such-program"], cwd=project)
+    expected = "<a b>\n<>\n<q\"x>\n<\u65e5\u672c>\n25\n127\n<exec>\n"
+    ok = code == 22 and out.replace("\r\n", "\n") == expected
+    reason = "" if ok else "exit %s (expected 22), stdout %r, stderr %r" % (code, out[:300], brief(err))
+    # stdin readiness: a pipe holding data, and an empty pipe whose writer is closed (end of file), are both ready.
+    reader = project / ("stdin" + EXE.get(report.target, ""))
+    (project / "stdin.mio").write_text('yobu "kiso/os";\nchant(os.stdin_wait(5000));\nchant(os.stdin_ready());\n', encoding="utf-8")
+    if ok and cli_build(report, "os-process-stdin", cli, str(project / "stdin.mio"), report.target, reader)[0]:
+        for label, data in (("data", b"x\n"), ("eof", b"")):
+            code, out, err, _ = run(report, "os-process-stdin-" + label, [reader], cwd=project, stdin=data)
+            if code != 0 or out.replace("\r\n", "\n") != "1\n1\n":
+                ok, reason = False, "stdin %s: exit %s, stdout %r (expected 1, 1), stderr %r" % (label, code, out, brief(err))
+                break
+    elif ok:
+        ok, reason = False, "the stdin program did not build"
+    report.check("os-process-protocol", "PASS" if ok else "FAIL", "native", reason)
+
+
 def mio_test_protocol(report, cli, work):
     """mio test builds one image per package and selects each test by argument: a failing assertion must still fail
     exactly that test, passing tests must pass, the exit status must be non-zero, and --run must select tests."""
@@ -214,11 +255,15 @@ def mio_test_protocol(report, cli, work):
         'yobu "kiso/testing";\n'
         'waza test_good() -> unit { testing.expect(1 + 1 == 2, "math"); }\n'
         'waza test_bad() -> unit { testing.expect(1 == 2, "one is not two"); }\n'
-        'waza test_also_good() -> unit { testing.expect(hai, "ok"); }\n')
+        'waza test_also_good() -> unit { testing.expect(hai, "ok"); }\n'
+        'waza test_failed() -> unit { testing.fail("explicit failure"); }\n'
+        'waza test_skipped() -> unit { testing.skip("not on this host"); }\n')
     code, out, err, _ = run(report, "mio-test-protocol-all", [cli, "test", "mixed"], cwd=project)
     text = out + err
-    ok = (code != 0 and "Tests complete: 2 passed, 1 failed" in text and "FAIL: test_bad" in text and
-          "assertion failed: one is not two" in text and "PASS: test_good" in text and "PASS: test_also_good" in text)
+    ok = (code != 0 and "Tests complete: 2 passed, 2 failed" in text and "FAIL: test_bad" in text and
+          "assertion failed: one is not two" in text and "PASS: test_good" in text and "PASS: test_also_good" in text and
+          "FAIL: test_failed" in text and "explicit failure" in text and "Tests skipped: 1" in text and
+          "PASS: test_skipped" not in text)
     code2, out2, err2, _ = run(report, "mio-test-protocol-filter", [cli, "test", "mixed", "--run=good"], cwd=project)
     ok2 = code2 == 0 and "Tests complete: 2 passed, 0 failed" in out2 + err2 and "test_bad" not in out2 + err2
     report.check("mio-test-protocol", "PASS" if ok and ok2 else "FAIL", "native",
@@ -357,6 +402,7 @@ def linux(args):
         return finish(report)
     smoke(report, cli, "linux-amd64", work)
     mio_run_protocol(report, cli, work)
+    os_process_protocol(report, cli, work)
     mio_test_protocol(report, cli, work)
     native_mio_test(report, cli, skips_allowed=True)
     contract(report, cli, "linux-amd64", reference=str(refvm))
@@ -427,6 +473,7 @@ def follower(args, target):
         if target == "darwin-arm64":
             darwin_profile(report, cli, work)
         mio_run_protocol(report, cli, work)
+        os_process_protocol(report, cli, work)
         mio_test_protocol(report, cli, work)
         # darwin-arm64 is the primary target: every test must run there. Elsewhere a test may skip with its own reason
         # (Mach-O images that need a macOS host); skips are reported separately and never count as passes.
