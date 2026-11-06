@@ -1739,8 +1739,8 @@ waza emit_runtime_collect(code: arm64.Assembler, metadata_bytes: int64, observat
     arm64.assembler_label(code, "runtime_sweep_begin");
     emit(code, arm64.movz_x(21, 0, 0)); emit(code, arm64.add_imm_x(12, 23, 24, iie));
     arm64.assembler_label(code, "runtime_bins_clear");
-    emit(code, arm64.cmp_imm_x(21, 32, iie)); arm64.assembler_b_cond(code, 2, "runtime_bins_cleared");
-    emit(code, arm64.lsl_x(9, 21, 3)); emit(code, arm64.add_x(10, 12, 9)); emit(code, arm64.movz_x(11, 0, 0)); emit(code, arm64.str_x(11, 10, 0));
+    emit(code, arm64.cmp_imm_x(21, free_class_count, iie)); arm64.assembler_b_cond(code, 2, "runtime_bins_cleared");
+    emit_free_head(code, 21, 10); emit(code, arm64.movz_x(11, 0, 0)); emit(code, arm64.str_x(11, 10, 0));
     emit(code, arm64.add_imm_x(21, 21, 1, iie)); arm64.assembler_b(code, "runtime_bins_clear");
     arm64.assembler_label(code, "runtime_bins_cleared");
     emit(code, arm64.add_imm_x(19, 23, metadata_bytes, iie)); emit(code, arm64.ldr_x(20, 23, 0));
@@ -1769,10 +1769,7 @@ waza emit_runtime_collect(code: arm64.Assembler, metadata_bytes: int64, observat
     emit(code, arm64.str_x(19, 23, 0)); arm64.assembler_b(code, "runtime_sweep_done");
     arm64.assembler_label(code, "runtime_sweep_publish");
     emit(code, arm64.sub_imm_x(9, 22, 16, iie)); emit(code, arm64.str_x(9, 19, 8));
-    emit(code, arm64.lsr_x(11, 22, 4)); emit(code, arm64.cmp_imm_x(11, 31, iie));
-    kaku sweep_class_ok = "runtime_sweep_class_ok"; arm64.assembler_b_cond(code, 3, sweep_class_ok); arm64.assembler_b_cond(code, 0, sweep_class_ok);
-    emit(code, arm64.movz_x(11, 31, 0)); arm64.assembler_label(code, sweep_class_ok);
-    emit(code, arm64.lsl_x(11, 11, 3)); emit(code, arm64.add_imm_x(12, 23, 24, iie)); emit(code, arm64.add_x(12, 12, 11));
+    emit_free_class(code, 22, 11, 9); emit_free_head(code, 11, 12);
     emit(code, arm64.ldr_x(13, 12, 0)); emit(code, arm64.str_x(13, 19, 16)); emit(code, arm64.str_x(19, 12, 0));
     arm64.assembler_label(code, "runtime_sweep_next"); emit(code, arm64.add_x(19, 19, 22)); arm64.assembler_b(code, "runtime_sweep_loop");
     arm64.assembler_label(code, "runtime_sweep_done");
@@ -1784,6 +1781,38 @@ waza emit_runtime_collect(code: arm64.Assembler, metadata_bytes: int64, observat
     emit(code,arm64.ldr_x(9,23,872)); emit(code,arm64.ldr_x(10,23,880)); emit(code,arm64.sub_x(9,9,10)); emit(code,arm64.str_x(9,23,2800));
     arm64.assembler_bl(code,"memory_aftergc");
     emit(code, arm64.ldp_post_x(21, 22, 31, 16)); emit(code, arm64.ldp_post_x(19, 20, 31, 16)); emit(code, arm64.ldp_post_x(29, 30, 31, 16)); emit(code, arm64.ret());
+}
+
+// Free-list size classes of the ordinary heap (sizes include the 16-byte header, multiples of 16):
+//   0..30  exact 16-byte classes (size >> 4), heads at metadata 24 + 8c (unchanged)
+//   31     496 .. 1023 bytes, head at 24 + 8 * 31 (unchanged)
+//   32..38 power-of-two ranges [2^(c-22), 2^(c-21)) from 1 KiB, the last one unbounded, heads at 2640 + 8c, i.e. the
+//          verified-unused metadata words 2896..2943 (the policy block ends at 2816; 2880 is the pressure query tick).
+// Every block in class c is at least as large as the class minimum and the allocator still checks each block's size,
+// so a block in any class can only satisfy requests it fits. Splitting the former single list for every block of
+// 496 bytes or more avoids first-fit scans over thousands of too-small blocks for each larger request.
+teisu free_class_count = 39;
+waza emit_free_class(code: arm64.Assembler, size: int64, class: int64, scratch: int64) -> unit {
+    kaku done = string.concat("free_class_done_", convert.format_int(len(code.words)));
+    kaku mid = string.concat("free_class_mid_", convert.format_int(len(code.words)));
+    emit(code, arm64.lsr_x(class, size, 4)); emit(code, arm64.cmp_imm_x(class, 31, iie)); arm64.assembler_b_cond(code, 3, done);
+    emit(code, arm64.cmp_imm_x(size, 1024, iie)); arm64.assembler_b_cond(code, 3, mid);
+    observation_word(code, 3670020096 + size * 32 + scratch); // CLZ scratch, size
+    emit(code, arm64.movz_x(class, 85, 0)); emit(code, arm64.sub_x(class, class, scratch)); // 22 + log2(size) = 22 + 63 - clz
+    emit(code, arm64.cmp_imm_x(class, 38, iie)); arm64.assembler_b_cond(code, 9, done);
+    emit(code, arm64.movz_x(class, 38, 0)); arm64.assembler_b(code, done);
+    arm64.assembler_label(code, mid); emit(code, arm64.movz_x(class, 31, 0));
+    arm64.assembler_label(code, done);
+}
+// head = metadata (x23) + 24 + 8c for c < 32, + 2640 + 8c above
+waza emit_free_head(code: arm64.Assembler, class: int64, head: int64) -> unit {
+    kaku high = string.concat("free_head_high_", convert.format_int(len(code.words)));
+    kaku done = string.concat("free_head_done_", convert.format_int(len(code.words)));
+    emit(code, arm64.lsl_x(head, class, 3)); emit(code, arm64.add_x(head, head, 23));
+    emit(code, arm64.cmp_imm_x(class, 32, iie)); arm64.assembler_b_cond(code, 2, high);
+    emit(code, arm64.add_imm_x(head, head, 24, iie)); arm64.assembler_b(code, done);
+    arm64.assembler_label(code, high); emit(code, arm64.add_imm_x(head, head, 2640, iie));
+    arm64.assembler_label(code, done);
 }
 
 waza emit_runtime_alloc(code: arm64.Assembler, gc_stress: bool, observation: bool) -> unit {
@@ -1813,11 +1842,10 @@ waza emit_runtime_alloc(code: arm64.Assembler, gc_stress: bool, observation: boo
     arm64.assembler_bl(code,"los_alloc"); arm64.assembler_cbnz_x(code,0,"runtime_alloc_done"); arm64.assembler_b(code,"los_alloc_exhausted");
     arm64.assembler_label(code,"los_alloc_small");
     move_x(code,0,23); emit(code,arm64.add_imm_x(1,23,3072,iie)); emit(code,arm64.ldr_x(2,23,8)); emit(code,arm64.sub_x(3,2,1)); emit(code,arm64.ldr_x(4,23,0)); emit(code,arm64.sub_x(4,4,1)); emit(code,arm64.add_x(4,4,22)); emit(code,arm64.movz_x(5,0,0)); arm64.assembler_bl(code,"memory.commit"); arm64.assembler_cbz_x(code,0,"los_alloc_exhausted");
-    emit(code, arm64.lsr_x(11, 22, 4)); emit(code, arm64.cmp_imm_x(11, 31, iie));
-    arm64.assembler_b_cond(code, 3, "runtime_alloc_class_ok"); arm64.assembler_b_cond(code, 0, "runtime_alloc_class_ok"); emit(code, arm64.movz_x(11, 31, 0));
+    emit_free_class(code, 22, 11, 9);
     arm64.assembler_label(code, "runtime_alloc_class_ok");
     arm64.assembler_label(code, "runtime_alloc_bin");
-    emit(code, arm64.lsl_x(9, 11, 3)); emit(code, arm64.add_imm_x(12, 23, 24, iie)); emit(code, arm64.add_x(12, 12, 9));
+    emit_free_head(code, 11, 12);
     arm64.assembler_label(code, "runtime_alloc_free");
     emit(code, arm64.ldr_x(13, 12, 0)); arm64.assembler_cbz_x(code, 13, "runtime_alloc_next_bin");
     emit(code, arm64.ldr_x(14, 13, 8)); emit(code, arm64.cmp_x(14, 19)); arm64.assembler_b_cond(code, 2, "runtime_alloc_take");
@@ -1831,16 +1859,15 @@ waza emit_runtime_alloc(code: arm64.Assembler, gc_stress: bool, observation: boo
     emit(code, arm64.add_x(15, 13, 22)); emit(code, arm64.str_x(31, 15, 0));
     emit(code, arm64.sub_imm_x(9, 14, 16, iie)); emit(code, arm64.str_x(9, 15, 8));
     emit(code, arm64.sub_imm_x(9, 22, 16, iie)); emit(code, arm64.str_x(9, 13, 8));
-    emit(code, arm64.lsr_x(11, 14, 4)); emit(code, arm64.cmp_imm_x(11, 31, iie));
-    arm64.assembler_b_cond(code, 9, "runtime_alloc_split_class"); emit(code, arm64.movz_x(11, 31, 0));
+    emit_free_class(code, 14, 11, 9);
     arm64.assembler_label(code, "runtime_alloc_split_class");
-    emit(code, arm64.lsl_x(11, 11, 3)); emit(code, arm64.add_imm_x(12, 23, 24, iie)); emit(code, arm64.add_x(12, 12, 11));
+    emit_free_head(code, 11, 12);
     emit(code, arm64.ldr_x(9, 12, 0)); emit(code, arm64.str_x(9, 15, 16)); emit(code, arm64.str_x(15, 12, 0));
     arm64.assembler_label(code, "runtime_alloc_taken");
     moshi(old_sweep_enabled(code)){arm64.assembler_bl(code,"sweep_bin_reused");}
     emit(code, arm64.str_x(20, 13, 0)); emit(code, arm64.add_imm_x(0, 13, 16, iie)); arm64.assembler_b(code, "runtime_alloc_done");
     arm64.assembler_label(code, "runtime_alloc_next_bin");
-    emit(code, arm64.add_imm_x(11, 11, 1, iie)); emit(code, arm64.cmp_imm_x(11, 32, iie)); arm64.assembler_b_cond(code, 3, "runtime_alloc_bin");
+    emit(code, arm64.add_imm_x(11, 11, 1, iie)); emit(code, arm64.cmp_imm_x(11, free_class_count, iie)); arm64.assembler_b_cond(code, 3, "runtime_alloc_bin");
     emit(code, arm64.ldr_x(13, 23, 0)); emit(code, arm64.add_x(14, 13, 22)); emit(code, arm64.ldr_x(9, 23, 8)); emit(code, arm64.cmp_x(14, 9));
     arm64.assembler_b_cond(code, 9, "runtime_alloc_bump");
     arm64.assembler_label(code,"los_alloc_exhausted");
