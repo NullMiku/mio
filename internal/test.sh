@@ -16,11 +16,11 @@ ci_module() {
       # The Go bootstrap self-compilation (Mio/selfhost/bootstrap) takes about an hour by itself. It has its own
       # long-running module, go-bootstrap-reference, which Full runs as a separate job, so that this check, and the
       # feedback of every other package, does not wait for it. Nothing else is excluded.
-      # Plain read loop: macOS ships bash 3.2, which has no mapfile. A failing go list or an empty package list fails.
+      # Plain read loop: macOS ships bash 3.2 (no bash 4 array builtins). A failing go list or an empty package list fails.
       local listing="" package="" packages=()
-      if listing=$(go list ./...); then
+      if listing=$(go list ./... | grep -v '^Mio/selfhost/bootstrap$'); then
         while IFS= read -r package; do
-          if [ -n "$package" ] && [ "$package" != "Mio/selfhost/bootstrap" ]; then packages+=("$package"); fi
+          if [ -n "$package" ]; then packages+=("$package"); fi
         done <<< "$listing"
       fi
       if [ "${#packages[@]}" -eq 0 ]; then

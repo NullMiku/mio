@@ -632,6 +632,9 @@ exit "$result"
         self.assertIn("-timeout 175m", script)
         shared = (root / "internal" / "test.sh").read_text(encoding="utf-8")
         self.assertIn("grep -v '^Mio/selfhost/bootstrap$'", shared)
+        # macos-arm64 runs the module under the system bash 3.2: no bash 4 builtins.
+        self.assertNotIn("mapfile", shared)
+        self.assertNotIn("readarray", shared)
         self.assertNotIn("go test -json -p 2 ./... ", shared)
         workflow = (root / ".github" / "workflows" / "ci-full.yml").read_text(encoding="utf-8")
         self.assertIn("go-bootstrap-reference full", workflow)
