@@ -15,15 +15,12 @@ jobs:
     - run: python -m unittest discover -s docker -p 'test_*.py' -v
   candidates:
     needs:
-    - summary
+    - follower
     - packaging-tests
     strategy:
       fail-fast: false
       matrix:
         include:
-        - target: linux-amd64
-          runner: ubuntu-24.04
-          compiler: mio-B
         - target: darwin-arm64
           runner: macos-15
           compiler: mio-B
@@ -89,6 +86,7 @@ jobs:
     - summary
     - candidates
     - docker-full-offline
+    - candidate-linux
     runs-on: ubuntu-24.04
     steps:
     - name: Require real native and candidate verification
@@ -267,7 +265,7 @@ jobs:
         retention-days: 7
   docker-full-offline:
     needs:
-    - candidates
+    - candidate-linux
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -292,6 +290,62 @@ jobs:
       with:
         name: docker-offline-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
         path: build/docker-candidate/docker-verification.json
+        if-no-files-found: warn
+        retention-days: 14
+  candidate-linux:
+    needs:
+    - linux
+    - packaging-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.12'
+    - uses: actions/download-artifact@v4
+      with:
+        name: distribution-compiler-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/compiler
+    - uses: actions/download-artifact@v4
+      with:
+        name: native-report-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/evidence
+    - name: Prepare identical candidate inputs
+      run: python scripts/distribution/prepare.py --disposable-checkout build/distribution-source
+    - name: Package verified native B as Core and Full
+      shell: bash
+      run: python scripts/distribution/package.py --source build/distribution-source --compiler build/compiler/mio-B --report build/evidence/report.json --target linux-amd64 --output build/candidates
+    - name: Run relocated candidates outside the repository
+      run: python scripts/distribution/verify.py --target linux-amd64 --output build/candidates
+    - uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: mio-candidates-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: 'build/candidates/*.tar.gz
+
+          build/candidates/*.zip
+
+          build/candidates/SHA256SUMS
+
+          build/candidates/verification.json
+
+          build/candidates/native-report.json
+
+          '
+        if-no-files-found: error
+        retention-days: 14
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: distribution-diagnostics-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: 'build/candidates/*.json
+
+          build/evidence/
+
+          '
         if-no-files-found: warn
         retention-days: 14
 'on':

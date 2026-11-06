@@ -39,7 +39,7 @@ waza help() -> unit {
     chant("mio exec <file.mochi> [-- program arguments...]");
     chant("mio disasm <file.mochi>");
     chant("mio test <directory[/...]> [--run=regexp] [--format=human|short|json] [--lang=locale] [--verbose]");
-    chant("mio lsp [--stdio]");
+    chant("mio lsp [--stdio] [--bunko-root <directory>]");
     chant("mio check <source> [--bunko-root <directory>]");
     chant("source diagnostics: --color=auto|always|never --format=human|short|json --verbose");
     chant("mio build <source> [-o <output>] [--emit=mochi] [--target=darwin-arm64|linux-amd64|windows-amd64] [--gc-stress] [--observe] [--emit-symbols <file>] [--bunko-root <directory>]");

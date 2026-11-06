@@ -75,7 +75,13 @@ def verify(output, target):
                     check('Core payload', {p.parts[0] for p in map(Path, manifest['files'])} == {'bin', 'LICENSE', 'README.md', 'provenance.json'})
                 else:
                     check('Full automatic Bunko check', code == 0)
-                    code, text = run([cli.name, 'check', math], dict(PATH=str(cli.parent) + os.pathsep + env.get('PATH', '')))
+                    path_env = dict(PATH=str(cli.parent) + os.pathsep + env.get('PATH', ''))
+                    # Windows CreateProcess ignores the child environment's PATH
+                    # for executable search; cmd resolves PATH inside that child.
+                    launch = [cli.name, 'check', math]
+                    if target == 'windows-amd64':
+                        launch = [env.get('COMSPEC', 'cmd.exe'), '/d', '/c', f'{cli.name} check "{math}"']
+                    code, text = run(launch, path_env)
                     check('Full PATH executable lookup', code == 0)
                     code, text = run([cli, 'build', math, '--target=' + target, '-o', image])
                     check('Full math build', code == 0)

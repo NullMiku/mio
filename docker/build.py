@@ -90,7 +90,7 @@ def build(candidates, output, image):
                     body = json.dumps(request).encode()
                     wire += f'Content-Length: {len(body)}\r\n\r\n'.encode()+body
                 (work / 'lsp-input').write_bytes(wire)
-                args = ['docker', 'run', '--rm', '--platform=linux/amd64', '--network=none',
+                args = ['docker', 'run', '--rm', '--pull=never', '--platform=linux/amd64', '--network=none',
                         '--user', f'{os.getuid()}:{os.getgid()}', '--env', 'HOME=/tmp',
                         '--mount', f'type=bind,src={work},dst=/workspace', image]
                 inside = run(args + ['sha256sum', '/opt/mio/bin/mio']).split()[0]
