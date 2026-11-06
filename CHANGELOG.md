@@ -1,3 +1,7 @@
+[English](CHANGELOG.md) | [简体中文](docs/CHANGELOG.zh-CN.md) | [日本語](docs/CHANGELOG.ja.md)
+
+---
+
 # Changelog
 
 ## Unreleased (Mio-2.1)
