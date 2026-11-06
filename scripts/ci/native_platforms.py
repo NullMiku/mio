@@ -419,23 +419,94 @@ def follower(args, target):
     return finish(report)
 
 
+def text_section_offset(image):
+    """File offset of __TEXT,__text in a 64-bit Mach-O (code word 0 of the symbol map)."""
+    import struct
+    data = Path(image).read_bytes()
+    count = struct.unpack_from("<I", data, 16)[0]; at = 32
+    for _ in range(count):
+        command, size = struct.unpack_from("<II", data, at)
+        if command == 0x19:
+            sections = struct.unpack_from("<I", data, at + 64)[0]
+            for index in range(sections):
+                base = at + 72 + index * 80
+                if data[base:base + 16].rstrip(b"\0") == b"__text":
+                    return struct.unpack_from("<I", data, base + 48)[0]
+        at += size
+    return None
+
+
+def sample_profile(sample_text, image, symbols_path):
+    """Leaf counts of /usr/bin/sample output mapped to Mio function / runtime label names."""
+    import bisect
+    text_offset = text_section_offset(image)
+    entries = []
+    for line in Path(symbols_path).read_text().splitlines():
+        word, _, name = line.partition(" ")
+        if word.isdigit():
+            entries.append((int(word), name))
+    entries.sort()
+    words = [w for w, _ in entries]
+    counts = {}
+    section = sample_text.split("Sort by top of stack", 1)
+    rows = section[1] if len(section) == 2 else ""
+    for match in re.finditer(r"\+ (0x[0-9a-f]+)\s+\[0x[0-9a-f]+\]\s+(\d+)\s*$", rows, re.M):
+        offset, count = int(match.group(1), 16), int(match.group(2))
+        name = "?"
+        if text_offset is not None and offset >= text_offset:
+            index = bisect.bisect_right(words, (offset - text_offset) // 4) - 1
+            if index >= 0:
+                name = entries[index][1]
+        counts[name] = counts.get(name, 0) + count
+    total = sum(counts.values()) or 1
+    return [(name, count, round(100.0 * count / total, 1)) for name, count in sorted(counts.items(), key=lambda kv: -kv[1])[:40]]
+
+
 def darwin_profile(report, cli, work):
-    """Self-build of the CLI by an observation build of itself: the collector/memory counters and the time and peak RSS
-    of a real compiler workload on this host. Observation must not change behaviour, so the output must equal B."""
+    """Self-build of the CLI by an observation build of itself: the collector/memory counters, the time and peak RSS of
+    a real compiler workload on this host, and (diagnostic only) a /usr/bin/sample leaf profile mapped through the
+    build's symbol map. Observation must not change behaviour, so the output must equal B."""
     observed = work / "mio-observed"
-    ok, reason, seconds = cli_build(report, "observed-build", cli, "selfhost/cli", "darwin-arm64", observed, extra=("--observe",))
+    symbols = work / "mio-observed.symbols"
+    ok, reason, seconds = cli_build(report, "observed-build", cli, "selfhost/cli", "darwin-arm64", observed,
+                                    extra=("--observe", "--emit-symbols", str(symbols)))
     if not report.check("observed-cli-build", "PASS" if ok else "FAIL", "native", "" if ok else reason, seconds=round(seconds, 1)):
         return
     output = work / "mio-from-observed"
-    argv = ["/usr/bin/time", "-l", observed, "build", "selfhost/cli", "--target=darwin-arm64", "-o", output]
-    code, out, err, seconds = run(report, "observed-self-build", argv, timeout=CLI_BUILD_TIMEOUT)
+    log = report.logs / "observed-self-build.log"
+    argv = ["/usr/bin/time", "-l", str(observed), "build", "selfhost/cli", "--target=darwin-arm64", "-o", str(output)]
+    started = time.monotonic()
+    with open(log, "wb") as stream:
+        stream.write(("$ %s\n" % " ".join(argv)).encode())
+        child = subprocess.Popen(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 env=dict(os.environ, MIO_BUNKO=str(ROOT / "bunko")))
+        sample_text = ""
+        compiler = None
+        for _ in range(50):
+            time.sleep(0.1)
+            found = subprocess.run(["pgrep", "-P", str(child.pid)], capture_output=True, text=True).stdout.split()
+            if found:
+                compiler = found[0]; break
+        if compiler and Path("/usr/bin/sample").exists():
+            sampled = subprocess.run(["/usr/bin/sample", compiler, "60", "2", "-mayDie"], capture_output=True, text=True, timeout=300)
+            sample_text = sampled.stdout
+            (report.logs / "observed-self-build.sample.txt").write_text(sample_text + sampled.stderr)
+        try:
+            out, err = child.communicate(timeout=CLI_BUILD_TIMEOUT)
+            code = child.returncode
+        except subprocess.TimeoutExpired:
+            child.kill(); out, err = child.communicate(); code = None
+        stream.write(b"--- stdout\n" + out + b"\n--- stderr\n" + err)
+    seconds = time.monotonic() - started
+    err = err.decode(errors="replace")
     counters = dict(re.findall(r"mio-gc (\w+)=(\d+)", err))
     timing = dict((name, float(value)) for value, name in re.findall(r"([\d.]+) (real|user|sys)", err))
     same = code == 0 and output.is_file() and sha256(output) == report.hashes.get("cli-B")
+    profile = sample_profile(sample_text, observed, symbols) if sample_text else []
     report.check("observed-self-build", "PASS" if same else "FAIL", "native",
                  "" if same else "exit %s or output differs from cli-B: %s" % (code, brief(err)),
-                 seconds=round(seconds, 1), peak_rss_mib=peak_rss_mib(err), time=timing, gc=counters)
-    print("    profile: time %s rss %d MiB counters %s" % (timing, peak_rss_mib(err), counters), flush=True)
+                 seconds=round(seconds, 1), peak_rss_mib=peak_rss_mib(err), time=timing, gc=counters, profile=profile)
+    print("    profile: time %s rss %d MiB top %s" % (timing, peak_rss_mib(err), profile[:12]), flush=True)
 
 
 def finish(report):
