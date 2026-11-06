@@ -41,7 +41,7 @@ waza help() -> unit {
     chant("mio lsp [--stdio]");
     chant("mio check <source> [--bunko-root <directory>]");
     chant("source diagnostics: --color=auto|always|never --format=human|short|json --verbose");
-    chant("mio build <source> [-o <output>] [--emit=mochi] [--target=darwin-arm64|linux-amd64|windows-amd64] [--gc-stress] [--observe] [--bunko-root <directory>]");
+    chant("mio build <source> [-o <output>] [--emit=mochi] [--target=darwin-arm64|linux-amd64|windows-amd64] [--gc-stress] [--observe] [--emit-symbols <file>] [--bunko-root <directory>]");
 }
 waza run() -> unit {
     kaku args = os.arguments();
@@ -60,7 +60,7 @@ waza run() -> unit {
     }
     moshi (command != "build" && command != "check" && command != "run" && command != "exec" && command != "disasm") { fail("E_COMMAND native command migration is incomplete", 2); kaesu; }
     kaku opts=diagnostic.options();
-    kaku entry = ""; kaku target = "darwin-arm64"; kaku output = "a.out"; kaku bunko = os.getenv("MIO_BUNKO"); kaku emit_mochi = iie; kaku gc_stress = iie; kaku observe = iie; kaku program_args: []string = []; kaku at = 2;
+    kaku entry = ""; kaku target = "darwin-arm64"; kaku output = "a.out"; kaku bunko = os.getenv("MIO_BUNKO"); kaku emit_mochi = iie; kaku gc_stress = iie; kaku observe = iie; kaku symbols = ""; kaku program_args: []string = []; kaku at = 2;
     aida (at < len(args)) {
         kaku option = args[at];
         moshi (option == "--") {
@@ -88,6 +88,10 @@ waza run() -> unit {
             moshi (value != "darwin-arm64" && value != "linux-amd64" && value != "windows-amd64") { fail("E_TARGET unsupported target (expected darwin-arm64, linux-amd64 or windows-amd64)", 2); kaesu; }
             target = value; at = at + 1; tsuzuku;
         }
+        moshi (option == "--emit-symbols") {
+            moshi (at + 1 >= len(args) || args[at + 1] == "") { fail("E_OPTIONS missing option value", 2); kaesu; }
+            symbols = args[at + 1]; at = at + 2; tsuzuku;
+        }
         moshi (option == "-o" || option == "--bunko-root") {
             moshi (at + 1 >= len(args)) { fail("E_OPTIONS missing option value", 2); kaesu; }
             at = at + 1;
@@ -100,6 +104,7 @@ waza run() -> unit {
         at = at + 1;
     }
     moshi ((command == "run" || command == "exec" || command == "disasm" || command == "check") && emit_mochi) { fail("E_OPTIONS run requires native output", 2); kaesu; }
+    moshi (symbols != "" && (target != "darwin-arm64" || emit_mochi || command != "build")) { fail("E_OPTIONS --emit-symbols applies to darwin-arm64 native builds from source", 2); kaesu; }
     moshi (observe && (target != "darwin-arm64" || emit_mochi || command != "build")) { fail("E_OPTIONS --observe applies to darwin-arm64 native builds from source", 2); kaesu; }
     moshi (gc_stress && (emit_mochi || command == "exec" || command == "disasm" || command == "check")) { fail("E_OPTIONS --gc-stress applies to native builds from source", 2); kaesu; }
     moshi (target == "windows-amd64" && (command == "run" || command == "exec")) { fail("E_TARGET windows-amd64 images are build-only; run them on Windows", 2); kaesu; }
@@ -128,7 +133,7 @@ waza run() -> unit {
         }
         moshi (target == "linux-amd64") { compiled = pipeline.build_linux_mochi(input.data); } sore { moshi (target == "windows-amd64") { compiled = pipeline.build_windows_mochi(input.data); } sore { compiled = pipeline.build_signed_mochi(input.data); } }
     }
-    sore { moshi (target == "linux-amd64") { compiled = pipeline.build_linux_source_with_options(".", entry, bunko, gc_stress); } sore { moshi (target == "windows-amd64") { compiled = pipeline.build_windows_source_with_options(".", entry, bunko, gc_stress); } sore { compiled = pipeline.build_signed_source_observed(".", entry, bunko, gc_stress, observe); } } }
+    sore { moshi (target == "linux-amd64") { compiled = pipeline.build_linux_source_with_options(".", entry, bunko, gc_stress); } sore { moshi (target == "windows-amd64") { compiled = pipeline.build_windows_source_with_options(".", entry, bunko, gc_stress); } sore { compiled = pipeline.build_signed_source_diagnostic(".", entry, bunko, gc_stress, observe, symbols); } } }
     moshi (compiled.error != "") {moshi(command=="build" || command=="run"){source_failure(entry,bunko,opts,compiled.error);}sore{fs.write_all("/dev/stderr",string.to_bytes(diagnostic.failure(compiled.error,entry,opts)));os.exit(1);}kaesu;}
     kaku temporary = "";
     moshi (command == "run" || command == "exec") {

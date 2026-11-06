@@ -32,6 +32,9 @@ koukai kata LowerResult {
     patches: []macho.AddressPatch;
     globals: int64;
     error: LowerError?;
+    // code word of each Mochi function's entry (-1: not emitted); diagnostics such as symbol maps for profilers
+    function_words: []int64;
+    labels: []arm64.Label;
 }
 
 koukai waza error_code(value: LowerError) -> int64 {
@@ -71,7 +74,7 @@ koukai waza error_detail(value: LowerError) -> int64 {
 }
 
 waza failed(kind: LowerError) -> LowerResult {
-    kaesu LowerResult { words: [], constants: [], patches: [], globals: 0, error: kind };
+    kaesu LowerResult { words: [], constants: [], patches: [], globals: 0, error: kind, function_words: [], labels: [] };
 }
 
 waza same_bytes(left: []uint8, right: []uint8) -> bool {
@@ -2377,5 +2380,7 @@ waza compile_worker_impl(input_file: mochi.File, gc_stress: bool, capacity: int6
         }
         kaesu failed(LowerError.EncodeFailure());
     }
-    kaesu LowerResult { words: assembled.words, constants: constant_image(file.constants, ids, native_fs), patches: patches, globals: data_words, error: mu };
+    kaku function_words = array.with_capacity[int64](len(file.functions)); kaku fw = 0;
+    aida (fw < len(file.functions)) { array.push(function_words, arm64.assembler_label_word(code, function_label(fw))); fw = fw + 1; }
+    kaesu LowerResult { words: assembled.words, constants: constant_image(file.constants, ids, native_fs), patches: patches, globals: data_words, error: mu, function_words: function_words, labels: code.labels };
 }
