@@ -63,7 +63,8 @@ waza initialize(state: Session, document: json.Document, params: int64, id: stri
     moshi(len(roots)==0){kaku uri=json.text(document,json.member(document,params,"rootUri"));kaku parsed_path=lsp.path_from_uri(uri);moshi(parsed_path.valid){array.push(roots,parsed_path.path);}}
     moshi(len(roots)==0){kaku root_path=json.text(document,json.member(document,params,"rootPath"));moshi(root_path!=""){array.push(roots,root_path);}}
     moshi(len(roots)>0){array.truncate(state.roots,0);array.append_all(state.roots,roots);}
-    kaku options=json.member(document,params,"initializationOptions");kaku bunko=json.text(document,json.member(document,options,"bunkoRoot"));moshi(bunko!="" && state.bunko[0]==""){state.bunko[0]=bunko;}
+    // Bunko is resolved once by the command, using the same contract as build/test.
+    kaku options=json.member(document,params,"initializationOptions");
     kaku enabled=boolean_field(document,options,"diagnosticsEnabled");moshi(enabled!=mu){state.flags[3]=enabled;}
     kaku delay=json.integer(document,json.member(document,options,"diagnosticsDelayMs"));
     moshi(delay!=mu){moshi(delay>=0){state.schedule[0]=delay;}}

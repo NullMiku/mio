@@ -692,6 +692,21 @@ waza emit_win_syscall(code: x86_64.Assembler, ctx: WinContext) -> unit {
     x86_64.jmp(code, "rt.syscall.out");
     // fullpath(cpath, buffer, capacity): absolute path of an EXISTING file or directory as UTF-8 with '/' separators
     x86_64.label(code, "rt.syscall.fullpath");
+    x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 64);
+    x86_64.mov_load8(code, x86_64.rcx, x86_64.rax, 0);
+    x86_64.test_rr(code, x86_64.rcx, x86_64.rcx);
+    x86_64.jcc(code, x86_64.cc_ne, "rt.syscall.fullpath.regular");
+    x86_64.mov_ri(code, x86_64.rcx, 0);
+    x86_64.mov_ri(code, x86_64.rdx, scratch_path() + 32768);
+    x86_64.mov_ri(code, x86_64.r8, 16384);
+    import_call(code, ctx, 22);
+    x86_64.zero_extend_eax(code);
+    x86_64.test_rr(code, x86_64.rax, x86_64.rax);
+    x86_64.jcc(code, x86_64.cc_e, "rt.syscall.error");
+    x86_64.cmp_ri(code, x86_64.rax, 16384);
+    x86_64.jcc(code, x86_64.cc_ae, "rt.syscall.einval");
+    x86_64.jmp(code, "rt.syscall.fullpath.utf8");
+    x86_64.label(code, "rt.syscall.fullpath.regular");
     emit_path_to_wide(code, ctx);
     x86_64.test_rr(code, x86_64.rax, x86_64.rax);
     x86_64.jcc(code, x86_64.cc_e, "rt.syscall.einval");
@@ -709,6 +724,7 @@ waza emit_win_syscall(code: x86_64.Assembler, ctx: WinContext) -> unit {
     x86_64.zero_extend_eax(code);
     x86_64.test_rr(code, x86_64.rax, x86_64.rax);
     x86_64.jcc(code, x86_64.cc_e, "rt.syscall.error");
+    x86_64.label(code, "rt.syscall.fullpath.utf8");
     x86_64.mov_ri(code, x86_64.rcx, 65001);
     x86_64.mov_ri(code, x86_64.rdx, 0);
     x86_64.mov_ri(code, x86_64.r8, scratch_path() + 32768);
