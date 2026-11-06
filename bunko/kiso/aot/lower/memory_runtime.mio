@@ -24,6 +24,8 @@ teisu memory_HighWater = 2784;
 // 2880 is unused metadata (the policy block ends at 2816; nothing in 2824..3071 is addressed): the CNTVCT tick at or
 // after which the next query is due (0 = now).
 teisu memory_SystemNextQuery = 2880;
+// 2888 (also unused, zero at start): CNTFRQ_EL0, cached on first use.
+teisu memory_CounterFrequency = 2888;
 teisu memory_SystemState = 2752;
 waza emit_memory_adapters(code: arm64.Assembler) -> unit {
  emit_memory_policy(code);
@@ -38,13 +40,18 @@ waza emit_memory_adapters(code: arm64.Assembler) -> unit {
  emit(code,arm64.add_x(9,3,3)); emit(code,arm64.add_imm_x(9,9,3072,iie)); emit(code,arm64.add_x(9,9,11)); emit(code,arm64.str_x(9,23,memory_Reserved));
  emit(code,arm64.ldr_x(9,23,memory_Reserved)); emit(code,arm64.movz_x(10,16383,0)); emit(code,arm64.add_x(9,9,10)); emit(code,arm64.movn_x(10,16383,0)); emit(code,arm64.and_x(9,9,10)); emit(code,arm64.str_x(9,23,memory_Reserved)); emit(code,arm64.ldr_x(10,23,memory_Committed)); emit(code,arm64.cmp_x(10,9)); arm64.assembler_b_cond(code,9,"memory_charge_bounded"); emit(code,arm64.str_x(9,23,memory_Committed));
  arm64.assembler_label(code,"memory_charge_bounded");
- move_x(code,0,23); emit(code,arm64.ldr_x(1,23,304)); emit(code,arm64.ldr_x(2,23,296)); observation_word(code,3577470980); emit(code,arm64.ldr_x(5,23,872)); emit(code,arm64.ldr_x(6,23,2800));
+ move_x(code,0,23); emit(code,arm64.ldr_x(1,23,304)); emit(code,arm64.ldr_x(2,23,296));
+ // x4 = CNTFRQ_EL0, read once: the register is constant, but on virtualized macOS hosts the read traps (a sampled
+ // macos-15 self-build spent 10% of its time on this instruction, executed twice per allocation).
+ emit(code,arm64.ldr_x(4,23,memory_CounterFrequency)); arm64.assembler_cbnz_x(code,4,"memory_frequency_ready");
+ observation_word(code,3577470980); emit(code,arm64.str_x(4,23,memory_CounterFrequency)); // MRS x4, CNTFRQ_EL0
+ arm64.assembler_label(code,"memory_frequency_ready"); emit(code,arm64.ldr_x(5,23,872)); emit(code,arm64.ldr_x(6,23,2800));
  emit(code,arm64.ldr_x(9,23,memory_SystemState)); emit(code,arm64.cmp_imm_x(9,1,iie)); arm64.assembler_b_cond(code,1,"memory_sample_update");
  observation_word(code,3577471050); // MRS x10, CNTVCT_EL0
  emit(code,arm64.ldr_x(11,23,memory_SystemNextQuery)); emit(code,arm64.cmp_x(10,11)); arm64.assembler_b_cond(code,2,"memory_sample_refresh");
  emit(code,arm64.movz_x(9,2,0)); emit(code,arm64.str_x(9,23,memory_SystemState)); arm64.assembler_b(code,"memory_sample_update");
  arm64.assembler_label(code,"memory_sample_refresh");
- observation_word(code,3577470987); // MRS x11, CNTFRQ_EL0
+ emit(code,arm64.ldr_x(11,23,memory_CounterFrequency)); // cached CNTFRQ_EL0 (set above)
  emit(code,arm64.lsr_x(11,11,4)); emit(code,arm64.add_x(11,10,11)); emit(code,arm64.str_x(11,23,memory_SystemNextQuery));
  arm64.assembler_label(code,"memory_sample_update");
  arm64.assembler_bl(code,"memory.update");

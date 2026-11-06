@@ -182,6 +182,10 @@ waza emit_gen_minor(code: arm64.Assembler, observation: bool) -> unit {
     emit_los_side(code, 9, 25, 10);
     emit(code, arm64.ldr_x(9, 9, 0));
     emit(code, arm64.str_x(9, 31, 88));
+    // The young list is a chain of cache misses (next object, then its header); start fetching the next header while
+    // this object is processed. PRFM is only a hint and cannot fault, including for the null end of the list.
+    emit(code, arm64.prfm_load(9, 0));
+    emit_los_side(code, 10, 9, 11); emit(code, arm64.prfm_load(10, 0));
     emit(code, arm64.ldr_x(26, 25, 8));
     emit(code, arm64.add_imm_x(26, 26, 31, iie));
     emit(code, arm64.movn_x(9, 15, 0));

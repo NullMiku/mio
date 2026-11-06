@@ -11,6 +11,8 @@ waza test_instruction_golden_and_ranges() -> unit {
     testing.expect(ldr_x_register_scaled(0, 1, 2).word == uint32(4167202848), "LDR X scaled register-offset encoding (f8627820)");
     testing.expect(ldrb_w_register(0, 1, 2).word == uint32(945973280), "LDRB W register-offset encoding (38626820)");
     testing.expect(ldr_w(0, 1, 8).word == uint32(3107981344), "LDR W unsigned-offset encoding (b9400820)");
+    testing.expect(prfm_load(9, 0).word == uint32(4185915680), "PRFM PLDL1KEEP encoding (f9800120)");
+    testing.expect(prfm_load(9, 16).word == uint32(4185917728), "PRFM PLDL1KEEP offset encoding (f9800920)");
     testing.expect(add_imm_w(4, 4, 48).word == uint32(285261956), "ADD W immediate encoding");
     testing.expect(msub_x(4, 3, 6, 0).word == uint32(2600894564), "MSUB X encoding");
     testing.expect(cset_w(9, 0).word == uint32(446633961), "CSET W encoding");
