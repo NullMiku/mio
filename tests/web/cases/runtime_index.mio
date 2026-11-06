@@ -1,0 +1,2 @@
+kaku xs = [1, 2, 3];
+chant(xs[2]); chant(xs[5]);

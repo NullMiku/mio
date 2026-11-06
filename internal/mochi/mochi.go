@@ -55,7 +55,11 @@ import (
 
 const (
 	// Version 表示最新的 Mochi 格式版本
-	Version uint16 = VersionV14
+	Version uint16 = VersionV16
+	// VersionV16 表示带返回值标记的类型化函数值调用格式版本
+	VersionV16 uint16 = 16
+	// VersionV15 表示类型表示约束格式版本
+	VersionV15 uint16 = 15
 	// VersionV14 表示数据复制转换格式版本
 	VersionV14 uint16 = 14
 	// VersionV13 表示数组批量操作格式版本
@@ -636,6 +640,12 @@ func encodedSize(bytecode *compiler.Bytecode) (uint64, error) {
 
 // encodedVersion 选择可表示当前字节码的最低版本
 func encodedVersion(bytecode *compiler.Bytecode) uint16 {
+	if hasOpcode(bytecode, code.OpCallTyped) {
+		return VersionV16
+	}
+	if hasOpcode(bytecode, code.OpTypeConstraint) {
+		return VersionV15
+	}
 	if hasDataConvertInstructions(bytecode.Instructions) {
 		return VersionV14
 	}
@@ -996,4 +1006,36 @@ func writeUint64(w io.Writer, value uint64) error {
 	var data [8]byte
 	binary.BigEndian.PutUint64(data[:], value)
 	return writeFull(w, data[:])
+}
+
+// hasOpcode 报告主指令或任一函数是否包含指定操作码
+func hasOpcode(bytecode *compiler.Bytecode, target code.Opcode) bool {
+	if instructionsContain(bytecode.Instructions, target) {
+		return true
+	}
+	for _, function := range bytecode.Functions {
+		if instructionsContain(function.Instructions, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func instructionsContain(instructions code.Instructions, target code.Opcode) bool {
+	for offset := 0; offset < len(instructions); {
+		op := code.Opcode(instructions[offset])
+		if op == target {
+			return true
+		}
+		definition, err := code.Lookup(op)
+		if err != nil {
+			return false
+		}
+		_, read, err := code.ReadOperands(definition, instructions[offset+1:])
+		if err != nil {
+			return false
+		}
+		offset += 1 + read
+	}
+	return false
 }

@@ -1,0 +1,2 @@
+kaku n: int64 = "not a number";
+chant(n);

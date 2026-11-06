@@ -1,0 +1,4 @@
+yobu "kiso/fs";
+chant("before");
+kaku content = fs.read_all("/etc/hostname");
+chant(content.error == mu);

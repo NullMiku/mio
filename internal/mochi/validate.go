@@ -145,6 +145,12 @@ func validateInstructions(bytecode *compiler.Bytecode, instructions code.Instruc
 		if version < VersionV14 && op == code.OpDataConvert {
 			return fmt.Errorf("opcode %d requires Mochi v14 at offset %d", op, offset)
 		}
+		if version < VersionV15 && op == code.OpTypeConstraint {
+			return fmt.Errorf("opcode %d requires Mochi v15 at offset %d", op, offset)
+		}
+		if version < VersionV16 && op == code.OpCallTyped {
+			return fmt.Errorf("opcode %d requires Mochi v16 at offset %d", op, offset)
+		}
 		definition, err := code.Lookup(op)
 		if err != nil {
 			return fmt.Errorf("unknown opcode at offset %d: %w", offset, err)
@@ -231,6 +237,17 @@ func validateInstructions(bytecode *compiler.Bytecode, instructions code.Instruc
 		case code.OpCallValue:
 			if operands[0] > MaxFunctionSlots {
 				return fmt.Errorf("argument count %d out of range at offset %d", operands[0], offset)
+			}
+		case code.OpCallTyped:
+			if operands[0] > MaxFunctionSlots {
+				return fmt.Errorf("argument count %d out of range at offset %d", operands[0], offset)
+			}
+			if operands[1] > 1 {
+				return fmt.Errorf("invalid typed call result flag %d at offset %d", operands[1], offset)
+			}
+		case code.OpTypeConstraint:
+			if operands[0] == 0 || operands[0] >= 0x80 || !validArrayDescriptor(operands[0]) {
+				return fmt.Errorf("invalid type constraint descriptor %d at offset %d", operands[0], offset)
 			}
 		case code.OpJump, code.OpJumpIfFalse:
 			references = append(references, instructionReference{offset: offset, value: operands[0]})

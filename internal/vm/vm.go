@@ -876,18 +876,27 @@ func (v *VM) RunWithOptions(options ExecutionOptions) (runErr error) {
 			}
 			current.upvalues[operands[0]].Value = item
 
-		case code.OpCallValue:
+		case code.OpTypeConstraint:
+			// Mochi v15: a representation declaration for native lowering; the value is unchanged.
+			if len(v.stack) <= v.operandBase() {
+				return fmt.Errorf("stack underflow for OpTypeConstraint at %d", ip)
+			}
+
+		case code.OpCallValue, code.OpCallTyped:
 			argumentCount := operands[0]
 			functionPosition := len(v.stack) - argumentCount - 1
 			if functionPosition < v.operandBase() {
-				return fmt.Errorf("stack underflow for OpCallValue at %d", ip)
+				return fmt.Errorf("stack underflow for %s at %d", def.Name, ip)
 			}
 			functionID, ok := v.stack[functionPosition].FunctionID()
 			if !ok {
-				return fmt.Errorf("OpCallValue requires function value at %d", ip)
+				return fmt.Errorf("%s requires function value at %d", def.Name, ip)
 			}
 			if functionID < 0 || functionID >= len(v.bytecode.Functions) || v.bytecode.Functions[functionID].ParameterCount != argumentCount {
 				return fmt.Errorf("invalid function value call at %d", ip)
+			}
+			if op == code.OpCallTyped && v.bytecode.Functions[functionID].ReturnsValue != (operands[1] == 1) {
+				return fmt.Errorf("typed function value call result mismatch at %d", ip)
 			}
 			cells, _ := v.stack[functionPosition].ClosureCells()
 			copy(v.stack[functionPosition:], v.stack[functionPosition+1:])

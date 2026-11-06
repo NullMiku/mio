@@ -105,6 +105,12 @@ const (
 	OpArrayTruncate     Opcode = 63
 	OpArrayAppendAll    Opcode = 64
 	OpDataConvert       Opcode = 65
+	// OpTypeConstraint declares the representation of the value on top of the
+	// stack (Mochi v15). It never changes the value at run time.
+	OpTypeConstraint Opcode = 66
+	// OpCallTyped calls a function value like OpCallValue and states whether
+	// the callee returns a value (Mochi v16).
+	OpCallTyped Opcode = 67
 )
 
 const (
@@ -296,6 +302,8 @@ var definitions = [...]Definition{
 	OpArrayTruncate:     {Name: "OpArrayTruncate"},
 	OpArrayAppendAll:    {Name: "OpArrayAppendAll"},
 	OpDataConvert:       {Name: "OpDataConvert", OperandWidths: []int{1}},
+	OpTypeConstraint:    {Name: "OpTypeConstraint", OperandWidths: []int{1}},
+	OpCallTyped:         {Name: "OpCallTyped", OperandWidths: []int{2, 1}},
 }
 
 // Lookup 查询操作码对应的指令定义

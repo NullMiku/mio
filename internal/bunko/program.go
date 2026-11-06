@@ -2,6 +2,7 @@ package bunko
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -112,8 +113,25 @@ func loadRootProgram(root *ast.Program, tests []TestFunction, rootPath, bunkoRoo
 }
 
 func loadRootProgramWithOverlay(root *ast.Program, rootFiles []string, tests []TestFunction, rootPath, bunkoRoot string, registry *mma.ModuleRegistry, overlay Overlay) (*Program, error) {
+	return loadRootWithLoader(root, rootFiles, tests, rootPath, registry, NewWithOverlay(bunkoRoot, overlay))
+}
+
+// LoadSourceFS compiles an in-memory entry and dependencies from a closed read-only FS.
+// No host filesystem or native modules are consulted.
+func LoadSourceFS(source string, sources fs.FS) (*Program, error) {
+	if sources == nil {
+		return nil, fmt.Errorf("Bunko source filesystem is required")
+	}
+	root, files, err := parseSources([]Source{{Name: "main.mio", Path: "main.mio", Content: []byte(source)}})
+	if err != nil {
+		return nil, err
+	}
+	return loadRootWithLoader(root, files, nil, "", nil, &Loader{sourceFS: sources})
+}
+
+func loadRootWithLoader(root *ast.Program, rootFiles []string, tests []TestFunction, rootPath string, registry *mma.ModuleRegistry, loader *Loader) (*Program, error) {
 	state := &programLoader{
-		loader: NewWithOverlay(bunkoRoot, overlay), registry: registry, visiting: make(map[string]bool),
+		loader: loader, registry: registry, visiting: make(map[string]bool),
 		loaded: make(map[string]*packageUnit), nativeLoaded: make(map[string]bool),
 	}
 	rootUnit := &packageUnit{path: rootPath, program: root, imports: make(map[string]string), declared: declarations(root, rootPath), files: rootFiles}
