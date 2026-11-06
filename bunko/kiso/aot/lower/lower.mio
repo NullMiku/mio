@@ -1846,9 +1846,14 @@ waza emit_runtime_alloc(code: arm64.Assembler, gc_stress: bool, observation: boo
     arm64.assembler_label(code, "runtime_alloc_class_ok");
     arm64.assembler_label(code, "runtime_alloc_bin");
     emit_free_head(code, 11, 12);
+    // At most 8 blocks are examined per class: a block of an exact class always fits, and in a power-of-two class
+    // the first-fit walk over too-small blocks of the same range is cut short in favour of the next class, whose
+    // blocks all fit. (The sampled macos-15 self-build otherwise spent most of its time walking such lists.)
+    emit(code, arm64.movz_x(15, 8, 0));
     arm64.assembler_label(code, "runtime_alloc_free");
     emit(code, arm64.ldr_x(13, 12, 0)); arm64.assembler_cbz_x(code, 13, "runtime_alloc_next_bin");
     emit(code, arm64.ldr_x(14, 13, 8)); emit(code, arm64.cmp_x(14, 19)); arm64.assembler_b_cond(code, 2, "runtime_alloc_take");
+    emit(code, arm64.sub_imm_x(15, 15, 1, iie)); arm64.assembler_cbz_x(code, 15, "runtime_alloc_next_bin");
     emit(code, arm64.add_imm_x(12, 13, 16, iie)); arm64.assembler_b(code, "runtime_alloc_free");
     arm64.assembler_label(code, "runtime_alloc_take");
     emit(code, arm64.ldr_x(9, 13, 16)); emit(code, arm64.str_x(9, 12, 0));
