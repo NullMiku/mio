@@ -65,8 +65,12 @@ waza test_process_errors() -> unit {
     kaku missing = scratch("no-such-program");
     testing.expect(spawn(missing, [missing]) == 127, "a program that cannot be started reports 127");
     kaku nul = string.from_utf8([98, 0, 99]);
-    moshi (nul != mu) { testing.expect(spawn(nul, ["x"]) == -22, "a path with NUL is -EINVAL"); }
-    testing.expect(spawn_test(missing, [missing], "a", "b", "c", 0) == -22, "spawn_test rejects a zero CPU budget");
-    testing.expect(spawn_test(missing, [missing], "a", "b", "c", 3601) == -22, "spawn_test rejects more than 3600 seconds");
+    moshi (nul != mu) {
+        testing.expect(spawn(nul, ["x"]) == 127, "a path with NUL cannot start a program (127)");
+        testing.expect(spawn(missing, [missing, nul]) == 127, "an argument with NUL cannot start a program (127)");
+        testing.expect(exec(nul, ["x"]) == -22, "exec of a path with NUL is -EINVAL and returns");
+    }
+    testing.expect(spawn_test(missing, [missing], "a", "b", "c", 0) == 126, "a zero CPU budget is a setup failure (126)");
+    testing.expect(spawn_test(missing, [missing], "a", "b", "c", 3601) == 126, "more than 3600 seconds is a setup failure (126)");
     testing.expect(stdin_wait(-2) == -22 && stdin_wait(2147483648) == -22, "invalid stdin timeouts are -EINVAL");
 }

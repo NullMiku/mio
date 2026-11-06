@@ -17,7 +17,8 @@ yobu "kiso/string";
 //    handed over with the C runtime's STARTUPINFO lpReserved2 descriptor table (count, flags, handles); the child's
 //    testing runtime reads it back with GetStartupInfoW. The child is stopped after the wall deadline (cpu_seconds);
 //    a single-threaded Mio test cannot use more CPU time than wall time, so this also bounds its CPU time. A stopped
-//    child reports 142 (the Linux SIGALRM status), a file that cannot be opened 126, a start failure 127.
+//    child reports 142 (the Linux SIGALRM status); a budget outside 1..3600 or a file that cannot be opened is 126 and a
+//    start failure (also a path or argument with NUL) is 127, as on darwin-arm64 and linux-amd64.
 //  * stdin_ready / stdin_wait: >0 data or end of file, 0 idle, -errno; pipes use PeekNamedPipe, files are always ready,
 //    a console is ready when its input handle is signalled. stdin_wait polls every 10 ms until the deadline.
 
@@ -401,7 +402,10 @@ waza emit_win_spawn(code: x86_64.Assembler, ctx: WinContext, name: string, exec:
     moshi (!exec) { emit_start_failure_status(code, name); }
     emit_epilogue(code);
     x86_64.label(code, string.concat(name, ".invalid"));
+    // exec: -EINVAL (no program was started, as execve); spawn: 127, the darwin/Linux status of a child whose program
+    // cannot be started (a path or argument with NUL).
     x86_64.mov_ri(code, x86_64.rax, -22);
+    moshi (!exec) { x86_64.mov_ri(code, x86_64.rax, 127); }
     emit_epilogue(code);
     close_frame(code, ctx, begin, 0);
 }
@@ -471,9 +475,9 @@ waza emit_win_spawn_test(code: x86_64.Assembler, ctx: WinContext) -> unit {
     x86_64.mov_store(code, x86_64.rsp, 224, x86_64.rsi);
     zero_slots(code, 248, 3);
     x86_64.cmp_ri(code, x86_64.r9, 1);
-    x86_64.jcc(code, x86_64.cc_l, string.concat(p, ".invalid"));
+    x86_64.jcc(code, x86_64.cc_l, string.concat(p, ".setup_failed"));
     x86_64.cmp_ri(code, x86_64.r9, 3600);
-    x86_64.jcc(code, x86_64.cc_g, string.concat(p, ".invalid"));
+    x86_64.jcc(code, x86_64.cc_g, string.concat(p, ".setup_failed"));
     x86_64.test_rr(code, x86_64.rsi, x86_64.rsi);
     x86_64.jcc(code, x86_64.cc_e, "rt.trap.nil");
     emit_prepare_command(code, 224, 232, 240, string.concat(p, ".invalid"));
@@ -533,7 +537,7 @@ waza emit_win_spawn_test(code: x86_64.Assembler, ctx: WinContext) -> unit {
     x86_64.mov_ri(code, x86_64.rax, 126);
     emit_epilogue(code);
     x86_64.label(code, string.concat(p, ".invalid"));
-    x86_64.mov_ri(code, x86_64.rax, -22);
+    x86_64.mov_ri(code, x86_64.rax, 127);
     emit_epilogue(code);
     close_frame(code, ctx, begin, 0);
 }
