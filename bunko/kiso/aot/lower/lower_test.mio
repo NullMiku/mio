@@ -94,19 +94,27 @@ waza test_all_v14_constants_and_static_string_image() -> unit {
 waza test_get_field_uses_runtime_bitmap_width() -> unit {
     kaku code = arm64.assembler();
     emit_get_field(code, 65);
+    kaku call_site = len(code.words);
+    kaku routine = len(code.words);
+    emit_get_field_routine(code);
     // The common error target is normally emitted by compile().
     arm64.assembler_label(code, "runtime_error");
     kaku result = arm64.assembler_assemble(code);
     testing.expect(result.error == mu, "metadata-driven get-field should encode");
+    // The read site passes the field index to the one shared checking routine.
+    testing.expect(call_site == 8, "get-field read site pops the receiver, sets the index, calls, and pushes the value");
+    testing.expect(result.words[3] == arm64.movz_x(11, 65, 0).word, "get-field passes the u16 field index");
+    testing.expect(result.words[4] == arm64.bl(routine - 4).word, "get-field calls the shared checking routine");
     // A fixed-offset lowering would not load fieldCount and bitmapWords or
     // scale both bitmapWords and the u16 field index.
-    testing.expect(len(result.words) == 45, "get-field should validate metadata and compute the variable field address");
-    testing.expect(result.words[6] == arm64.ldr_x(10, 9, 0).word, "get-field validates the struct kind");
-    testing.expect(result.words[11] == arm64.ldr_x(10, 9, 8).word, "get-field validates fieldCount");
-    testing.expect(result.words[20] == arm64.ldr_x(10, 9, 24).word, "get-field reads bitmapWords");
-    testing.expect(result.words[21] == arm64.ldr_x(12, 9, 8).word, "get-field revalidates bitmap width from fieldCount");
-    testing.expect(result.words[32] == arm64.ldr_x(14, 14, 8).word, "get-field validates required bytes against object payload");
-    testing.expect(result.words[41] == arm64.ldr_x(9, 9, 32).word, "get-field reads after metadata, bitmap, and scaled index");
+    testing.expect(len(result.words) == routine + 31, "get-field should validate metadata and compute the variable field address");
+    testing.expect(result.words[routine + 2] == arm64.ldr_x(10, 9, 0).word, "get-field validates the struct kind");
+    testing.expect(result.words[routine + 6] == arm64.ldr_x(10, 9, 8).word, "get-field validates fieldCount");
+    testing.expect(result.words[routine + 10] == arm64.ldr_x(10, 9, 24).word, "get-field reads bitmapWords");
+    testing.expect(result.words[routine + 11] == arm64.ldr_x(12, 9, 8).word, "get-field revalidates bitmap width from fieldCount");
+    testing.expect(result.words[routine + 21] == arm64.ldr_x(14, 14, 8).word, "get-field validates required bytes against object payload");
+    testing.expect(result.words[routine + 29] == arm64.ldr_x(9, 9, 32).word, "get-field reads after metadata, bitmap, and scaled index");
+    testing.expect(result.words[routine + 30] == arm64.ret().word, "get-field routine returns the value in x9");
 }
 
 waza test_type_analysis_distinguishes_nil_from_nullable_scalar_zero() -> unit {

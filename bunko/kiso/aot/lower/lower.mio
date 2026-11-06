@@ -200,41 +200,30 @@ waza width(opcode: int64) -> int64 {
 // time.  OpGetField is allocation-free and has no helper call, so replacing
 // the receiver slot in place does not introduce a GC safepoint.
 waza emit_get_field(code: arm64.Assembler, index: int64) -> unit {
-    pop_register(code, 9);
-    kaku receiver_ok = string.concat("get_field_receiver_", convert.format_int(len(code.words)));
-    arm64.assembler_cbnz_x(code, 9, receiver_ok);
-    arm64.assembler_b(code, "runtime_error");
-    arm64.assembler_label(code, receiver_ok);
-    // Validate the self-describing struct kind and field bound before using
-    // its variable part.  Static type/root analysis remains responsible for
-    // proving that the receiver is a managed reference.
-    emit(code, arm64.ldr_x(10, 9, 0));
-    emit(code, arm64.cmp_imm_x(10, 1, iie));
-    kaku kind_ok = string.concat("get_field_kind_", convert.format_int(len(code.words)));
-    arm64.assembler_b_cond(code, 0, kind_ok);
-    arm64.assembler_b(code, "runtime_error");
-    arm64.assembler_label(code, kind_ok);
-    emit(code, arm64.ldr_x(10, 9, 8));
-    move_bits(code, 11, uint32(0), uint32(index));
-    emit(code, arm64.cmp_x(11, 10));
-    kaku bounds_ok = string.concat("get_field_bounds_", convert.format_int(len(code.words)));
-    arm64.assembler_b_cond(code, 3, bounds_ok);
-    arm64.assembler_b(code, "runtime_error");
-    arm64.assembler_label(code, bounds_ok);
+    pop_register(code, 9); move_bits(code, 11, uint32(0), uint32(index));
+    arm64.assembler_bl(code, "rt_get_field");
+    push_register(code, 9);
+}
+
+// x9 receiver, x11 field index -> x9 field value; uses x10-x14 (and the heap-read scratch). One shared copy of the
+// receiver kind, field bound, bitmap and payload checks that every field read performs.
+waza emit_get_field_routine(code: arm64.Assembler) -> unit {
+    arm64.assembler_label(code, "rt_get_field");
+    arm64.assembler_cbz_x(code, 9, "runtime_error");
+    emit(code, arm64.ldr_x(10, 9, 0)); emit(code, arm64.cmp_imm_x(10, 1, iie)); arm64.assembler_b_cond(code, 1, "runtime_error");
+    emit(code, arm64.ldr_x(10, 9, 8)); emit(code, arm64.cmp_x(11, 10)); arm64.assembler_b_cond(code, 2, "runtime_error");
     emit(code, arm64.ldr_x(10, 9, 24));
     emit(code, arm64.ldr_x(12, 9, 8)); emit(code, arm64.add_imm_x(13, 12, 63, iie)); emit(code, arm64.lsr_x(13, 13, 6)); emit(code, arm64.cmp_x(13, 10));
-    kaku bitmap_ok = string.concat("get_field_bitmap_", convert.format_int(len(code.words)));
-    arm64.assembler_b_cond(code, 0, bitmap_ok); arm64.assembler_b(code, "runtime_error"); arm64.assembler_label(code, bitmap_ok);
+    arm64.assembler_b_cond(code, 1, "runtime_error");
     emit(code, arm64.add_x(13, 10, 12)); emit(code, arm64.lsl_x(13, 13, 3)); emit(code, arm64.add_imm_x(13, 13, 32, iie));
     emit(code, arm64.sub_imm_x(14, 9, 16, iie)); emit(code, arm64.ldr_x(14, 14, 8)); emit(code, arm64.cmp_x(13, 14));
-    kaku payload_ok = string.concat("get_field_payload_", convert.format_int(len(code.words)));
-    arm64.assembler_b_cond(code, 9, payload_ok); arm64.assembler_b(code, "runtime_error"); arm64.assembler_label(code, payload_ok);
+    arm64.assembler_b_cond(code, 8, "runtime_error");
     emit(code, arm64.lsl_x(10, 10, 3));
     emit(code, arm64.add_x(9, 9, 10));
     emit(code, arm64.lsl_x(11, 11, 3));
     emit(code, arm64.add_x(9, 9, 11));
     emit_heap_read_word(code,9,9,32);
-    push_register(code, 9);
+    emit(code, arm64.ret());
 }
 
 waza emit_len(code: arm64.Assembler, kind: int64) -> bool {
@@ -313,6 +302,28 @@ waza root_node_ok(type_result: types.TypeAnalysis, node: int64) -> bool {
 // Materialize the exact live reference vector immediately before a safepoint.
 // record = {previous,count,values...}.  Locals/globals use their solved slot
 // types; operand roots use the precise entry state for this opcode.
+waza emit_root_load(code: arm64.Assembler, reg: int64, base: int64, offset: int64) -> unit {
+    moshi (offset < 0) { move_x(code, reg, base); } sore { emit(code, arm64.ldr_x(reg, base, offset)); }
+}
+
+// Copies root i from (base[i], offset[i]) (offset -1: the register itself) to shadow slot first + i.
+waza emit_root_sources(code: arm64.Assembler, base: []int64, offset: []int64, first: int64) -> unit {
+    kaku i = 0;
+    aida (i < len(base)) {
+        kaku slot = 16 + (first + i) * 8;
+        moshi (i + 1 < len(base)) {
+            moshi (offset[i] >= 0 && base[i + 1] == base[i] && offset[i + 1] == offset[i] + 8 && offset[i] <= 504) {
+                emit(code, arm64.ldp_x(8, 9, base[i], offset[i]));
+            } sore { emit_root_load(code, 8, base[i], offset[i]); emit_root_load(code, 9, base[i + 1], offset[i + 1]); }
+            moshi (slot + 8 <= 504) { emit(code, arm64.stp_x(8, 9, 31, slot)); }
+            sore { emit(code, arm64.str_x(8, 31, slot)); emit(code, arm64.str_x(9, 31, slot + 8)); }
+            i = i + 2;
+        } sore {
+            emit_root_load(code, 9, base[i], offset[i]); emit(code, arm64.str_x(9, 31, slot)); i = i + 1;
+        }
+    }
+}
+
 waza emit_shadow_push(code: arm64.Assembler, patches: []macho.AddressPatch,
     type_result: types.TypeAnalysis, function_id: int64, entries: []int64) -> int64 {
     kaku roots = 0;
@@ -363,28 +374,33 @@ waza emit_shadow_push(code: arm64.Assembler, patches: []macho.AddressPatch,
         }
         index = index + 1;
     }
+    // Cells first (their address is computed), then the plain sources: the upvalue register, locals and operands.
+    // Those are copied two at a time through x8/x9 (ldp/stp where the slots are adjacent); the frame layout and the
+    // order of roots are exactly those of the one-by-one copy.
+    kaku source_base: []int64 = []; kaku source_offset: []int64 = [];
     moshi (function_id >= 0) {
-        moshi (len(type_result.upvalues[function_id]) > 0) { emit(code, arm64.str_x(25, 31, 16 + root * 8)); root = root + 1; }
+        kaku cell_root = root; moshi (len(type_result.upvalues[function_id]) > 0) { cell_root = cell_root + 1; }
         index = 0;
         aida (index < len(type_result.cells[function_id])) {
-            moshi (type_result.cells[function_id][index]) { cell_address(code, index); emit(code, arm64.ldr_x(9, 8, 0)); emit(code, arm64.str_x(9, 31, 16 + root * 8)); root = root + 1; }
+            moshi (type_result.cells[function_id][index]) { cell_address(code, index); emit(code, arm64.ldr_x(9, 8, 0)); emit(code, arm64.str_x(9, 31, 16 + cell_root * 8)); cell_root = cell_root + 1; }
             index = index + 1;
         }
+        moshi (len(type_result.upvalues[function_id]) > 0) { array.push(source_base, 25); array.push(source_offset, -1); }
+        kaku cells_end = cell_root;
+        moshi (len(source_base) > 0) { emit_root_sources(code, source_base, source_offset, root); root = root + 1; source_base = []; source_offset = []; }
+        root = cells_end;
         index = 0;
         aida (index < len(type_result.locals[function_id])) {
-            moshi (types.type_is_heap_reference(type_result, type_result.locals[function_id][index])) {
-                emit(code, arm64.ldr_x(9, 21, index * 8)); emit(code, arm64.str_x(9, 31, 16 + root * 8)); root = root + 1;
-            }
+            moshi (types.type_is_heap_reference(type_result, type_result.locals[function_id][index])) { array.push(source_base, 21); array.push(source_offset, index * 8); }
             index = index + 1;
         }
     }
     index = 0;
     aida (index < len(entries)) {
-        moshi (types.type_is_heap_reference(type_result, entries[index])) {
-            emit(code, arm64.ldr_x(9, 19, index * 8)); emit(code, arm64.str_x(9, 31, 16 + root * 8)); root = root + 1;
-        }
+        moshi (types.type_is_heap_reference(type_result, entries[index])) { array.push(source_base, 19); array.push(source_offset, index * 8); }
         index = index + 1;
     }
+    emit_root_sources(code, source_base, source_offset, root);
     emit(code, arm64.add_imm_x(24, 31, 0, iie));
     moshi (attached_roots_enabled(code)) { arm64.assembler_bl(code,"attached_roots_publish"); }
     kaesu bytes;
@@ -723,10 +739,25 @@ waza move_bits(code: arm64.Assembler, destination: int64, high: uint32, low: uin
     kaku part1 = low_value / 65536;
     kaku part2 = high_value - (high_value / 65536) * 65536;
     kaku part3 = high_value / 65536;
-    emit(code, arm64.movz_x(destination, part0, 0));
-    emit(code, arm64.movk_x(destination, part1, 1));
-    emit(code, arm64.movk_x(destination, part2, 2));
-    emit(code, arm64.movk_x(destination, part3, 3));
+    // Shortest MOVZ/MOVN + MOVK sequence: halfwords equal to the background (0 for MOVZ, 0xFFFF for MOVN) are skipped.
+    kaku parts = [part0, part1, part2, part3];
+    kaku zeros = 0; kaku ones = 0; kaku i = 0;
+    aida (i < 4) { moshi (parts[i] == 0) { zeros = zeros + 1; } moshi (parts[i] == 65535) { ones = ones + 1; } i = i + 1; }
+    kaku background = 0; moshi (ones > zeros) { background = 65535; }
+    kaku first = hai; i = 0;
+    aida (i < 4) {
+        moshi (parts[i] != background) {
+            moshi (first) {
+                moshi (background == 0) { emit(code, arm64.movz_x(destination, parts[i], i)); }
+                sore { emit(code, arm64.movn_x(destination, 65535 - parts[i], i)); }
+                first = iie;
+            } sore { emit(code, arm64.movk_x(destination, parts[i], i)); }
+        }
+        i = i + 1;
+    }
+    moshi (first) {
+        moshi (background == 0) { emit(code, arm64.movz_x(destination, 0, 0)); } sore { emit(code, arm64.movn_x(destination, 0, 0)); }
+    }
 }
 
 // x19 is the frame's operand-area base and x20 is its live byte count.
@@ -932,6 +963,16 @@ waza emit_float_binary(code: arm64.Assembler, kind: int64, opcode: int64) -> uni
 }
 
 waza emit_string_equal(code: arm64.Assembler, opcode: int64) -> unit {
+    moshi (opcode == 12) { arm64.assembler_bl(code, "rt_string_not_equal"); } sore { arm64.assembler_bl(code, "rt_string_equal"); }
+}
+
+// x9, x10 string values -> x9 1 when equal (0 for rt_string_not_equal); uses x10-x16.
+waza emit_string_equal_routines(code: arm64.Assembler) -> unit {
+    arm64.assembler_label(code, "rt_string_equal"); emit_string_equal_inline(code, 11); emit(code, arm64.ret());
+    arm64.assembler_label(code, "rt_string_not_equal"); emit_string_equal_inline(code, 12); emit(code, arm64.ret());
+}
+
+waza emit_string_equal_inline(code: arm64.Assembler, opcode: int64) -> unit {
     kaku prefix = block_label("string_equal_", len(code.words)); kaku no = string.concat(prefix, "_no"); kaku yes = string.concat(prefix, "_yes"); kaku done = string.concat(prefix, "_done"); kaku loop = string.concat(prefix, "_loop");
     move_x(code, 15, 10); emit_string_view(code); move_x(code, 14, 13); move_x(code, 16, 10);
     move_x(code, 9, 15); emit_string_view(code); emit(code, arm64.cmp_x(16, 10)); arm64.assembler_b_cond(code, 1, no);
@@ -1076,12 +1117,12 @@ waza emit_call(code: arm64.Assembler, patches: []macho.AddressPatch,
     moshi (stack_bytes - (stack_bytes / 16) * 16 != 0) { stack_bytes = stack_bytes + 8; }
     moshi (stack_bytes > 0) { emit(code, arm64.sub_imm_x(31, 31, stack_bytes, iie)); }
     kaku index = 0;
+    moshi (count > 0) { emit(code, arm64.add_x(8, 19, 20)); emit(code, arm64.sub_imm_x(8, 8, count * 8, iie)); }
     aida (index < count) {
-        emit(code, arm64.add_x(8, 19, 20));
-        emit(code, arm64.sub_imm_x(8, 8, (count - index) * 8, iie));
-        moshi (index < 8) { emit(code, arm64.ldr_x(index, 8, 0)); }
-        sore { emit(code, arm64.ldr_x(9, 8, 0)); emit(code, arm64.str_x(9, 31, (index - 8) * 8)); }
-        index = index + 1;
+        moshi (index + 1 < count && index + 1 < 8) { emit(code, arm64.ldp_x(index, index + 1, 8, index * 8)); index = index + 2; }
+        sore { moshi (index < 8) { emit(code, arm64.ldr_x(index, 8, index * 8)); }
+        sore { emit(code, arm64.ldr_x(9, 8, index * 8)); emit(code, arm64.str_x(9, 31, (index - 8) * 8)); }
+        index = index + 1; }
     }
     moshi (count > 0) { emit(code, arm64.sub_imm_x(20, 20, count * 8, iie)); }
     emit_call_depth(code, hai);
@@ -2321,6 +2362,7 @@ waza compile_worker_impl(input_file: mochi.File, gc_stress: bool, capacity: int6
     }
     sore { emit(code, arm64.movz_x(0, 0, 0)); }
     emit(code, arm64.movz_x(16, 1, 0)); emit(code, arm64.svc(128));
+    emit_get_field_routine(code); emit_string_equal_routines(code);
     arm64.assembler_label(code, "runtime_error");
     moshi(old_mark_proto_enabled(code)){emit_old_error_diagnostic(code);arm64.assembler_bl(code,"old_fatal_cleanup");}
     moshi (managed && observation) { arm64.assembler_bl(code, "observation_dump"); }
