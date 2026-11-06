@@ -45,11 +45,13 @@ waza write_symbols(path: string, file: mochi.File, lowered: lower.LowerResult) -
         }
         at = at + 1;
     }
-    // runtime routines: labels with plain names (block and generated labels end in a number)
+    // runtime routines: labels with plain names (block, function and generated labels contain numbers)
     at = 0;
     aida (at < len(lowered.labels)) {
         kaku name = lowered.labels[at].name; kaku bytes = string.to_bytes(name);
-        moshi (len(bytes) > 0 && (bytes[len(bytes) - 1] < uint8(48) || bytes[len(bytes) - 1] > uint8(57)) && !string.has_prefix(name, "fn_") && !string.has_prefix(name, "main_")) {
+        kaku digits = iie; kaku bi = 0;
+        aida (bi < len(bytes)) { moshi (bytes[bi] >= uint8(48) && bytes[bi] <= uint8(57)) { digits = hai; } bi = bi + 1; }
+        moshi (len(bytes) > 0 && !digits) {
             string.write_string(output, convert.format_int(lowered.labels[at].word)); string.write_string(output, " rt:"); string.write_string(output, name); string.write_string(output, "\n");
         }
         at = at + 1;
