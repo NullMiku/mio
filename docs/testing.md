@@ -98,7 +98,7 @@ GC 独立路径复用现有 `automatic-roots/builder.mio`，由纯 Mio 生成受
 
 ABCD 继续使用现有、带冻结源和哈希/签名复核的脚本；不重写自举算法。依赖 Go AOT 的历史 BCD/M18 gate 已随 Go AOT 后端删除（它们只能验证已废弃的 Go 引导路径，且在当前源码上已不可复现）；纯 Mio 的固定点由 native.yml 在三个平台上验证。
 
-Bunko 每个库公开函数（`koukai waza`）都必须有覆盖它的原生测试：`scripts/ci/bunko_matrix.py --check`（quality 的 bunko-coverage 检查）从源码生成函数清单并核对 `*_test.mio`、`tests/native-differential` 用例与 `bunko_matrix_coverage.json` 中登记的 runner 协议（子进程、exec、exit、测试通道）。native.yml 的 summary 用三平台原生报告生成逐函数矩阵（`bunko-test-matrix.json/.md`，提交版见 [docs/bunko-test-matrix.md](bunko-test-matrix.md)），覆盖的库函数在任一平台非 PASS（UNSUPPORTED 需登记技术原因）即失败。部分 nativefs/sign 辅助包通过原生库/集成路径间接覆盖；不创建空入口。selfhost 阶段全集有原生测试，但尚未逐阶段配置独立 oracle。外部 FFI/完整 ABI、长期 GC 压力、新平台后端仍未覆盖。原有 E5/E6 等脚本保留，其硬编码 Seed、固定 fixture、分支或恢复要求不被本次静默改写；未接入项应明确记录 NOT_RUN。
+Bunko 每个库公开函数（`koukai waza`）都必须有覆盖它的原生测试：`scripts/ci/bunko_matrix.py --check`（quality 的 bunko-coverage 检查）从源码生成函数清单并核对 `*_test.mio`、`tests/native-differential` 用例与 `bunko_matrix_coverage.json` 中登记的 runner 协议（子进程、exec、exit、测试通道）。native.yml 的 summary 用三平台原生报告生成逐函数矩阵（`bunko-test-matrix.json/.md`，提交版见 [tests/bunko-matrix/bunko-test-matrix.md](../tests/bunko-matrix/bunko-test-matrix.md)），覆盖的库函数在任一平台非 PASS（UNSUPPORTED 需登记技术原因）即失败。部分 nativefs/sign 辅助包通过原生库/集成路径间接覆盖；不创建空入口。selfhost 阶段全集有原生测试，但尚未逐阶段配置独立 oracle。外部 FFI/完整 ABI、长期 GC 压力、新平台后端仍未覆盖。原有 E5/E6 等脚本保留，其硬编码 Seed、固定 fixture、分支或恢复要求不被本次静默改写；未接入项应明确记录 NOT_RUN。
 
 ## 模块接口
 

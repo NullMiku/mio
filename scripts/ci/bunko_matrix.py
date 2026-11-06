@@ -172,15 +172,15 @@ def verdict(row, platform, statuses):
     return "UNVERIFIED", "covering tests did not run (%s)" % ", ".join(sorted({str(s) for s in seen}))
 
 
-def render(rows, results, output):
+def render(rows, results, output, note=""):
     output.mkdir(parents=True, exist_ok=True)
     table = []
     for row in rows:
         entry = dict(row)
         entry["results"] = {}
         for platform in PLATFORMS:
-            status, note = verdict(row, platform, results.get(platform))
-            entry["results"][platform] = {"status": status, "note": note}
+            status, detail = verdict(row, platform, results.get(platform))
+            entry["results"][platform] = {"status": status, "note": detail}
         table.append(entry)
     summary = {p: {} for p in PLATFORMS}
     for entry in table:
@@ -188,7 +188,7 @@ def render(rows, results, output):
             for p in PLATFORMS:
                 s = entry["results"][p]["status"]
                 summary[p][s] = summary[p].get(s, 0) + 1
-    data = {"schema_version": 1, "platforms": list(PLATFORMS), "reports": sorted(results), "summary_library": summary,
+    data = {"schema_version": 1, "platforms": list(PLATFORMS), "reports": sorted(results), "note": note, "summary_library": summary,
             "functions": table}
     (output / "bunko-test-matrix.json").write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     lines = ["# Bunko public-function test matrix", "",
@@ -196,7 +196,7 @@ def render(rows, results, output):
              "`.github/workflows/native.yml`. PASS = a covering native test ran and passed on that platform; "
              "UNVERIFIED = no covering test ran there (or no report); UNSUPPORTED = recorded technical reason. "
              "Cross-compilation is never counted.", "",
-             "Reports: " + (", ".join(sorted(results)) or "none"), "",
+             "Reports: " + (", ".join(sorted(results)) or "none"), ""] + ([note, ""] if note else []) + [
              "| Library functions | " + " | ".join(PLATFORMS) + " |", "| --- |" + " --- |" * len(PLATFORMS)]
     statuses = ("PASS", "FAIL", "UNSUPPORTED", "UNVERIFIED")
     for s in statuses:
@@ -223,6 +223,7 @@ def main():
     parser.add_argument("--reports", help="directory holding native-report-*/report.json")
     parser.add_argument("--output", help="directory for bunko-test-matrix.json / .md")
     parser.add_argument("--check", action="store_true", help="fail when a library function has no covering test")
+    parser.add_argument("--note", default="", help="provenance line written into the matrix (where the reports come from)")
     parser.add_argument("--require-pass", action="store_true",
                         help="with --reports: fail unless every covered library function is PASS or UNSUPPORTED on every platform")
     args = parser.parse_args()
@@ -233,7 +234,7 @@ def main():
             if row["library"] and not row["tests"] and not row["not_testable"]:
                 problems.append("%s.%s has no covering native test" % (row["module"], row["function"]))
     if args.output:
-        data = render(rows, load_reports(args.reports), Path(args.output))
+        data = render(rows, load_reports(args.reports), Path(args.output), args.note)
         if args.require_pass:
             for entry in data["functions"]:
                 if not entry["library"] or not entry["tests"]:

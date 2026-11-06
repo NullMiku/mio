@@ -283,12 +283,26 @@ def count(pattern, text):
     return int(match.group(1)) if match else 0
 
 
+# Packages whose runtime layer does not exist on a target, with the technical reason. They are reported
+# NOT_APPLICABLE (never PASS) and must match the UNSUPPORTED entries of scripts/ci/bunko_matrix_coverage.json.
+NOT_APPLICABLE_PACKAGES = {
+    "windows-amd64": {
+        "bunko/kiso/net/tcp": "kiso/aot/lowerwinrt has no Winsock layer (the lowerlinux socket runtime uses Linux socket "
+                              "system calls); the calls stop with the explicit runtime error \"unsupported operation\"",
+    },
+}
+
+
 def native_mio_test(report, cli, skips_allowed):
     """Every package with *_test.mio. A skipped test is never a pass: skips are reported separately (SKIP, with the
     test's own reason). Where every test must run (darwin-arm64, the primary target) a skip is a required failure."""
     failures = []
+    excluded = NOT_APPLICABLE_PACKAGES.get(report.target, {})
     for package in test_packages():
         label = "mio-test-" + package.replace("/", "_")
+        if package in excluded:
+            report.check("mio-test " + package, "NOT_APPLICABLE", "native", excluded[package], required=False)
+            continue
         if time.monotonic() - STARTED > BUDGET_SECONDS:
             report.check("mio-test " + package, "NOT_RUN", "native", "platform time budget (%ds) exhausted" % BUDGET_SECONDS)
             failures.append(package)

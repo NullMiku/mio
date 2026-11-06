@@ -424,7 +424,20 @@ waza emit_win_syscall(code: x86_64.Assembler, ctx: WinContext) -> unit {
     x86_64.call(code, "rt.syscall.dev");
     x86_64.cmp_ri(code, x86_64.rax, 0);
     x86_64.jcc(code, x86_64.cc_ge, "rt.syscall.out");
+    // "/dev/null" is the Windows NUL device, opened with the requested access like any file
+    x86_64.mov_load(code, x86_64.rsi, x86_64.rsp, 64);
+    x86_64.lea_label(code, x86_64.rdi, "rt.text.dev_null");
+    x86_64.mov_ri(code, x86_64.rdx, 1);
+    x86_64.call(code, "rt.syscall.dev");
+    x86_64.cmp_ri(code, x86_64.rax, 0);
+    x86_64.jcc(code, x86_64.cc_l, "rt.syscall.open_convert");
+    x86_64.mov_ri(code, x86_64.rcx, scratch_path());
+    kaku nul: []int64 = [78, 0, 85, 0, 76, 0, 0, 0];
+    kaku k = 0;
+    aida (k < len(nul)) { x86_64.mov_ri(code, x86_64.rdx, nul[k]); x86_64.mov_store8(code, x86_64.rcx, k, x86_64.rdx); k = k + 1; }
+    x86_64.jmp(code, "rt.syscall.open_flags");
     // UTF-8 -> UTF-16 into the scratch buffer
+    x86_64.label(code, "rt.syscall.open_convert");
     x86_64.mov_ri(code, x86_64.rcx, 65001);
     x86_64.mov_ri(code, x86_64.rdx, 0);
     x86_64.mov_load(code, x86_64.r8, x86_64.rsp, 64);
@@ -438,6 +451,7 @@ waza emit_win_syscall(code: x86_64.Assembler, ctx: WinContext) -> unit {
     x86_64.test_rr(code, x86_64.rax, x86_64.rax);
     x86_64.jcc(code, x86_64.cc_e, "rt.syscall.einval");
     // access, disposition from the Linux flags (rsi was saved at +72)
+    x86_64.label(code, "rt.syscall.open_flags");
     x86_64.mov_load(code, x86_64.rax, x86_64.rsp, 72);
     x86_64.cmp_ri(code, x86_64.rax, 65536);
     x86_64.jcc(code, x86_64.cc_e, "rt.syscall.opendir");
@@ -843,6 +857,9 @@ waza emit_win_syscall(code: x86_64.Assembler, ctx: WinContext) -> unit {
     x86_64.label(code, "rt.text.dev_stdout");
     x86_64.byte(code, 47); x86_64.byte(code, 100); x86_64.byte(code, 101); x86_64.byte(code, 118); x86_64.byte(code, 47);
     x86_64.byte(code, 115); x86_64.byte(code, 116); x86_64.byte(code, 100); x86_64.byte(code, 111); x86_64.byte(code, 117); x86_64.byte(code, 116); x86_64.byte(code, 0);
+    x86_64.label(code, "rt.text.dev_null");
+    x86_64.byte(code, 47); x86_64.byte(code, 100); x86_64.byte(code, 101); x86_64.byte(code, 118); x86_64.byte(code, 47);
+    x86_64.byte(code, 110); x86_64.byte(code, 117); x86_64.byte(code, 108); x86_64.byte(code, 108); x86_64.byte(code, 0);
     x86_64.label(code, "rt.text.dev_stderr");
     x86_64.byte(code, 47); x86_64.byte(code, 100); x86_64.byte(code, 101); x86_64.byte(code, 118); x86_64.byte(code, 47);
     x86_64.byte(code, 115); x86_64.byte(code, 116); x86_64.byte(code, 100); x86_64.byte(code, 101); x86_64.byte(code, 114); x86_64.byte(code, 114); x86_64.byte(code, 0);

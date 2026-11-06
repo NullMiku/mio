@@ -208,6 +208,8 @@ class Emu:
                 break
             raw += c
         name = self._canonical(raw.decode("utf-16-le"))
+        if name.upper() == "NUL":  # the null device: always empty, discards writes
+            self.files[name] = bytearray()
         exists = name in self.files
         if disposition == 3 and not exists:
             self.last_error = 2
@@ -528,6 +530,18 @@ class Emu:
     def api_Sleep(self, a, s):
         self.ticks += a[0] & 0xFFFFFFFF
         return 0
+
+    def api_GetModuleFileNameW(self, a, s):
+        if a[0] != 0:
+            self._violation("GetModuleFileNameW expects the current module (NULL)")
+        path = "C:\\work\\" + self.command_line.split(" ")[0].strip('"')
+        wide = (path + "\0").encode("utf-16-le")
+        if len(wide) // 2 > (a[2] & 0xFFFFFFFF):
+            self.last_error = 122
+            return a[2] & 0xFFFFFFFF
+        self.uc.mem_write(a[1], wide)
+        self.files.setdefault(self._canonical(path), bytearray(b"MZ"))
+        return len(path)
 
     def api_ExitProcess(self, a, s):
         self.exit_code = a[0] & 0xFFFFFFFF
