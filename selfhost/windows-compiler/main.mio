@@ -151,7 +151,12 @@ waza load_package(state: PackageState, root: string, package_path: string) -> un
         moshi (!state.failed[0]) {
             kaku resolved = resolver.resolve_package(package_path, files, resolved_dependencies);
             kaku checked = typecheck.check_package(resolved, checked_dependencies);
-            moshi (len(resolved.errors) != 0 || len(checked.errors) != 0) { state.failed[0] = hai; state.diagnostic[0] = string.concat("check package: ", package_path); }
+            moshi (len(resolved.errors) != 0 || len(checked.errors) != 0) {
+                state.failed[0] = hai; state.diagnostic[0] = string.concat("check package: ", package_path);
+                kaku ei=0;
+                aida(ei<len(resolved.errors)){state.diagnostic[0]=string.concat(state.diagnostic[0],string.concat("\nresolve: ",resolved.errors[ei].name));ei=ei+1;}
+                ei=0;aida(ei<len(checked.errors)){state.diagnostic[0]=string.concat(state.diagnostic[0],string.concat("\n",string.concat(checked.errors[ei].code,string.concat(" ",checked.errors[ei].detail))));ei=ei+1;}
+            }
             sore { array.push(state.paths, package_path); array.push(state.resolved, resolved); array.push(state.checked, checked); }
         }
     }

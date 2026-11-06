@@ -1,0 +1,354 @@
+name: Mio Core / Full PR candidates
+permissions:
+  contents: read
+concurrency:
+  group: distribution-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  packaging-tests:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - run: python -m unittest discover -s scripts/distribution -p 'test_*.py' -v
+    - run: python -m unittest discover -s docker -p 'test_*.py' -v
+  candidates:
+    needs:
+    - follower
+    - packaging-tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - target: darwin-arm64
+          runner: macos-15
+          compiler: mio-B
+        - target: windows-amd64
+          runner: windows-2025
+          compiler: mio-B.exe
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.12'
+    - uses: actions/download-artifact@v4
+      with:
+        name: distribution-compiler-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/compiler
+    - uses: actions/download-artifact@v4
+      with:
+        name: native-report-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/evidence
+    - name: Prepare identical candidate inputs
+      run: python scripts/distribution/prepare.py --disposable-checkout build/distribution-source
+    - name: Package verified native B as Core and Full
+      shell: bash
+      run: python scripts/distribution/package.py --source build/distribution-source --compiler build/compiler/${{ matrix.compiler }} --report build/evidence/report.json --target ${{ matrix.target }} --output build/candidates
+    - name: Run relocated candidates outside the repository
+      run: python scripts/distribution/verify.py --target ${{ matrix.target }} --output build/candidates
+    - uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: mio-candidates-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: 'build/candidates/*.tar.gz
+
+          build/candidates/*.zip
+
+          build/candidates/SHA256SUMS
+
+          build/candidates/verification.json
+
+          build/candidates/native-report.json
+
+          '
+        if-no-files-found: error
+        retention-days: 14
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: distribution-diagnostics-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: 'build/candidates/*.json
+
+          build/evidence/
+
+          '
+        if-no-files-found: warn
+        retention-days: 14
+  required:
+    if: always()
+    needs:
+    - packaging-tests
+    - summary
+    - candidates
+    - docker-full-offline
+    - candidate-linux
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Require real native and candidate verification
+      env:
+        RESULTS: ${{ toJSON(needs) }}
+      run: 'python - <<''PY''
+
+        import json, os
+
+        results = json.loads(os.environ[''RESULTS''])
+
+        assert all(job[''result''] == ''success'' for job in results.values()), results
+
+        PY
+
+        '
+  linux:
+    name: Distribution native / linux-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      darwin_arm64: ${{ steps.native.outputs.darwin_arm64 }}
+      windows_amd64: ${{ steps.native.outputs.windows_amd64 }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.12'
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache: false
+    - name: Build the reference VM host (go-hosted Stage A and VM oracle only)
+      run: go build -o build/native/refvm ./tests/windows-amd64/refvm
+    - name: Prepare source-free candidate build inputs
+      run: python scripts/distribution/prepare.py --disposable-checkout build/distribution-source
+    - id: native
+      name: Stage A, native compiler and CLI fixed points, mio test, Runtime ABI contract, cross Stage A
+      run: python build/distribution-source/scripts/ci/native_platforms.py linux --refvm build/native/refvm --output build/native/linux-amd64
+    - uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: native-stage-a-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/native/linux-amd64/stage-a/
+        if-no-files-found: error
+        retention-days: 7
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: native-report-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: 'build/native/linux-amd64/report.json
+
+          build/native/linux-amd64/logs/
+
+          build/native/linux-amd64/runtime-abi/results.json
+
+          build/native/linux-amd64/runtime-abi/*.std*
+
+          build/native/linux-amd64/native-differential/results.json
+
+          build/native/linux-amd64/native-differential/*.std*
+
+          '
+        if-no-files-found: error
+        retention-days: 7
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: native-compilers-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: 'build/native/linux-amd64/work/compiler-*
+
+          build/native/linux-amd64/work/mio-*
+
+          '
+        if-no-files-found: warn
+        retention-days: 7
+    - uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: distribution-compiler-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/native/linux-amd64/work/mio-B
+        if-no-files-found: error
+        retention-days: 7
+  follower:
+    name: Distribution native / ${{ matrix.target }}
+    needs: linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - target: darwin-arm64
+          command: darwin
+          runner: macos-15
+          image: mio-darwin-arm64
+          sha_output: darwin_arm64
+        - target: windows-amd64
+          command: windows
+          runner: windows-2025
+          image: mio-windows-amd64.exe
+          sha_output: windows_amd64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.12'
+    - uses: actions/download-artifact@v4
+      with:
+        name: native-stage-a-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/stage-a
+    - name: Prepare source-free candidate build inputs
+      run: python scripts/distribution/prepare.py --disposable-checkout build/distribution-source
+    - name: Native B -> C -> D, mio test, Runtime ABI contract (no Go on this path)
+      shell: bash
+      env:
+        EXPECTED_SHA256: ${{ needs.linux.outputs[matrix.sha_output] }}
+      run: python build/distribution-source/scripts/ci/native_platforms.py ${{ matrix.command }} --stage-a "build/stage-a/${{ matrix.image }}" --expect-sha256 "$EXPECTED_SHA256" --output "build/native/${{ matrix.target }}"
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: native-report-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: 'build/native/${{ matrix.target }}/report.json
+
+          build/native/${{ matrix.target }}/logs/
+
+          build/native/${{ matrix.target }}/runtime-abi/results.json
+
+          build/native/${{ matrix.target }}/runtime-abi/*.std*
+
+          build/native/${{ matrix.target }}/native-differential/results.json
+
+          build/native/${{ matrix.target }}/native-differential/*.std*
+
+          '
+        if-no-files-found: error
+        retention-days: 7
+    - uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: distribution-compiler-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/native/${{ matrix.target }}/work/mio-B*
+        if-no-files-found: error
+        retention-days: 7
+  summary:
+    name: Distribution native / required
+    if: always()
+    needs:
+    - linux
+    - follower
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.12'
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: native-report-*-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/native-reports
+    - name: Combine the platform reports (fails unless every required check is PASS)
+      run: python scripts/ci/native_platforms.py summary --reports build/native-reports --output build/native-summary
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: native-summary-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/native-summary/
+        if-no-files-found: error
+        retention-days: 7
+  docker-full-offline:
+    needs:
+    - candidate-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/download-artifact@v4
+      with:
+        name: mio-candidates-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/linux-candidates
+    - name: Build Full image, test offline, save/load, test offline again
+      run: python docker/build.py --candidates build/linux-candidates --output build/docker-candidate
+    - uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: mio-docker-linux-amd64-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/docker-candidate/
+        if-no-files-found: error
+        retention-days: 7
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: docker-offline-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/docker-candidate/docker-verification.json
+        if-no-files-found: warn
+        retention-days: 14
+  candidate-linux:
+    needs:
+    - linux
+    - packaging-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.12'
+    - uses: actions/download-artifact@v4
+      with:
+        name: distribution-compiler-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/compiler
+    - uses: actions/download-artifact@v4
+      with:
+        name: native-report-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: build/evidence
+    - name: Prepare identical candidate inputs
+      run: python scripts/distribution/prepare.py --disposable-checkout build/distribution-source
+    - name: Package verified native B as Core and Full
+      shell: bash
+      run: python scripts/distribution/package.py --source build/distribution-source --compiler build/compiler/mio-B --report build/evidence/report.json --target linux-amd64 --output build/candidates
+    - name: Run relocated candidates outside the repository
+      run: python scripts/distribution/verify.py --target linux-amd64 --output build/candidates
+    - uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: mio-candidates-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: 'build/candidates/*.tar.gz
+
+          build/candidates/*.zip
+
+          build/candidates/SHA256SUMS
+
+          build/candidates/verification.json
+
+          build/candidates/native-report.json
+
+          '
+        if-no-files-found: error
+        retention-days: 14
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: distribution-diagnostics-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+        path: 'build/candidates/*.json
+
+          build/evidence/
+
+          '
+        if-no-files-found: warn
+        retention-days: 14
+'on':
+  pull_request:
+    branches:
+    - Mio-2.1
