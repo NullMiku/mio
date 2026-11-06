@@ -35,7 +35,7 @@ def verify(output, target):
             cwd.mkdir()
             env = dict(os.environ)
             env.pop('MIO_BUNKO', None)
-            def run(argv, extra=None, stdin=None):
+            def run(argv, extra=None, stdin=None, timeout=300):
                 proc = subprocess.run([str(a) for a in argv], cwd=cwd, env=dict(env, **(extra or {})),
                                       input=stdin, capture_output=True, timeout=300)
                 text = (proc.stdout + proc.stderr).decode('utf-8', errors='replace')
@@ -111,7 +111,7 @@ def verify(output, target):
                         for request in requests:
                             body = json.dumps(request).encode()
                             wire += f'Content-Length: {len(body)}\r\n\r\n'.encode() + body
-                        code, text = run([cli, 'lsp', '--stdio'], stdin=wire)
+                        code, text = run([cli, 'lsp', '--stdio'], stdin=wire, timeout=30)
                         check('Full lsp handshake', code == 0 and 'capabilities' in text)
                     else:
                         results['integrated_tools']['test/run/exec/lsp'] = dict(status='NOT_APPLICABLE', reason='Windows runtime process spawn and LSP stdin polling are not implemented')
