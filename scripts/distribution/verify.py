@@ -100,7 +100,7 @@ def verify(output, target):
                         code, text = run([cli, 'lsp', '--stdio'], stdin=wire)
                         check('Full lsp handshake', code == 0 and 'capabilities' in text)
                     else:
-                        results['integrated_tools']['test/run/exec'] = dict(status='NOT_APPLICABLE', reason='Windows runtime process spawn is not implemented')
+                        results['integrated_tools']['test/run/exec/lsp'] = dict(status='NOT_APPLICABLE', reason='Windows runtime process spawn and LSP stdin polling are not implemented')
                     # Invalid CLI override must beat valid env and bundled paths.
                     code, text = run([cli, 'check', math, '--bunko-root', cwd / 'missing'], dict(MIO_BUNKO=str(root / 'bunko')))
                     check('explicit invalid root does not fall back', code != 0 and 'E_BUNKO_ROOT' in text)
