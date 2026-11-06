@@ -241,6 +241,10 @@ waza emit_gen_minor(code: arm64.Assembler, observation: bool) -> unit {
     emit(code,arm64.ldr_x(9,23,8)); emit(code,arm64.cmp_x(25,9)); arm64.assembler_b_cond(code,2,"los_minor_dead");
     emit(code, arm64.add_x(20, 20, 26));
     emit(code, arm64.add_imm_x(24, 24, 1, iie));
+    // Publish the block with its full capacity, as the major sweep does: a dead object still carries its exact payload
+    // size, so a later request of the same class but a few bytes larger skipped it. (size + 31) & ~15 of either value
+    // gives the same block extent, so heap walks are unchanged.
+    emit(code, arm64.sub_imm_x(9, 26, 16, iie)); emit(code, arm64.str_x(9, 25, 8));
     emit_free_class(code, 26, 11, 9);
     arm64.assembler_label(code, "gen_dead_class");
     emit_free_head(code, 11, 12);
