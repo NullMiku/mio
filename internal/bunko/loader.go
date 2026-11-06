@@ -2,6 +2,7 @@ package bunko
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -27,8 +28,9 @@ type Package struct {
 
 // Loader 按公开导入路径读取 Bunko 包
 type Loader struct {
-	root    string
-	overlay Overlay
+	sourceFS fs.FS
+	root     string
+	overlay  Overlay
 }
 
 // New 创建 Bunko 包加载器
@@ -45,6 +47,10 @@ func NewWithOverlay(root string, overlay Overlay) *Loader {
 func (l *Loader) Load(importPath string) (*Package, error) {
 	if err := validateImportPath(importPath); err != nil {
 		return nil, err
+	}
+
+	if l.sourceFS != nil {
+		return l.loadFS(importPath)
 	}
 
 	root, err := filepath.EvalSymlinks(l.root)
@@ -152,4 +158,28 @@ func requireWithinRoot(root, directory string) error {
 		return fmt.Errorf("package directory escapes Bunko root")
 	}
 	return nil
+}
+
+// loadFS reads only the supplied filesystem; it never falls back to disk.
+func (l *Loader) loadFS(importPath string) (*Package, error) {
+	entries, err := fs.ReadDir(l.sourceFS, importPath)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported Bunko package %q: %w", importPath, err)
+	}
+	pkg := &Package{ImportPath: importPath, Directory: importPath}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() || !isRegularSource(entry.Name()) {
+			continue
+		}
+		name := path.Join(importPath, entry.Name())
+		content, err := fs.ReadFile(l.sourceFS, name)
+		if err != nil {
+			return nil, err
+		}
+		pkg.Sources = append(pkg.Sources, Source{Name: entry.Name(), Path: name, Content: content})
+	}
+	if len(pkg.Sources) == 0 {
+		return nil, fmt.Errorf("unsupported Bunko package %q: no sources", importPath)
+	}
+	return pkg, nil
 }
