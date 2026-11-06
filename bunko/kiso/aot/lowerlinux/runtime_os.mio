@@ -130,7 +130,9 @@ waza emit_os_runtime(code: x86_64.Assembler) -> unit {
     x86_64.jcc(code, x86_64.cc_g, "rt.os_stdin_wait.invalid");
     x86_64.label(code, "rt.os_stdin_wait.go");
     x86_64.sub_ri(code, x86_64.rsp, 16);
-    x86_64.mov_ri(code, x86_64.rax, 1);
+    // struct pollfd { int fd = 0; short events = POLLIN; short revents = 0; } as one little-endian word (the darwin
+    // layout in kiso/aot/lower/nativefs/process.mio); the word 1 would poll descriptor 1 with no events.
+    x86_64.mov_ri(code, x86_64.rax, 4294967296);
     x86_64.mov_store(code, x86_64.rsp, 0, x86_64.rax);
     x86_64.mov_rr(code, x86_64.rdx, x86_64.rdi);
     x86_64.mov_rr(code, x86_64.rdi, x86_64.rsp);
