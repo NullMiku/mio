@@ -1,0 +1,13 @@
+yobu "kiso/testing";
+yobu "kiso/fs";
+yobu "kiso/string";
+
+waza test_executable_identity_and_empty_canonical_path() -> unit {
+    testing.expect(canonical_path("")==mu,"empty filesystem paths retain their invalid-path semantics");
+    kaku executable=executable_path();
+    testing.expect(executable!=mu,"OS reports the real native executable path");
+    moshi(executable!=mu){
+        testing.expect(fs.is_file(executable),"executable identity names an existing image");
+        testing.expect(string.has_prefix(executable,"/") || string.contains(executable,":/"),"executable identity is absolute");
+    }
+}
