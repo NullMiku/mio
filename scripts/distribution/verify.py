@@ -80,7 +80,7 @@ def verify(output, target):
                     # for executable search; cmd resolves PATH inside that child.
                     launch = [cli.name, 'check', math]
                     if target == 'windows-amd64':
-                        launch = [env.get('COMSPEC', 'cmd.exe'), '/d', '/c', f'{cli.name} check "{math}"']
+                        launch = [env.get('COMSPEC', 'cmd.exe'), '/d', '/c', cli.name, 'check', math]
                     code, text = run(launch, path_env)
                     check('Full PATH executable lookup', code == 0)
                     code, text = run([cli, 'build', math, '--target=' + target, '-o', image])
