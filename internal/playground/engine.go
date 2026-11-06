@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"runtime"
 	"time"
 
 	"Mio/internal/bunko"
@@ -41,6 +42,8 @@ const (
 	DefaultInstructionLimit uint64 = 50_000_000
 	// MaxInstructionLimit is the largest budget a request may ask for.
 	MaxInstructionLimit uint64 = 2_000_000_000
+	// yieldInterval is how many VM instructions run between scheduler yields.
+	yieldInterval = 1 << 16
 	// SourceName is the file name used for the editor buffer in diagnostics.
 	SourceName = "main.mio"
 )
@@ -251,7 +254,15 @@ func run(bytecode *compiler.Bytecode, limit uint64, result Result) Result {
 	output := &cappedOutput{}
 	start := time.Now()
 	machine := vm.NewWithRegistryAndOutput(bytecode, registry, output)
-	err = machine.RunWithOptions(vm.ExecutionOptions{InstructionLimit: limit})
+	err = machine.RunWithOptions(vm.ExecutionOptions{
+		InstructionLimit: limit,
+		// js/wasm has a single thread and no asynchronous preemption: unless the VM goroutine
+		// yields, the garbage collector's background workers may never finish a cycle and an
+		// allocation-heavy program exhausts the 4 GiB address space. Yielding here keeps the
+		// VM itself unchanged.
+		ProgressInterval: yieldInterval,
+		Progress:         func(vm.ExecutionProgress) { runtime.Gosched() },
+	})
 	if err == nil {
 		if last, ok := machine.LastPoppedValue(); ok {
 			err = value.WriteLine(output, last)
