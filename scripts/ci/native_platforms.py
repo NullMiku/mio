@@ -184,13 +184,31 @@ def smoke(report, cli, target, work, label_prefix=""):
     return report.check(label_prefix + "cli-hello", "PASS" if ok else "FAIL", "native", "" if ok else "exit %s, stdout %r" % (code, out[:200]))
 
 
+def mio_run_protocol(report, cli, work):
+    """`mio run` builds for the host (the default target) and starts the program with the given arguments: the same
+    argument strings (spaces, empty, quotes, backslashes, UTF-8) and the program's exit status on every platform."""
+    project = work / "run-protocol"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "args.mio").write_text(
+        'yobu "kiso/os";\nyobu "kiso/string";\n'
+        'kaku args = os.arguments(); kaku i = 1;\n'
+        'aida (i < len(args)) { chant(string.concat("[", string.concat(args[i], "]"))); i = i + 1; }\n'
+        'os.exit(len(args) + 40);\n', encoding="utf-8")
+    values = ["a b", "", 'q"x', "back\\\\", 'tr\\"q', "end\\", "\u65e5\u672c\u8a9e x"]
+    code, out, err, _ = run(report, "mio-run-protocol", [cli, "run", "args.mio", "--", *values], cwd=project)
+    expected = "".join("[%s]\n" % value for value in values)
+    ok = code == len(values) + 41 and out.replace("\r\n", "\n") == expected
+    report.check("mio-run-protocol", "PASS" if ok else "FAIL", "native",
+                 "" if ok else "exit %s (expected %d), stdout %r, stderr %r" % (code, len(values) + 41, out[:300], brief(err)))
+
+
 def mio_test_protocol(report, cli, work):
     """mio test builds one image per package and selects each test by argument: a failing assertion must still fail
     exactly that test, passing tests must pass, the exit status must be non-zero, and --run must select tests."""
     project = work / "test-protocol"
     (project / "mixed").mkdir(parents=True, exist_ok=True)
     link = project / "bunko"
-    if not link.exists():
+    if not link.exists() and platform.system() != "Windows":  # MIO_BUNKO (run) names the library on every host
         link.symlink_to(ROOT / "bunko", target_is_directory=True)
     (project / "mixed" / "m_test.mio").write_text(
         'yobu "kiso/testing";\n'
@@ -338,6 +356,7 @@ def linux(args):
     if cli is None:
         return finish(report)
     smoke(report, cli, "linux-amd64", work)
+    mio_run_protocol(report, cli, work)
     mio_test_protocol(report, cli, work)
     native_mio_test(report, cli, skips_allowed=True)
     contract(report, cli, "linux-amd64", reference=str(refvm))
@@ -407,13 +426,11 @@ def follower(args, target):
         smoke(report, cli, target, work)
         if target == "darwin-arm64":
             darwin_profile(report, cli, work)
-            mio_test_protocol(report, cli, work)
-            native_mio_test(report, cli, skips_allowed=False)
-        else:
-            report.check("mio-test", "NOT_APPLICABLE", "native",
-                         "`mio test` spawns test images; process spawn is not implemented by the Windows runtime "
-                         "(kiso/aot/lowerwinrt). The same Mio package tests run natively on linux-amd64 and darwin-arm64.",
-                         required=False)
+        mio_run_protocol(report, cli, work)
+        mio_test_protocol(report, cli, work)
+        # darwin-arm64 is the primary target: every test must run there. Elsewhere a test may skip with its own reason
+        # (Mach-O images that need a macOS host); skips are reported separately and never count as passes.
+        native_mio_test(report, cli, skips_allowed=target != "darwin-arm64")
         contract(report, cli, target)
         contract(report, cli, target, suite="differential")
     return finish(report)
