@@ -69,3 +69,9 @@ koukai waza generate(root: string) -> GenerateResult {
     string.write_string(output, "kaesu files; }\n");
     kaesu GenerateResult { bytes: string.to_bytes(string.builder_string(output)), error: "" };
 }
+
+// Explicit alternative for distribution builds; the legacy generator above is
+// retained for frozen seed verification. Internal Bunko code still compiles AOT.
+koukai waza generate_external() -> GenerateResult {
+    kaesu GenerateResult {bytes:string.to_bytes("// External Bunko distribution.\nwaza data_files() -> []File { kaesu []; }\n"),error:""};
+}

@@ -60,3 +60,10 @@ koukai waza canonical_path(path: string) -> string? {
     kaku bytes=array.make[uint8](1024,uint8(0));kaku size=runtime.real_path(path,bytes);
     moshi(size<0 || size>=len(bytes)){kaesu mu;}array.truncate(bytes,size);kaesu string.from_utf8(bytes);
 }
+
+// The empty real_path request is reserved for the OS image identity. This keeps
+// the RA-1 calling convention and existing native binding signature unchanged.
+koukai waza executable_path() -> string? {
+    kaku bytes=array.make[uint8](4096,uint8(0));kaku size=runtime.real_path("",bytes);
+    moshi(size<=0 || size>=len(bytes)){kaesu mu;}moshi(bytes[size-1]==uint8(0)){size=size-1;}array.truncate(bytes,size);kaesu string.from_utf8(bytes);
+}

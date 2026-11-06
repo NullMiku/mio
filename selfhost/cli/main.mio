@@ -1,4 +1,5 @@
 yobu "kiso/os";
+yobu "selfhost/bunkopath";
 yobu "kiso/array";
 yobu "kiso/convert";
 yobu "kiso/fs";
@@ -60,7 +61,7 @@ waza run() -> unit {
     }
     moshi (command != "build" && command != "check" && command != "run" && command != "exec" && command != "disasm") { fail("E_COMMAND native command migration is incomplete", 2); kaesu; }
     kaku opts=diagnostic.options();
-    kaku entry = ""; kaku target = "darwin-arm64"; kaku output = "a.out"; kaku bunko = os.getenv("MIO_BUNKO"); kaku emit_mochi = iie; kaku gc_stress = iie; kaku observe = iie; kaku symbols = ""; kaku program_args: []string = []; kaku at = 2;
+    kaku entry = ""; kaku target = "darwin-arm64"; kaku output = "a.out"; kaku bunko = ""; kaku emit_mochi = iie; kaku gc_stress = iie; kaku observe = iie; kaku symbols = ""; kaku program_args: []string = []; kaku at = 2;
     aida (at < len(args)) {
         kaku option = args[at];
         moshi (option == "--") {
@@ -103,6 +104,7 @@ waza run() -> unit {
         sore { moshi (entry != "") { fail("E_OPTIONS multiple source entries", 2); kaesu; } entry = option; } } } } }
         at = at + 1;
     }
+    kaku library=bunkopath.resolve(bunko); moshi(library.error!=""){fail(library.error,2);kaesu;} bunko=library.root;
     moshi ((command == "run" || command == "exec" || command == "disasm" || command == "check") && emit_mochi) { fail("E_OPTIONS run requires native output", 2); kaesu; }
     moshi (symbols != "" && (target != "darwin-arm64" || emit_mochi || command != "build")) { fail("E_OPTIONS --emit-symbols applies to darwin-arm64 native builds from source", 2); kaesu; }
     moshi (observe && (target != "darwin-arm64" || emit_mochi || command != "build")) { fail("E_OPTIONS --observe applies to darwin-arm64 native builds from source", 2); kaesu; }

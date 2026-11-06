@@ -166,6 +166,7 @@ waza load_package(state: PackageState, root: string, requested: string) -> unit 
     kaku directory = source_directory(state, root, package_path);
     moshi(state.failed[0]){array.truncate(state.visiting,len(state.visiting)-1);kaesu;}
     kaku embedded = state.bunko_root == "" && string.has_prefix(package_path, "kiso/");
+    moshi(embedded && len(state.embedded)==0){state.failed[0]=hai;state.diagnostic[0]=string.concat("E_BUNKO_MISSING Bunko is not installed; use --bunko-root or MIO_BUNKO to import ",package_path);array.truncate(state.visiting,len(state.visiting)-1);kaesu;}
     kaku selected = "";
     kaku names: []string = [];
     moshi (embedded) {
