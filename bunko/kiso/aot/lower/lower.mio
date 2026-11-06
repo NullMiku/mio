@@ -1389,7 +1389,9 @@ waza emit_block(code: arm64.Assembler, patches: []macho.AddressPatch, file: moch
             moshi (len(target.captures) != 0 || (len(target.instructions) == 0 && nativefs.operation(target.name) == nativefs.op_none && !types.is_testing_report(target.name))) { kaesu LowerError.UnsupportedClosure(); }
             kaku entries = type_result.blocks[function_id + 1].entry[offset];
             kaku parameter = types.forwarded_parameter(target);
-            moshi (parameter >= 0) {
+            moshi (sha256_native_call(code, type_result, entries, target)) { emit_sha256_native_call(code); parameter = -2; }
+            moshi (parameter == -2) {}
+            sore { moshi (parameter >= 0) {
                 emit(code, arm64.ldr_x(9, 19, (len(entries) - target.parameter_count + parameter) * 8));
                 emit(code, arm64.sub_imm_x(20, 20, target.parameter_count * 8, iie)); push_register(code, 9);
             }
@@ -1400,7 +1402,7 @@ waza emit_block(code: arm64.Assembler, patches: []macho.AddressPatch, file: moch
             }
             sore { moshi (!emit_call(code, patches, type_result, function_id, entries, target)) {
                 kaesu LowerError.UnsafeType((function_id + 1) * 1000000 + offset * 100 + opcode);
-            } } }
+            } } } }
         }
         moshi (opcode == 31 || opcode == 32) {
             kaku entry = type_result.blocks[function_id + 1].entry[offset];
@@ -2373,7 +2375,7 @@ waza compile_worker_impl(input_file: mochi.File, gc_stress: bool, capacity: int6
     }
     sore { emit(code, arm64.movz_x(0, 0, 0)); }
     emit(code, arm64.movz_x(16, 1, 0)); emit(code, arm64.svc(128));
-    emit_get_field_routine(code); emit_string_equal_routines(code);
+    emit_get_field_routine(code); emit_string_equal_routines(code); emit_sha256_native_routine(code);
     arm64.assembler_label(code, "runtime_error");
     moshi(old_mark_proto_enabled(code)){emit_old_error_diagnostic(code);arm64.assembler_bl(code,"old_fatal_cleanup");}
     moshi (managed && observation) { arm64.assembler_bl(code, "observation_dump"); }

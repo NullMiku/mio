@@ -150,6 +150,7 @@ koukai waza ldr_x_register_scaled(rt: int64, rn: int64, rm: int64) -> Instructio
 koukai waza ldrb_w_register(rt: int64, rn: int64, rm: int64) -> Instruction { kaesu load_store_register(945842176, rt, rn, rm); }
 koukai waza ldr_x_register(rt: int64, rn: int64, rm: int64) -> Instruction { kaesu load_store_register(4167067648, rt, rn, rm); }
 koukai waza str_x_register(rt: int64, rn: int64, rm: int64) -> Instruction { kaesu load_store_register(4162873344, rt, rn, rm); }
+koukai waza ldr_w(rt: int64, rn: int64, byte_offset: int64) -> Instruction { kaesu load_store(3107979264, rt, rn, byte_offset, 4); }
 koukai waza ldr_x(rt: int64, rn: int64, byte_offset: int64) -> Instruction { kaesu load_store(4181721088, rt, rn, byte_offset, 8); }
 koukai waza str_x(rt: int64, rn: int64, byte_offset: int64) -> Instruction { kaesu load_store(4177526784, rt, rn, byte_offset, 8); }
 koukai waza ldrb_w(rt: int64, rn: int64, byte_offset: int64) -> Instruction { kaesu load_store(960495616, rt, rn, byte_offset, 1); }

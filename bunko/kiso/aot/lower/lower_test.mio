@@ -162,3 +162,22 @@ waza test_type_analysis_classifies_struct_global_as_root() -> unit {
     testing.expect(types.type_kind(analysis, analysis.globals[0]) == types.type_struct_ref, "struct global kind");
     testing.expect(types.type_is_heap_reference(analysis, analysis.globals[0]), "struct global is a precise root");
 }
+
+waza test_sha256_native_routine_encodes() -> unit {
+    kaku code = arm64.assembler();
+    emit_sha256_native_routine(code);
+    arm64.assembler_label(code, "runtime_error");
+    kaku result = arm64.assembler_assemble(code);
+    testing.expect(result.error == mu, "the SHA-256 routine should encode");
+    // sha256h q16, q17, v26.4s / sha256h2 q17, q27, v26.4s / sha256su0 v20.4s, v21.4s (reference encodings)
+    kaku h = 0; kaku h2 = 0; kaku su0 = 0; kaku i = 0;
+    aida (i < len(result.words)) {
+        moshi (result.words[i] == uint32(1578779184)) { h = h + 1; }
+        moshi (result.words[i] == uint32(1578783601)) { h2 = h2 + 1; }
+        moshi (result.words[i] == uint32(1579690676)) { su0 = su0 + 1; }
+        i = i + 1;
+    }
+    testing.expect(h == 16 && h2 == 16, "sixteen four-round groups");
+    testing.expect(su0 == 3, "groups 0, 4 and 8 expand the v20 message words from v21");
+    testing.expect(result.words[len(result.words) - 1] == arm64.ret().word, "the routine returns");
+}
