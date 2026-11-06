@@ -5,6 +5,11 @@ waza test_instruction_golden_and_ranges() -> unit {
     testing.expect(movk_x(3, 43981, 1).word == uint32(4071979427), "MOVK X encoding");
     testing.expect(movz_w(4, 10).word == uint32(1384120644), "MOVZ W encoding");
     testing.expect(add_x(2, 3, 4).word == uint32(2332295266), "ADD X encoding");
+    testing.expect(str_x_register(9, 19, 20).word == uint32(4164184681), "STR X register-offset encoding (f8346a69)");
+    testing.expect(ldr_x_register(9, 19, 20).word == uint32(4168378985), "LDR X register-offset encoding (f8746a69)");
+    testing.expect(ldr_x_register(9, 19, 32).error != mu, "register-offset load rejects an invalid index register");
+    testing.expect(ldr_x_register_scaled(0, 1, 2).word == uint32(4167202848), "LDR X scaled register-offset encoding (f8627820)");
+    testing.expect(ldrb_w_register(0, 1, 2).word == uint32(945973280), "LDRB W register-offset encoding (38626820)");
     testing.expect(add_imm_w(4, 4, 48).word == uint32(285261956), "ADD W immediate encoding");
     testing.expect(msub_x(4, 3, 6, 0).word == uint32(2600894564), "MSUB X encoding");
     testing.expect(cset_w(9, 0).word == uint32(446633961), "CSET W encoding");

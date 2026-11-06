@@ -254,25 +254,38 @@ waza emit_heap_read_word(code:arm64.Assembler,dst:int64,base:int64,offset:int64)
     emit(code,arm64.ldr_x(temp,31,0));emit(code,arm64.add_imm_x(31,31,16,iie));
 }
 
+// x9 array descriptor (non-nil), x10 index -> x9 element; uses x11, x12. The unsigned bound check also rejects negative
+// indexes; the element width byte (header bits 8..15) must be 8 or 1.
+waza emit_array_element(code: arm64.Assembler) -> unit {
+    emit(code, arm64.ldr_x(11, 9, 8)); emit(code, arm64.cmp_x(10, 11)); arm64.assembler_b_cond(code, 2, "runtime_error");
+    emit(code, arm64.ldrb_w(11, 9, 1));
+    emit_heap_read_word(code,12,9,40); emit(code, arm64.add_imm_x(12, 12, 32, iie));
+    kaku byte_label = block_label("index_byte_", len(code.words)); kaku done_label = string.concat(byte_label, "_done");
+    emit(code, arm64.cmp_imm_x(11, 8, iie)); arm64.assembler_b_cond(code, 1, byte_label);
+    moshi (old_sweep_enabled(code)) { emit(code, arm64.lsl_x(11, 10, 3)); emit(code, arm64.add_x(12, 12, 11)); emit_heap_read_word(code,9,12,0); }
+    sore { emit(code, arm64.ldr_x_register_scaled(9, 12, 10)); }
+    arm64.assembler_b(code, done_label);
+    arm64.assembler_label(code, byte_label); emit(code, arm64.cmp_imm_x(11, 1, iie)); arm64.assembler_b_cond(code, 1, "runtime_error");
+    emit(code, arm64.ldrb_w_register(9, 12, 10));
+    arm64.assembler_label(code, done_label);
+}
+
 waza emit_index(code: arm64.Assembler, analysis: types.TypeAnalysis, index_node: int64, kind: int64) -> bool {
-    pop_register(code, 10); pop_register(code, 9);
+    emit(code, arm64.sub_imm_x(20, 20, 16, iie)); emit(code, arm64.add_x(8, 19, 20)); emit(code, arm64.ldp_x(9, 10, 8, 0));
     emit_unbox_register(code, analysis, index_node, 10);
-    emit(code, arm64.cmp_imm_x(10, 0, iie)); arm64.assembler_b_cond(code, 11, "runtime_error");
+    // Every path below compares the index with the length as unsigned (B.HS), which also rejects negative indexes.
     moshi (kind == types.type_unknown || kind == types.type_string_id) {
         arm64.assembler_cbz_x(code, 9, "runtime_error"); emit(code, arm64.movz_x(11, 1, 0)); emit(code, arm64.and_x(11, 9, 11)); emit(code, arm64.cmp_imm_x(11, 0, iie));
         kaku array_label = string.concat("index_array_", convert.format_int(len(code.words))); kaku done_label = string.concat("index_unknown_done_", convert.format_int(len(code.words)));
         arm64.assembler_b_cond(code, 0, array_label); emit(code, arm64.lsr_x(11, 9, 1)); emit(code, arm64.lsl_x(11, 11, 3)); emit(code, arm64.add_x(11, 28, 11)); emit(code, arm64.ldr_x(12, 11, 0)); emit(code, arm64.lsr_x(13, 12, 32)); emit(code, arm64.cmp_x(10, 13)); arm64.assembler_b_cond(code, 2, "runtime_error"); move_bits(code, 13, uint32(0), uint32(4294967295)); emit(code, arm64.and_x(12, 12, 13)); emit(code, arm64.add_x(12, 28, 12)); emit(code, arm64.add_x(12, 12, 10)); emit(code, arm64.ldrb_w(9, 12, 0)); arm64.assembler_b(code, done_label);
-        arm64.assembler_label(code, array_label); emit(code, arm64.ldr_x(11, 9, 8)); emit(code, arm64.cmp_x(10, 11)); arm64.assembler_b_cond(code, 2, "runtime_error"); emit(code, arm64.ldr_x(11, 9, 0)); emit(code, arm64.lsr_x(11, 11, 8)); move_bits(code, 12, uint32(0), uint32(255)); emit(code, arm64.and_x(11, 11, 12)); emit_heap_read_word(code,12,9,40); emit(code, arm64.add_imm_x(12, 12, 32, iie)); emit(code, arm64.cmp_imm_x(11, 1, iie)); kaku byte_label = string.concat("index_unknown_byte_", convert.format_int(len(code.words))); arm64.assembler_b_cond(code, 0, byte_label); emit(code, arm64.cmp_imm_x(11, 8, iie)); arm64.assembler_b_cond(code, 1, "runtime_error"); emit(code, arm64.lsl_x(10, 10, 3)); emit(code, arm64.add_x(12, 12, 10)); emit_heap_read_word(code,9,12,0); arm64.assembler_b(code, done_label); arm64.assembler_label(code, byte_label); emit(code, arm64.add_x(12, 12, 10)); emit(code, arm64.ldrb_w(9, 12, 0)); arm64.assembler_label(code, done_label); push_register(code, 9); kaesu hai;
+        arm64.assembler_label(code, array_label); emit_array_element(code); arm64.assembler_label(code, done_label); push_register(code, 9); kaesu hai;
     }
     moshi (kind == types.type_string_id) {
         arm64.assembler_cbz_x(code, 9, "runtime_error"); emit(code, arm64.lsr_x(11, 9, 1)); emit(code, arm64.lsl_x(11, 11, 3)); emit(code, arm64.add_x(11, 28, 11)); emit(code, arm64.ldr_x(12, 11, 0)); emit(code, arm64.lsr_x(13, 12, 32)); emit(code, arm64.cmp_x(10, 13)); arm64.assembler_b_cond(code, 2, "runtime_error");
         move_bits(code, 13, uint32(0), uint32(4294967295)); emit(code, arm64.and_x(12, 12, 13)); emit(code, arm64.add_x(12, 28, 12)); emit(code, arm64.add_x(12, 12, 10)); emit(code, arm64.ldrb_w(9, 12, 0)); push_register(code, 9); kaesu hai;
     }
     moshi (kind == types.type_array_ref) {
-        arm64.assembler_cbz_x(code, 9, "runtime_error"); emit(code, arm64.ldr_x(11, 9, 8)); emit(code, arm64.cmp_x(10, 11)); arm64.assembler_b_cond(code, 2, "runtime_error"); emit(code, arm64.ldr_x(11, 9, 0)); emit(code, arm64.lsr_x(11, 11, 8)); move_bits(code, 12, uint32(0), uint32(255)); emit(code, arm64.and_x(11, 11, 12)); emit_heap_read_word(code,12,9,40); emit(code, arm64.add_imm_x(12, 12, 32, iie)); emit(code, arm64.cmp_imm_x(11, 1, iie));
-        kaku byte_label = string.concat("index_byte_", convert.format_int(len(code.words))); kaku done_label = string.concat("index_done_", convert.format_int(len(code.words)));
-        arm64.assembler_b_cond(code, 0, byte_label); emit(code, arm64.cmp_imm_x(11, 8, iie)); arm64.assembler_b_cond(code, 1, "runtime_error"); emit(code, arm64.lsl_x(10, 10, 3)); emit(code, arm64.add_x(12, 12, 10)); emit_heap_read_word(code,9,12,0); arm64.assembler_b(code, done_label);
-        arm64.assembler_label(code, byte_label); emit(code, arm64.add_x(12, 12, 10)); emit(code, arm64.ldrb_w(9, 12, 0)); arm64.assembler_label(code, done_label); push_register(code, 9); kaesu hai;
+        arm64.assembler_cbz_x(code, 9, "runtime_error"); emit_array_element(code); push_register(code, 9); kaesu hai;
     }
     kaesu iie;
 }
@@ -762,15 +775,13 @@ waza move_bits(code: arm64.Assembler, destination: int64, high: uint32, low: uin
 
 // x19 is the frame's operand-area base and x20 is its live byte count.
 waza push_register(code: arm64.Assembler, reg: int64) -> unit {
-    emit(code, arm64.add_x(8, 19, 20));
-    emit(code, arm64.str_x(reg, 8, 0));
+    emit(code, arm64.str_x_register(reg, 19, 20));
     emit(code, arm64.add_imm_x(20, 20, 8, iie));
 }
 
 waza pop_register(code: arm64.Assembler, reg: int64) -> unit {
     emit(code, arm64.sub_imm_x(20, 20, 8, iie));
-    emit(code, arm64.add_x(8, 19, 20));
-    emit(code, arm64.ldr_x(reg, 8, 0));
+    emit(code, arm64.ldr_x_register(reg, 19, 20));
 }
 
 // Arithmetic wraps at the source integer width. Operand slots remain eight

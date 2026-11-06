@@ -102,9 +102,9 @@ waza test_get_field_uses_runtime_bitmap_width() -> unit {
     kaku result = arm64.assembler_assemble(code);
     testing.expect(result.error == mu, "metadata-driven get-field should encode");
     // The read site passes the field index to the one shared checking routine.
-    testing.expect(call_site == 8, "get-field read site pops the receiver, sets the index, calls, and pushes the value");
-    testing.expect(result.words[3] == arm64.movz_x(11, 65, 0).word, "get-field passes the u16 field index");
-    testing.expect(result.words[4] == arm64.bl(routine - 4).word, "get-field calls the shared checking routine");
+    testing.expect(call_site == 6, "get-field read site pops the receiver, sets the index, calls, and pushes the value");
+    testing.expect(result.words[2] == arm64.movz_x(11, 65, 0).word, "get-field passes the u16 field index");
+    testing.expect(result.words[3] == arm64.bl(routine - 3).word, "get-field calls the shared checking routine");
     // A fixed-offset lowering would not load fieldCount and bitmapWords or
     // scale both bitmapWords and the u16 field index.
     testing.expect(len(result.words) == routine + 31, "get-field should validate metadata and compute the variable field address");
