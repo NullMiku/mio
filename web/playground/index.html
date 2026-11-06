@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mio Playground</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">MIO 2.1 · MOCHI v14–v16 · WEB REFERENCE VM</p>
+    <h1>Mio Playground</h1>
+    <p class="lede">Compile and run Mio entirely in your browser, or run a <code>.mochi</code> file built by <code>mio build --emit=mochi</code>. Nothing is sent to a server.</p>
+  </header>
+
+  <div class="toolbar">
+    <label class="field">Example <select id="examples" aria-label="Example"></select></label>
+    <span id="engine" class="pill" role="status">Loading Wasm…</span>
+  </div>
+
+  <label for="source" class="eyebrow">SOURCE · MAIN.MIO</label>
+  <textarea id="source" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Mio source"></textarea>
+
+  <div class="actions">
+    <button id="run" class="primary" disabled title="Ctrl/⌘ + Enter">Run</button>
+    <button id="check" disabled>Check</button>
+    <button id="stop" disabled>Stop</button>
+    <span class="sep" aria-hidden="true"></span>
+    <button id="download" disabled>Download .mochi</button>
+    <label class="button" id="import-label" aria-disabled="true">Import .mochi<input id="import" type="file" accept=".mochi,application/octet-stream" disabled hidden></label>
+  </div>
+
+  <div id="bytecode" class="bytecode" hidden>
+    <span id="bytecode-info"></span>
+    <button id="run-bytecode" disabled>Run .mochi again</button>
+    <button id="clear-bytecode" class="quiet">Clear</button>
+  </div>
+
+  <p id="status" class="status" role="status" aria-live="polite">Initializing</p>
+
+  <div class="results">
+    <section><h2>Output</h2><pre id="stdout" aria-live="polite"></pre></section>
+    <section><h2>Diagnostics &amp; errors</h2><pre id="diagnostics" aria-live="polite"></pre></section>
+  </div>
+
+  <footer>
+    <p>The Web VM is the Go reference front end, Mochi codec and reference VM compiled to WebAssembly. It is not a native AOT backend.
+    Each run uses a fresh Worker. Limits: <span id="limits"></span>.</p>
+    <p>Bundled Bunko: kiso/array, bytes, convert, crypto/sha256, encoding/binary, encoding/json, math, path, regexp, string, utf8.
+    File system and sockets are unavailable; a <code>.mochi</code> that calls them stops with a runtime error.</p>
+  </footer>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

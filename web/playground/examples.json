@@ -1,0 +1,42 @@
+[
+ {
+  "name": "Hello",
+  "source": "chant(\"こんにちは、Mio 🍡\");\n"
+ },
+ {
+  "name": "Structs & enums",
+  "source": "sentaku Token { Number(int64); Plus; Times; Word(string); }\nwaza describe(t: Token) -> string {\n    awase (t) {\n        baai Number(n) { moshi (n > 9) { kaesu \"big number\"; } kaesu \"number\"; }\n        baai Plus { kaesu \"plus\"; }\n        baai Times { kaesu \"times\"; }\n        baai Word(w) { kaesu w; }\n    }\n    kaesu \"?\";\n}\nkaku tokens = [Token.Number(3), Token.Plus(), Token.Number(42), Token.Times(), Token.Word(\"ことば\")];\nkaku i = 0; aida (i < len(tokens)) { chant(describe(tokens[i])); i = i + 1; }\n"
+ },
+ {
+  "name": "Closures",
+  "source": "waza make_counter(step: int64) -> () -> int64 {\n    kaku n = 0;\n    kaesu waza () -> int64 { n = n + step; kaesu n; };\n}\nwaza compose(f: (int64) -> int64, g: (int64) -> int64) -> (int64) -> int64 {\n    kaesu waza (x: int64) -> int64 { kaesu f(g(x)); };\n}\nwaza each(xs: []int64, f: (int64) -> unit) -> unit { kaku i = 0; aida (i < len(xs)) { f(xs[i]); i = i + 1; } }\nkaku c = make_counter(5); chant(c()); chant(c()); kaku d = make_counter(1); chant(d()); chant(c());\nkaku inc = waza (x: int64) -> int64 { kaesu x + 1; };\nkaku dbl = waza (x: int64) -> int64 { kaesu x * 2; };\nchant(compose(inc, dbl)(10)); chant(compose(dbl, inc)(10));\nkaku total = 0; each([1, 2, 3, 4], waza (x: int64) -> unit { total = total + x; }); chant(total);\n"
+ },
+ {
+  "name": "Maps",
+  "source": "kaku stock = Map[string, int64]();\nstock[\"りんご\"] = 3; stock[\"mochi\"] = 12; stock[\"りんご\"] = 4;\nkaku apples = stock[\"りんご\"]; moshi (apples != mu) { chant(apples); }\nkaku m = stock[\"mochi\"]; moshi (m != mu) { chant(m); }\nchant(stock[\"missing\"] == mu);\nkaku squares = Map[int64, int64]();\nkaku i = 0; aida (i < 100) { squares[i] = i * i; i = i + 1; }\nkaku s = squares[99]; moshi (s != mu) { chant(s); }\n"
+ },
+ {
+  "name": "Nullable tree",
+  "source": "kata Tree { value: int64; left: Tree?; right: Tree?; }\nwaza sum(t: Tree?) -> int64 { moshi (t == mu) { kaesu 0; } kaesu t.value + sum(t.left) + sum(t.right); }\nwaza find(xs: []int64, target: int64) -> int64? {\n    kaku i = 0; aida (i < len(xs)) { moshi (xs[i] == target) { kaesu i; } i = i + 1; }\n    kaesu mu;\n}\nkaku t = Tree { value: 1, left: Tree { value: 2, left: mu, right: mu }, right: Tree { value: 3, left: mu, right: mu } };\nchant(sum(t)); chant(sum(mu));\nkaku at = find([5, 6, 7], 7); moshi (at != mu) { chant(at); }\nchant(find([5, 6, 7], 8) == mu);\nkaku label: string? = mu; chant(label == mu); label = \"set\"; moshi (label != mu) { chant(label); }\n"
+ },
+ {
+  "name": "Unicode strings",
+  "source": "yobu \"kiso/string\";\nyobu \"kiso/utf8\";\nkaku greeting = \"こんにちは、Mio 🍡\";\nchant(greeting);\nchant(string.byte_len(greeting)); chant(string.rune_count(greeting));\nchant(string.contains(greeting, \"Mio\")); chant(string.index(greeting, \"Mio\"));\nchant(string.has_prefix(greeting, \"こん\")); chant(string.has_suffix(greeting, \"🍡\"));\nchant(string.concat(\"über\", \"straße\"));\nchant(string.trim_space(\"  空白  \"));\nkaku b = string.new_builder();\nstring.write_string(b, \"α\"); string.write_rune(b, 'β'); string.write_rune(b, '😀');\nchant(string.builder_string(b)); chant(string.builder_len(b));\nkaku bytes = string.to_bytes(\"é\"); chant(len(bytes)); chant(bytes[0]); chant(bytes[1]);\nchant(utf8.valid(bytes)); chant(\"tab\\tquote\\\"backslash\\\\\");\n"
+ },
+ {
+  "name": "Recursion",
+  "source": "waza fib(n: int64) -> int64 { moshi (n < 2) { kaesu n; } kaesu fib(n - 1) + fib(n - 2); }\nwaza ack(m: int64, n: int64) -> int64 {\n    moshi (m == 0) { kaesu n + 1; }\n    moshi (n == 0) { kaesu ack(m - 1, 1); }\n    kaesu ack(m - 1, ack(m, n - 1));\n}\nwaza is_even(n: int64) -> bool { moshi (n == 0) { kaesu hai; } kaesu is_odd(n - 1); }\nwaza is_odd(n: int64) -> bool { moshi (n == 0) { kaesu iie; } kaesu is_even(n - 1); }\nwaza greet(name: string) -> unit { chant(name); }\nchant(fib(20)); chant(ack(2, 3)); chant(is_even(10)); chant(is_odd(7));\ngreet(\"関数\");\n"
+ },
+ {
+  "name": "Type error",
+  "source": "kaku n: int64 = \"not a number\";\nchant(n);\n"
+ },
+ {
+  "name": "Runtime error",
+  "source": "waza divide(a: int64, b: int64) -> int64 { kaesu a / b; }\nchant(\"before\"); chant(divide(10, 0)); chant(\"after\");\n"
+ },
+ {
+  "name": "Infinite loop (Stop)",
+  "source": "kaku i = 0;\naida (hai) { i = i + 1; }\n"
+ }
+]
