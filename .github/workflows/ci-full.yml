@@ -62,6 +62,17 @@ jobs:
           path: build/ci-plan/full-plan.json
           if-no-files-found: error
           retention-days: 7
+  native:
+    name: Full / native 3 platforms
+    # Native darwin-arm64, linux-amd64 and windows-amd64 verification of the pure-Mio toolchain
+    # (.github/workflows/native.yml). Separate from the reference and supplementary modules below; a required native
+    # check that is not PASS fails the Full run.
+    needs: policy
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/native.yml
   full:
     name: Full / ${{ matrix.target }}
     needs: policy

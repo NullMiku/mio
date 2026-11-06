@@ -6,6 +6,12 @@ yobu "kiso/convert";
 yobu "kiso/encoding/mochi";
 yobu "kiso/string";
 
+// Runtime ABI RA-1 layout profile "x64-marksweep-v1" (kiso/runtime/abi, docs/runtime-abi.md): two-word header,
+// sizes rounded to 8-byte granules (so objects are 8-byte aligned), no generations, no large-object space.
+koukai teisu object_layout_profile = 2;
+koukai teisu object_header_bytes = 16;
+koukai teisu object_size_granule = 8;
+
 // Precise, non-moving, stop-the-world mark & sweep collector for the single-threaded Linux backend.
 //
 // Object header: [0] = kind | total_bytes << 8 (kind 0 = free block), [8] = mark word.

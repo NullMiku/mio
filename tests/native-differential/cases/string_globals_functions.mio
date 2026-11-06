@@ -1,0 +1,3 @@
+kaku greeting = "hi";
+waza pick(flag: bool) -> string { moshi (flag) { kaesu greeting; } kaesu "other"; }
+chant(pick(hai)); chant(pick(iie)); chant(pick(hai) == greeting);

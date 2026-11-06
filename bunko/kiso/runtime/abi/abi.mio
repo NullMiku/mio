@@ -1,0 +1,64 @@
+// Mio Runtime ABI contract, revision RA-1 (docs/runtime-abi.md).
+//
+// The contract fixes what every native target must guarantee to a Mio program (exact roots, object lifetime, memory
+// safety, the reference store paths) and names the object layout profile each target implements. It does not fix one
+// collector: the generational layout (Object ABI v1, kiso/runtime/gc/layout.mio) and the x86-64 mark & sweep layout
+// (kiso/aot/lowerlinux, kiso/aot/lowerwinrt) are the two existing profiles. Binaries of different targets never
+// exchange heap objects, so the profiles need not be byte compatible with each other; a target must match its own
+// profile exactly. No target-specific machine detail lives here.
+
+koukai teisu contract_revision = 1;          // RA-1
+koukai teisu word_bytes = 8;                 // every target is 64-bit little endian
+koukai teisu header_bytes = 16;              // every heap object starts with a two-word header
+koukai teisu gc_stress_threshold_bytes = 16384; // `mio build --gc-stress` on threshold-driven collectors
+
+// Layout profiles.
+koukai teisu profile_generational_v1 = 1;    // darwin-arm64: Object ABI v1 (layout_version 1)
+koukai teisu profile_x64_marksweep_v1 = 2;   // linux-amd64, windows-amd64
+
+koukai kata Profile {
+    id: int64;
+    name: string;
+    header_bytes: int64;
+    object_alignment: int64;       // address alignment of every object start
+    size_granule: int64;           // object sizes are rounded up to a multiple of this
+    generational: bool;            // young/old generations with a remembered set
+    large_object_threshold: int64; // 0 = no separate large-object space
+    write_barrier: bool;           // reference stores into old objects are recorded
+    root_scheme: string;           // how exact stack roots are found
+    safepoints: string;            // where collections may start
+}
+
+koukai waza profile(id: int64) -> Profile {
+    moshi (id == profile_generational_v1) {
+        kaesu Profile { id: id, name: "generational-v1", header_bytes: 16, object_alignment: 16, size_granule: 16,
+            generational: hai, large_object_threshold: 131072, write_barrier: hai,
+            root_scheme: "shadow-frames", safepoints: "allocation" };
+    }
+    moshi (id == profile_x64_marksweep_v1) {
+        kaesu Profile { id: id, name: "x64-marksweep-v1", header_bytes: 16, object_alignment: 8, size_granule: 8,
+            generational: iie, large_object_threshold: 0, write_barrier: iie,
+            root_scheme: "inline-frame-descriptors", safepoints: "function-entry-and-back-edge" };
+    }
+    kaesu Profile { id: 0, name: "", header_bytes: 0, object_alignment: 0, size_granule: 0, generational: iie,
+        large_object_threshold: 0, write_barrier: iie, root_scheme: "", safepoints: "" };
+}
+
+// The profile a native target implements; 0 for an unknown target (callers must fail closed).
+koukai waza target_profile(target: string) -> int64 {
+    moshi (target == "darwin-arm64") { kaesu profile_generational_v1; }
+    moshi (target == "linux-amd64" || target == "windows-amd64") { kaesu profile_x64_marksweep_v1; }
+    kaesu 0;
+}
+
+// Contract invariants every profile must satisfy.
+koukai waza profile_valid(p: Profile) -> bool {
+    moshi (p.id == 0) { kaesu iie; }
+    moshi (p.header_bytes != header_bytes) { kaesu iie; }
+    moshi (p.object_alignment < word_bytes || p.size_granule < word_bytes) { kaesu iie; }
+    moshi (p.object_alignment - (p.object_alignment / word_bytes) * word_bytes != 0) { kaesu iie; }
+    // a generational profile must record old-to-young references
+    moshi (p.generational && !p.write_barrier) { kaesu iie; }
+    moshi (p.large_object_threshold != 0 && p.large_object_threshold < 4096) { kaesu iie; }
+    kaesu p.root_scheme != "" && p.safepoints != "";
+}

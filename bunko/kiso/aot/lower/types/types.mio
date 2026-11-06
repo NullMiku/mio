@@ -174,6 +174,10 @@ waza type_join(arena: TypeArena, a: int64, b: int64) -> bool {
     moshi (arena.array_descriptor[left] == 0) { arena.array_descriptor[left] = arena.array_descriptor[right]; }
     arena.map_written[left] = arena.map_written[left] || arena.map_written[right];
     arena.parent[right] = left; arena.revision[0] = arena.revision[0] + 1;
+    // Nullability belongs to the class before the recursive field joins run: a self-referential shape
+    // (struct Tree { left: Tree? }) can make a nested join re-parent `left`, and anything written to `left`
+    // afterwards would land on a node that is no longer the root.
+    arena.nullable[left] = arena.nullable[left] || arena.nullable[right];
     moshi (!type_merge_fields(arena, left, right)) { kaesu iie; }
     moshi (arena.array_width[left] != 0 && arena.array_width[right] != 0 && arena.array_width[left] != arena.array_width[right]) { kaesu iie; }
     moshi (arena.array_width[left] == 0) { arena.array_width[left] = arena.array_width[right]; }
@@ -208,6 +212,26 @@ waza type_join(arena: TypeArena, a: int64, b: int64) -> bool {
     moshi (!arena.struct_exact[left] && arena.struct_arity[left] < arena.struct_arity[right]) {
         arena.struct_arity[left] = arena.struct_arity[right];
     }
+    // A nested join may have re-parented `left` (see above): carry its facts to the current root.
+    kaesu type_carry_to_root(arena, left);
+}
+
+waza type_carry_to_root(arena: TypeArena, node: int64) -> bool {
+    kaku root = type_root(arena, node);
+    moshi (root == node) { kaesu hai; }
+    moshi (arena.nullable[node] && !arena.nullable[root]) { arena.nullable[root] = hai; arena.revision[0] = arena.revision[0] + 1; }
+    moshi (arena.map_written[node] && !arena.map_written[root]) { arena.map_written[root] = hai; arena.revision[0] = arena.revision[0] + 1; }
+    moshi (merge_targets(arena.targets[root], arena.targets[node])) { arena.revision[0] = arena.revision[0] + 1; }
+    moshi (arena.struct_exact[node] && arena.struct_exact[root] && arena.struct_arity[node] != arena.struct_arity[root]) { kaesu iie; }
+    moshi (arena.struct_exact[node] && !arena.struct_exact[root]) { arena.struct_exact[root] = hai; arena.struct_arity[root] = arena.struct_arity[node]; }
+    moshi (!arena.struct_exact[root] && arena.struct_arity[root] < arena.struct_arity[node]) { arena.struct_arity[root] = arena.struct_arity[node]; }
+    kaku variants = arena.variants[node]; kaku current = arena.variants[root]; kaku vi = 0;
+    aida (vi < len(variants)) {
+        aida (len(current) <= vi) { kaku empty: []int64 = []; array.push(current, empty); }
+        moshi (len(current[vi]) == 0 && len(variants[vi]) > 0) { current[vi] = variants[vi]; }
+        vi = vi + 1;
+    }
+    arena.variants[root] = current;
     kaesu hai;
 }
 
@@ -232,6 +256,9 @@ waza type_new_struct(arena: TypeArena, fields: []int64) -> int64 {
 waza type_struct_field(arena: TypeArena, node: int64, index: int64) -> int64 {
     kaku root = type_root(arena, node);
     moshi (arena.kind[root] == type_unknown) { arena.kind[root] = type_struct_ref; }
+    // A class that has only met nil so far (for example a global initialised with mu whose struct stores are
+    // analysed in a later block) is a nullable struct once a field is read, exactly as type_join(nil, struct).
+    moshi (arena.kind[root] == type_nil) { arena.kind[root] = type_struct_ref; arena.nullable[root] = hai; arena.revision[0] = arena.revision[0] + 1; }
     moshi (arena.kind[root] != type_struct_ref || index < 0) { kaesu -1; }
     moshi (arena.struct_exact[root] && index >= arena.struct_arity[root]) { kaesu -1; }
     kaku fields = arena.fields[root];
@@ -576,8 +603,11 @@ waza type_captured_locals(file: mochi.File, data: []uint8, count: int64) -> []bo
 // local; calls and Cell writes invalidate potentially shared captured locals.
 waza type_nonnil_entries(file: mochi.File, data: []uint8, count: int64) -> [][]bool {
     kaku shared = type_captured_locals(file, data, count);
-    kaku facts: [][]bool = []; kaku visited = array.make[bool](len(data) + 1, iie);
-    kaku at = 0; aida (at <= len(data)) { array.push(facts, array.make[bool](count, iie)); at = at + 1; }
+    kaku facts = array.with_capacity[[]bool](len(data) + 1); kaku visited = array.make[bool](len(data) + 1, iie);
+    // Unvisited positions share one all-false placeholder: a position's facts are replaced by its own array on its
+    // first visit, and only visited positions are ever updated in place.
+    kaku none = array.make[bool](count, iie);
+    kaku at = 0; aida (at <= len(data)) { array.push(facts, none); at = at + 1; }
     // Lambda bindings have an implicit nil placeholder for recursive scope.
     // A literal closure stored on its sole fallthrough path is definitely
     // non-nil. Do not infer this at a branch target with another predecessor.
@@ -608,10 +638,16 @@ waza type_nonnil_entries(file: mochi.File, data: []uint8, count: int64) -> [][]b
                 }
                 kaku si = 0;
                 aida (si < len(successors)) {
-                    kaku dest = successors[si]; kaku incoming = array.clone(out);
-                    moshi (guard >= 0 && guard < count && ((si == 0 && !inverted) || (si == 1 && inverted))) { incoming[guard] = hai; }
-                    moshi (!visited[dest]) { facts[dest] = incoming; visited[dest] = hai; changed = hai; }
-                    sore { kaku i = 0; aida (i < count) { moshi (facts[dest][i] && !incoming[i]) { facts[dest][i] = iie; changed = hai; } i = i + 1; } }
+                    kaku dest = successors[si];
+                    kaku guarded = guard >= 0 && guard < count && ((si == 0 && !inverted) || (si == 1 && inverted));
+                    // The incoming facts are out plus the guard; they are only materialised when stored (first visit).
+                    moshi (!visited[dest]) {
+                        kaku incoming = array.clone(out); moshi (guarded) { incoming[guard] = hai; }
+                        facts[dest] = incoming; visited[dest] = hai; changed = hai;
+                    } sore {
+                        kaku current = facts[dest]; kaku i = 0;
+                        aida (i < count) { moshi (current[i] && !out[i] && !(guarded && i == guard)) { current[i] = iie; changed = hai; } i = i + 1; }
+                    }
                     si = si + 1;
                 }
             }
@@ -826,13 +862,19 @@ koukai waza analyze_types_traced(file: mochi.File, trace: bool) -> TypeAnalysis 
             kaku opcode = 1; moshi (len(data) > 0) { opcode = int64(data[0]); moshi (opcode == 0) { opcode = 1; } }
             kaesu TypeAnalysis { arena: arena, globals: globals, locals: locals, returns: returns, upvalues: upvalues, cells: cells, blocks: blocks, error_detail: type_fail(block_index, 0, opcode) };
         }
-        kaku entries: [][]int64 = [];
-        kaku reachable: []bool = [];
+        kaku entries = array.with_capacity[[]int64](len(data) + 1);
+        kaku reachable = array.with_capacity[bool](len(data) + 1);
+        // Positions without stack values (operand bytes, unreachable code, empty stacks) share one empty entry: entries
+        // are never mutated in place, only replaced (type_merge_entry), so sharing is unobservable.
+        kaku no_values: []int64 = [];
         kaku at = 0;
         aida (at <= len(data)) {
-            kaku values: []int64 = [];
+            kaku values = no_values;
             moshi (depths[at] >= 0 && (block_index < 0 || function_reachable[block_index])) {
-                kaku depth = 0; aida (depth < depths[at]) { array.push(values, type_new(arena, type_unknown)); depth = depth + 1; }
+                moshi (depths[at] > 0) {
+                    values = array.with_capacity[int64](depths[at]);
+                    kaku depth = 0; aida (depth < depths[at]) { array.push(values, type_new(arena, type_unknown)); depth = depth + 1; }
+                }
                 array.push(reachable, hai);
             }
             sore { array.push(reachable, iie); }

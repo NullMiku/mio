@@ -24,7 +24,7 @@ git switch -c fix/topic
 "$MIO_NATIVE_SEED" build selfhost/cli --bunko-root "$PWD/bunko" -o /absolute/new/path/mio
 ```
 
-受信任 Seed 的版本及 SHA256 约定见测试说明。Go（版本见 `go.mod`）仅用于现存参考实现和补充测试。统一测试驱动使用 Bash、Python 3.9+ 和 Git，原生签名检查使用 macOS 系统 `codesign`；它们都不是正式 Mio 的新增依赖。日常命令为：
+受信任 Seed 的版本及 SHA256 约定见测试说明。Go（版本见 `go.mod`）仅用于参考前端/VM、补充测试，以及无受信任 Seed 时生成 go-hosted Stage A；没有任何 Go 程序生成原生代码（Go AOT 后端已删除）。统一测试驱动使用 Bash、Python 3.9+ 和 Git，原生签名检查使用 macOS 系统 `codesign`；它们都不是正式 Mio 的新增依赖。日常命令为：
 
 ```bash
 bash scripts/ci/selftest.sh
@@ -89,4 +89,4 @@ Go、Shell、Python 或其他外部工具只能作为 Development / CI Dependenc
 
 提交验证材料时附命令、平台和 `report.json`；分别说明 PASS、FAIL、SKIP、NOT_RUN。全跳过或没有实际检查不能写成成功。CI 基础设施变更请运行 `bash scripts/ci/selftest.sh`，并检查工作流语法。当前已知 Core 失败不得通过改预期、放宽断言或跳过测试隐藏。详见 [测试架构](docs/testing.md) 和 [本次审计](docs/testing-audit.md)。
 
-只有普通标准库测试文件的局部修改才缩小 Quick；实现代码、Core/ABI/GC/AOT、清单或未知范围改动均回退完整 Quick。macOS 现使用 GitHub-hosted `macos-15`。**暂行措施：** 受信任 Native Seed 尚不可用于 GitHub-hosted Runner，Native Verification 暂时为 NOT_RUN（只有仓库变量 `MIO_NATIVE_VERIFICATION=enabled` 并提供 Seed 后才会恢复），`Mio CI / required` 此时只是补充测试 gate，其通过不代表原生测试通过。详见 [测试架构](docs/testing.md) 的“暂行措施”与 [三级 CI 调度审计](docs/ci-scheduling-audit.md)。
+涉及编译器、后端、运行时或 GC 的修改须通过 `.github/workflows/native.yml` 的三平台原生验证（`Native / required`），并在 [Runtime ABI 契约](docs/runtime-abi.md) 变更时同步更新 `tests/runtime-abi`。只有普通标准库测试文件的局部修改才缩小 Quick；实现代码、Core/ABI/GC/AOT、清单或未知范围改动均回退完整 Quick。macOS 现使用 GitHub-hosted `macos-15`。**暂行措施：** 受信任 Native Seed 尚不可用于 GitHub-hosted Runner，Native Verification 暂时为 NOT_RUN（只有仓库变量 `MIO_NATIVE_VERIFICATION=enabled` 并提供 Seed 后才会恢复），`Mio CI / required` 此时只是补充测试 gate，其通过不代表原生测试通过。详见 [测试架构](docs/testing.md) 的“暂行措施”与 [三级 CI 调度审计](docs/ci-scheduling-audit.md)。

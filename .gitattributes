@@ -11,3 +11,6 @@
 *.sh text eol=lf
 # Golden diagnostics compare exact rendered LF bytes on every host.
 internal/diagnostic/testdata/unicode.golden text eol=lf
+# Native contract / differential transcripts are compared byte for byte on every host, including Windows.
+tests/runtime-abi/cases/* text eol=lf
+tests/native-differential/cases/* text eol=lf

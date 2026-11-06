@@ -14,7 +14,7 @@ kiso/aot/x86_64 and kiso/aot/elf) and writes the resulting ELF. This script then
 On any other host step 2 is printed as "execution: NOT_RUN (...)": it is not counted as passed, and the
 bytes the Mio code produced are then only checked structurally.
 
-The same program is exercised by internal/aot/linux_runtime_chain_test.go with the Go reference VM.
+On linux-amd64 the native CI runs this check with the native CLI (scripts/ci/native_platforms.py).
 Exit status: 0 all executed checks passed, 1 a check failed.
 Environment: MIO_CI_MIO (compiler), MIO_CI_MODULE_DIR (scratch directory).
 """
@@ -169,7 +169,9 @@ def main():
     program = work / "runtime-chain.mio"
     program.write_text(source(image), encoding="utf-8")
     native = work / "runtime-chain.builder"
-    build = subprocess.run([mio, "build", str(program), "--bunko-root", str(ROOT / "bunko"), "-o", str(native)],
+    # The builder runs on this host: build it for the host's native target (the CLI defaults to darwin-arm64).
+    host = ["--target=linux-amd64"] if (platform.system(), platform.machine()) in (("Linux", "x86_64"), ("Linux", "amd64")) else []
+    build = subprocess.run([mio, "build", str(program), *host, "--bunko-root", str(ROOT / "bunko"), "-o", str(native)],
                            capture_output=True, text=True, timeout=900)
     (work / "runtime-chain.build.log").write_text(build.stdout + build.stderr)
     if build.returncode != 0:

@@ -6,6 +6,7 @@ yobu "kiso/aot/sign";
 yobu "kiso/convert";
 yobu "kiso/array";
 yobu "kiso/string";
+yobu "kiso/fs";
 
 koukai kata NativeBuildResult { bytes: []uint8; error: string; }
 
@@ -31,7 +32,44 @@ koukai waza build_mochi_with_options(data: []uint8, heap_capacity: int64, gc_str
 }
 
 waza build_file(file: mochi.File, heap_capacity: int64, gc_stress: bool) -> NativeBuildResult {
+    kaesu build_file_observed(file, heap_capacity, gc_stress, iie, "");
+}
+
+// Diagnostic symbol map for profilers: one line "<code word> <function name>" per emitted function.
+waza write_symbols(path: string, file: mochi.File, lowered: lower.LowerResult) -> string {
+    kaku output = string.new_builder(); kaku at = 0;
+    aida (at < len(lowered.function_words) && at < len(file.functions)) {
+        moshi (lowered.function_words[at] >= 0) {
+            string.write_string(output, convert.format_int(lowered.function_words[at])); string.write_string(output, " ");
+            string.write_string(output, file.functions[at].name); string.write_string(output, "\n");
+        }
+        at = at + 1;
+    }
+    // runtime routines: labels with plain names (block, function and generated labels contain numbers)
+    at = 0;
+    aida (at < len(lowered.labels)) {
+        kaku name = lowered.labels[at].name; kaku bytes = string.to_bytes(name);
+        kaku digits = iie; kaku bi = 0;
+        aida (bi < len(bytes)) { moshi (bytes[bi] >= uint8(48) && bytes[bi] <= uint8(57)) { digits = hai; } bi = bi + 1; }
+        moshi (len(bytes) > 0 && !digits) {
+            string.write_string(output, convert.format_int(lowered.labels[at].word)); string.write_string(output, " rt:"); string.write_string(output, name); string.write_string(output, "\n");
+        }
+        at = at + 1;
+    }
+    kaku written = fs.write_all(path, string.to_bytes(string.builder_string(output)));
+    moshi (written.error != mu) { kaesu "E_IO cannot write symbol map"; }
+    kaesu "";
+}
+
+// observation: the image dumps its collector and memory counters to stderr at exit (diagnostics only; the program's
+// own behaviour and output are unchanged).
+waza build_file_observed(file: mochi.File, heap_capacity: int64, gc_stress: bool, observation: bool, symbols: string) -> NativeBuildResult {
     kaku lowered = lower.compile_with_heap(file, heap_capacity, gc_stress);
+    moshi (observation) { lowered = lower.compile_with_observation(file, heap_capacity, gc_stress); }
+    moshi (symbols != "" && lowered.error == mu) {
+        kaku problem = write_symbols(symbols, file, lowered);
+        moshi (problem != "") { kaesu NativeBuildResult { bytes: [], error: problem }; }
+    }
     kaku problem = lowered.error;
     moshi (problem != mu) {
         kaku detail = string.concat(convert.format_int(lower.error_code(problem)), string.concat(" / ", convert.format_int(lower.error_detail(problem))));
@@ -46,7 +84,25 @@ waza build_file(file: mochi.File, heap_capacity: int64, gc_stress: bool) -> Nati
 // GF3 callers receive a locally ad-hoc signed image; the unsigned API remains
 // available for reproducible full-byte bootstrap comparisons and IR audits.
 koukai waza build_signed_source(root: string, entry: string, bunko_root: string) -> NativeBuildResult {
-    kaku compiled = build_source(root, entry, bunko_root);
+    kaesu build_signed_source_with_options(root, entry, bunko_root, iie);
+}
+
+// gc_stress: the generational collector runs a collection at every allocation (lower.compile_with_heap).
+koukai waza build_signed_source_with_options(root: string, entry: string, bunko_root: string, gc_stress: bool) -> NativeBuildResult {
+    kaesu build_signed_source_observed(root, entry, bunko_root, gc_stress, iie);
+}
+
+koukai waza build_signed_source_observed(root: string, entry: string, bunko_root: string, gc_stress: bool, observation: bool) -> NativeBuildResult {
+    kaesu build_signed_source_diagnostic(root, entry, bunko_root, gc_stress, observation, "");
+}
+
+koukai waza build_signed_source_diagnostic(root: string, entry: string, bunko_root: string, gc_stress: bool, observation: bool, symbols: string) -> NativeBuildResult {
+    kaku checked = frontend.compile_source(root, entry, bunko_root);
+    moshi (checked.error != "") { kaesu NativeBuildResult { bytes: [], error: checked.error }; }
+    kaku decoded = mochi.decode(checked.bytes); kaku file = decoded.value;
+    moshi (decoded.error != mu) { kaesu NativeBuildResult { bytes: [], error: "E_IR frontend produced invalid Mochi" }; }
+    moshi (file == mu) { kaesu NativeBuildResult { bytes: [], error: "E_IR frontend returned no module" }; }
+    kaku compiled = build_file_observed(file, 1073741824, gc_stress, observation, symbols);
     moshi (compiled.error != "") { kaesu compiled; }
     kaku signed = sign.adhoc(compiled.bytes);
     moshi (signed.error != "") { kaesu NativeBuildResult { bytes: [], error: string.concat("E_SIGN ", signed.error) }; }

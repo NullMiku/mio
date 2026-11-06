@@ -1,0 +1,154 @@
+name: Mio Native / 3 platforms
+# Native verification of the pure-Mio compiler, CLI and runtime on the three Mio-2.1 targets
+# (scripts/ci/native_platforms.py). Engines are reported separately: Stage A of the Linux compiler is produced by the
+# pure-Mio backend running in the Go reference VM ("go-hosted", never called a seed); every later stage and every test
+# runs as a native image on the named runner. The trusted GF4 Native Seed is not available to hosted runners and is
+# always recorded NOT_RUN. A required check that is not PASS fails the run; nothing here ignores a failure.
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    branches: [Mio-2.1]
+  push:
+    branches: ['runtime-abi/**']
+permissions:
+  contents: read
+jobs:
+  linux:
+    name: Native / linux-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      darwin_arm64: ${{ steps.native.outputs.darwin_arm64 }}
+      windows_amd64: ${{ steps.native.outputs.windows_amd64 }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      # Go is used only for the reference VM host that runs the Stage A lowering and the VM differential.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build the reference VM host (go-hosted Stage A and VM oracle only)
+        run: go build -o build/native/refvm ./tests/windows-amd64/refvm
+      - id: native
+        name: Stage A, native compiler and CLI fixed points, mio test, Runtime ABI contract, cross Stage A
+        run: python scripts/ci/native_platforms.py linux --refvm build/native/refvm --output build/native/linux-amd64
+      - name: Attest the cross-built Stage A images
+        if: success() && github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: build/native/linux-amd64/stage-a/mio-*
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: native-stage-a-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/native/linux-amd64/stage-a/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-report-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/native/linux-amd64/report.json
+            build/native/linux-amd64/logs/
+            build/native/linux-amd64/runtime-abi/results.json
+            build/native/linux-amd64/runtime-abi/*.std*
+            build/native/linux-amd64/native-differential/results.json
+            build/native/linux-amd64/native-differential/*.std*
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-compilers-linux-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/native/linux-amd64/work/compiler-*
+            build/native/linux-amd64/work/mio-*
+          if-no-files-found: warn
+          retention-days: 7
+  follower:
+    name: Native / ${{ matrix.target }}
+    needs: linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            command: darwin
+            runner: macos-15
+            image: mio-darwin-arm64
+            sha_output: darwin_arm64
+          - target: windows-amd64
+            command: windows
+            runner: windows-2025
+            image: mio-windows-amd64.exe
+            sha_output: windows_amd64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-stage-a-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/stage-a
+      - name: Native B -> C -> D, mio test, Runtime ABI contract (no Go on this path)
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ needs.linux.outputs[matrix.sha_output] }}
+        run: >-
+          python scripts/ci/native_platforms.py ${{ matrix.command }} --stage-a "build/stage-a/${{ matrix.image }}"
+          --expect-sha256 "$EXPECTED_SHA256" --output "build/native/${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-report-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/native/${{ matrix.target }}/report.json
+            build/native/${{ matrix.target }}/logs/
+            build/native/${{ matrix.target }}/runtime-abi/results.json
+            build/native/${{ matrix.target }}/runtime-abi/*.std*
+            build/native/${{ matrix.target }}/native-differential/results.json
+            build/native/${{ matrix.target }}/native-differential/*.std*
+          if-no-files-found: error
+          retention-days: 7
+  summary:
+    name: Native / required
+    if: always()
+    needs: [linux, follower]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-report-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/native-reports
+      - name: Combine the platform reports (fails unless every required check is PASS)
+        run: python scripts/ci/native_platforms.py summary --reports build/native-reports --output build/native-summary
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/native-summary/
+          if-no-files-found: error
+          retention-days: 7

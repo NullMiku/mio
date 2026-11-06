@@ -1,0 +1,37 @@
+yobu "kiso/testing";
+yobu "kiso/runtime/gc";
+yobu "kiso/aot/lowerlinux";
+yobu "kiso/aot/lowerwinrt";
+
+waza test_every_native_target_has_a_valid_profile() -> unit {
+    kaku targets = ["darwin-arm64", "linux-amd64", "windows-amd64"];
+    kaku at = 0;
+    aida (at < len(targets)) {
+        kaku id = target_profile(targets[at]);
+        testing.expect(id != 0, "target has a profile");
+        testing.expect(profile_valid(profile(id)), "profile satisfies RA-1");
+        at = at + 1;
+    }
+    testing.expect(target_profile("linux-arm64") == 0, "unknown targets fail closed");
+    testing.expect(!profile_valid(profile(0)), "the empty profile is invalid");
+}
+
+// The generational profile is Object ABI v1: the declared values must be the frozen layout constants.
+waza test_generational_profile_is_object_abi_v1() -> unit {
+    kaku p = profile(profile_generational_v1);
+    testing.expect(gc.layout_version == 1, "Object ABI v1");
+    testing.expect(p.header_bytes == gc.header_bytes, "header bytes");
+    testing.expect(p.object_alignment == gc.object_alignment, "object alignment");
+    testing.expect(p.large_object_threshold == gc.default_los_threshold, "large-object threshold");
+}
+
+// Both x86-64 backends implement the same profile: their exported layout constants must agree with it.
+waza test_x64_backends_share_one_profile() -> unit {
+    kaku p = profile(profile_x64_marksweep_v1);
+    testing.expect(lowerlinux.object_header_bytes == p.header_bytes, "linux header bytes");
+    testing.expect(lowerwinrt.object_header_bytes == p.header_bytes, "windows header bytes");
+    testing.expect(lowerlinux.object_size_granule == p.size_granule, "linux size granule");
+    testing.expect(lowerwinrt.object_size_granule == p.size_granule, "windows size granule");
+    testing.expect(lowerlinux.object_layout_profile == profile_x64_marksweep_v1, "linux profile id");
+    testing.expect(lowerwinrt.object_layout_profile == profile_x64_marksweep_v1, "windows profile id");
+}

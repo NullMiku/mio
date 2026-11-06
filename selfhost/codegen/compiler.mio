@@ -36,6 +36,9 @@ kata CompilerState {
     registry_packages: []string;
     registry_names: []string;
     registry_ids: []int64;
+    // hash index over (package, name) of the registry: chain heads per bucket and the next entry of each entry
+    registry_buckets: []int64;
+    registry_next: []int64;
     next_global: []int64;
     typed: bool;
     instances: []GenericInstance;
@@ -132,10 +135,34 @@ waza function_id(state: CompilerState, symbol_id: int64) -> int64 {
     kaesu -1;
 }
 
+teisu registry_bucket_count = 4093;
+
+waza registry_hash(package_path: string, name: string) -> int64 {
+    kaku hash = 7; kaku bytes = string.to_bytes(package_path); kaku at = 0;
+    aida (at < len(bytes)) { hash = hash * 31 + int64(bytes[at]); hash = hash - (hash / registry_bucket_count) * registry_bucket_count; at = at + 1; }
+    hash = hash * 31 + 1; bytes = string.to_bytes(name); at = 0;
+    aida (at < len(bytes)) { hash = hash * 31 + int64(bytes[at]); hash = hash - (hash / registry_bucket_count) * registry_bucket_count; at = at + 1; }
+    kaesu hash - (hash / registry_bucket_count) * registry_bucket_count;
+}
+
+waza new_registry_buckets() -> []int64 { kaesu array.make[int64](registry_bucket_count, -1); }
+
+// Appends (package, name) -> id to the registry and its hash index.
+waza registry_add(packages: []string, names: []string, ids: []int64, buckets: []int64, next: []int64, package_path: string, name: string, id: int64) -> unit {
+    kaku bucket = registry_hash(package_path, name);
+    array.push(next, buckets[bucket]); buckets[bucket] = len(ids);
+    array.push(packages, package_path); array.push(names, name); array.push(ids, id);
+}
+
+// The first registered function with this package and name (exactly what a front-to-back scan returns), or -1.
 waza registered_function(state: CompilerState, package_path: string, name: string) -> int64 {
-    kaku index = 0;
-    aida (index < len(state.registry_ids)) { moshi (state.registry_packages[index] == package_path && state.registry_names[index] == name) { kaesu state.registry_ids[index]; } index = index + 1; }
-    kaesu -1;
+    kaku entry = state.registry_buckets[registry_hash(package_path, name)]; kaku found = -1;
+    aida (entry >= 0) {
+        moshi (state.registry_packages[entry] == package_path && state.registry_names[entry] == name) { found = entry; }
+        entry = state.registry_next[entry];
+    }
+    moshi (found < 0) { kaesu -1; }
+    kaesu state.registry_ids[found];
 }
 
 waza add_error(state: CompilerState, kind: CompileErrorKind, file_id: int64, node_id: int64, detail: string) -> unit {
@@ -694,7 +721,7 @@ waza register_layout(state: CompilerState) -> unit {
             moshi (parser.node_kind_code(node.kind) == 32) {
                 kaku symbol = binding_of(state, file_id, node_id); kaku function_id = len(state.layout.functions);
                 array.push(state.function_symbols, symbol); array.push(state.function_ids, function_id); array.push(state.function_nodes, resolver.NodeRef { file_id: file_id, node_id: node_id }); array.push(state.function_layout_ids, function_id);
-                array.push(state.registry_packages, state.resolved.package_path); array.push(state.registry_names, node.text); array.push(state.registry_ids, function_id);
+                registry_add(state.registry_packages, state.registry_names, state.registry_ids, state.registry_buckets, state.registry_next, state.resolved.package_path, node.text, function_id);
                 array.push(state.layout.functions, FunctionLayout { id: function_id, name: node.text, parameter_count: node.operator, local_count: node.operator, returns_value: iie, captures: array.with_capacity[CaptureLayout](0), instructions: array.with_capacity[uint8](0) });
             }
             index = index + 1;
@@ -736,7 +763,8 @@ koukai waza compile_package(resolved: resolver.ResolvedPackage, checked: typeche
         resolved: resolved, checked: checked, layout: layout, errors: empty_errors(),
         global_symbols: array.with_capacity[int64](16), global_slots: array.with_capacity[int64](16),
         function_symbols: array.with_capacity[int64](16), function_ids: array.with_capacity[int64](16), function_nodes: function_nodes, function_layout_ids: array.with_capacity[int64](16),
-        registry_packages: array.with_capacity[string](16), registry_names: array.with_capacity[string](16), registry_ids: array.with_capacity[int64](16), next_global: [0], typed: iie,
+        registry_packages: array.with_capacity[string](16), registry_names: array.with_capacity[string](16), registry_ids: array.with_capacity[int64](16),
+        registry_buckets: new_registry_buckets(), registry_next: array.with_capacity[int64](16), next_global: [0], typed: iie,
         instances:[],active_names:[],active_types:[],emitting_template:[iie],enum_names:[],
         bindings: bindings, node_type_nodes: bindings.nodes, node_type_slots: build_node_type_slots(bindings.nodes, checked)
     };
@@ -770,14 +798,14 @@ koukai waza compile_native_modules(packages: []resolver.ResolvedPackage, checked
 
 waza compile_modules_mode(packages: []resolver.ResolvedPackage, checked_packages: []typecheck.TypeCheckResult, natives: []NativeFunctionLayout, qualified: bool, typed: bool) -> CompileResult {
     moshi (len(packages) == 0 || len(packages) != len(checked_packages)) { kaesu compile_failure(CompileErrorKind.InvalidInput(), resolver.NodeRef { file_id: -1, node_id: -1 }, empty_span(), "module inputs do not match"); }
-    kaku layout = empty_layout(); kaku errors = empty_errors(); kaku registry_packages: []string = []; kaku registry_names: []string = []; kaku registry_ids: []int64 = []; kaku next_global = [0]; kaku main = new_context(iie, -1);
+    kaku layout = empty_layout(); kaku errors = empty_errors(); kaku registry_packages: []string = []; kaku registry_names: []string = []; kaku registry_ids: []int64 = []; kaku registry_buckets = new_registry_buckets(); kaku registry_next: []int64 = []; kaku next_global = [0]; kaku main = new_context(iie, -1);
     kaku instances: []GenericInstance=[];kaku states: []CompilerState=[];kaku enum_names: []string=[];kaku ei=0;
     aida(ei<len(checked_packages)){kaku enums=checked_packages[ei].enums;kaku j=0;aida(j<len(enums)){array.push(enum_names,string.concat(enums[j].package_path,string.concat(".",enums[j].name)));j=j+1;}ei=ei+1;}
     kaku native_index = 0;
     aida (native_index < len(natives)) {
         kaku native = natives[native_index]; kaku id = len(layout.functions);
         array.push(layout.functions, FunctionLayout { id: id, name: native.binding_key, parameter_count: native.parameter_count, local_count: native.parameter_count, returns_value: native.returns_value, captures: array.with_capacity[CaptureLayout](0), instructions: array.with_capacity[uint8](0) });
-        array.push(registry_packages, native.package_path); array.push(registry_names, native.name); array.push(registry_ids, id); native_index = native_index + 1;
+        registry_add(registry_packages, registry_names, registry_ids, registry_buckets, registry_next, native.package_path, native.name, id); native_index = native_index + 1;
     }
     kaku package_index = 0;
     aida (package_index < len(packages)) {
@@ -789,7 +817,8 @@ waza compile_modules_mode(packages: []resolver.ResolvedPackage, checked_packages
             resolved: resolved, checked: checked, layout: layout, errors: errors,
             global_symbols: array.with_capacity[int64](16), global_slots: array.with_capacity[int64](16),
             function_symbols: array.with_capacity[int64](16), function_ids: array.with_capacity[int64](16), function_nodes: function_nodes, function_layout_ids: array.with_capacity[int64](16),
-            registry_packages: registry_packages, registry_names: registry_names, registry_ids: registry_ids, next_global: next_global, typed: typed,
+            registry_packages: registry_packages, registry_names: registry_names, registry_ids: registry_ids,
+            registry_buckets: registry_buckets, registry_next: registry_next, next_global: next_global, typed: typed,
             instances:instances,active_names:[],active_types:[],emitting_template:[iie],enum_names:enum_names,
             bindings: bindings, node_type_nodes: bindings.nodes, node_type_slots: build_node_type_slots(bindings.nodes, checked)
         };

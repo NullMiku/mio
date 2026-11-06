@@ -193,6 +193,32 @@ waza copy_type_from(env: TypeEnvironment, source: TypeCheckResult, id: int64) ->
     kaesu copy_type_info(env.result, source, id);
 }
 
+// copy_type_info with a per-source memo (memo[source id] = copied id, -1 = not yet copied). Interning is
+// deterministic and importing a dependency adds no scalar types, so a repeated copy returns exactly what copying again
+// would; every package used to rebuild and intern the identity of each dependency type once per reference.
+waza copy_type_memo(result: TypeCheckResult, source: TypeCheckResult, id: int64, memo: []int64) -> int64 {
+    moshi(id<0 || id>=len(source.types)){kaesu 0;}
+    moshi (memo[id] >= 0) { kaesu memo[id]; }
+    kaku info = source.types[id];
+    kaku code = type_kind_code(info.kind); kaku copied = 0;
+    moshi (code <= 14) { copied = copy_type_info(result, source, id); }
+    moshi (code == 15) { copied = array_type(result, copy_type_memo(result, source, info.element, memo)); }
+    moshi (code == 16) { copied = nullable_type(result, copy_type_memo(result, source, info.element, memo)); }
+    moshi (code == 17) {
+        kaku arguments = array.with_capacity[int64](len(info.arguments)); kaku index = 0;
+        aida (index < len(info.arguments)) { array.push(arguments, copy_type_memo(result, source, info.arguments[index], memo)); index = index + 1; }
+        copied = named_type(result, info.name, arguments);
+    }
+    moshi (code == 18) {
+        kaku parameters = array.with_capacity[int64](len(info.parameters)); kaku index = 0;
+        aida (index < len(info.parameters)) { array.push(parameters, copy_type_memo(result, source, info.parameters[index], memo)); index = index + 1; }
+        copied = function_type(result, parameters, copy_type_memo(result, source, info.result, memo));
+    }
+    moshi (code >= 19) { copied = parameter_type(result, info.name); }
+    memo[id] = copied;
+    kaesu copied;
+}
+
 koukai waza copy_type_info(result: TypeCheckResult, source: TypeCheckResult, id: int64) -> int64 {
     moshi(id<0 || id>=len(source.types)){kaesu 0;}
     kaku info = source.types[id];
@@ -228,11 +254,12 @@ waza import_dependency_types(env: TypeEnvironment, dependencies: []TypeCheckResu
     kaku dependency_index = 0;
     aida (dependency_index < len(dependencies)) {
         kaku dependency = dependencies[dependency_index];
+        kaku memo = array.make[int64](len(dependency.types), -1);
         kaku symbol_index = 0;
         aida (symbol_index < len(dependency.symbol_types)) {
             kaku item = dependency.symbol_types[symbol_index];
             kaku source_symbol = find_current_symbol(current_symbols, item.package_path, item.name, item.symbol_kind);
-            moshi (source_symbol >= 0) { set_symbol_type(env, source_symbol, copy_type_from(env, dependency, item.type_id)); }
+            moshi (source_symbol >= 0) { set_symbol_type(env, source_symbol, copy_type_memo(env.result, dependency, item.type_id, memo)); }
             symbol_index = symbol_index + 1;
         }
         kaku constant_index = 0;
@@ -259,7 +286,7 @@ waza import_dependency_types(env: TypeEnvironment, dependencies: []TypeCheckResu
             kaku current_symbol = find_current_symbol(current_symbols, source.package_path, source.name, 6);
             moshi (current_symbol >= 0) {
                 kaku fields = array.with_capacity[StructField](len(source.fields)); kaku field = 0;
-                aida (field < len(source.fields)) { array.push(fields, StructField { name: source.fields[field].name, type_id: copy_type_from(env, dependency, source.fields[field].type_id) }); field = field + 1; }
+                aida (field < len(source.fields)) { array.push(fields, StructField { name: source.fields[field].name, type_id: copy_type_memo(env.result, dependency, source.fields[field].type_id, memo) }); field = field + 1; }
                 array.push(env.result.structs, StructDefinition { symbol_id: current_symbol, name: source.name, package_path: source.package_path, parameters: source.parameters, fields: fields });
             }
             struct_index = struct_index + 1;
@@ -274,7 +301,7 @@ waza import_dependency_types(env: TypeEnvironment, dependencies: []TypeCheckResu
                     kaku source_variant = source.variants[variant_index];
                     kaku current_variant = find_current_symbol(current_symbols, source.package_path, source_variant.name, 8);
                     kaku fields = array.with_capacity[int64](len(source_variant.fields)); kaku field = 0;
-                    aida (field < len(source_variant.fields)) { array.push(fields, copy_type_from(env, dependency, source_variant.fields[field])); field = field + 1; }
+                    aida (field < len(source_variant.fields)) { array.push(fields, copy_type_memo(env.result, dependency, source_variant.fields[field], memo)); field = field + 1; }
                     array.push(variants, EnumVariant { symbol_id: current_variant, name: source_variant.name, fields: fields });
                     variant_index = variant_index + 1;
                 }
@@ -289,8 +316,8 @@ waza import_dependency_types(env: TypeEnvironment, dependencies: []TypeCheckResu
             moshi (current_symbol < 0) { current_symbol = find_current_symbol(current_symbols, source.package_path, source.name, 5); }
             moshi (current_symbol >= 0) {
                 kaku parameters = array.with_capacity[int64](len(source.parameters)); kaku parameter = 0;
-                aida (parameter < len(source.parameters)) { array.push(parameters, copy_type_from(env, dependency, source.parameters[parameter])); parameter = parameter + 1; }
-                add_signature(env, FunctionSignature { symbol_id: current_symbol, name: source.name, package_path: source.package_path, type_parameters: source.type_parameters, parameters: parameters, result: copy_type_from(env, dependency, source.result) });
+                aida (parameter < len(source.parameters)) { array.push(parameters, copy_type_memo(env.result, dependency, source.parameters[parameter], memo)); parameter = parameter + 1; }
+                add_signature(env, FunctionSignature { symbol_id: current_symbol, name: source.name, package_path: source.package_path, type_parameters: source.type_parameters, parameters: parameters, result: copy_type_memo(env.result, dependency, source.result, memo) });
             }
             signature_index = signature_index + 1;
         }

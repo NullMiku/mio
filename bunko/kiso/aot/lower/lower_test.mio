@@ -94,19 +94,27 @@ waza test_all_v14_constants_and_static_string_image() -> unit {
 waza test_get_field_uses_runtime_bitmap_width() -> unit {
     kaku code = arm64.assembler();
     emit_get_field(code, 65);
+    kaku call_site = len(code.words);
+    kaku routine = len(code.words);
+    emit_get_field_routine(code);
     // The common error target is normally emitted by compile().
     arm64.assembler_label(code, "runtime_error");
     kaku result = arm64.assembler_assemble(code);
     testing.expect(result.error == mu, "metadata-driven get-field should encode");
+    // The read site passes the field index to the one shared checking routine.
+    testing.expect(call_site == 6, "get-field read site pops the receiver, sets the index, calls, and pushes the value");
+    testing.expect(result.words[2] == arm64.movz_x(11, 65, 0).word, "get-field passes the u16 field index");
+    testing.expect(result.words[3] == arm64.bl(routine - 3).word, "get-field calls the shared checking routine");
     // A fixed-offset lowering would not load fieldCount and bitmapWords or
     // scale both bitmapWords and the u16 field index.
-    testing.expect(len(result.words) == 45, "get-field should validate metadata and compute the variable field address");
-    testing.expect(result.words[6] == arm64.ldr_x(10, 9, 0).word, "get-field validates the struct kind");
-    testing.expect(result.words[11] == arm64.ldr_x(10, 9, 8).word, "get-field validates fieldCount");
-    testing.expect(result.words[20] == arm64.ldr_x(10, 9, 24).word, "get-field reads bitmapWords");
-    testing.expect(result.words[21] == arm64.ldr_x(12, 9, 8).word, "get-field revalidates bitmap width from fieldCount");
-    testing.expect(result.words[32] == arm64.ldr_x(14, 14, 8).word, "get-field validates required bytes against object payload");
-    testing.expect(result.words[41] == arm64.ldr_x(9, 9, 32).word, "get-field reads after metadata, bitmap, and scaled index");
+    testing.expect(len(result.words) == routine + 31, "get-field should validate metadata and compute the variable field address");
+    testing.expect(result.words[routine + 2] == arm64.ldr_x(10, 9, 0).word, "get-field validates the struct kind");
+    testing.expect(result.words[routine + 6] == arm64.ldr_x(10, 9, 8).word, "get-field validates fieldCount");
+    testing.expect(result.words[routine + 10] == arm64.ldr_x(10, 9, 24).word, "get-field reads bitmapWords");
+    testing.expect(result.words[routine + 11] == arm64.ldr_x(12, 9, 8).word, "get-field revalidates bitmap width from fieldCount");
+    testing.expect(result.words[routine + 21] == arm64.ldr_x(14, 14, 8).word, "get-field validates required bytes against object payload");
+    testing.expect(result.words[routine + 29] == arm64.ldr_x(9, 9, 32).word, "get-field reads after metadata, bitmap, and scaled index");
+    testing.expect(result.words[routine + 30] == arm64.ret().word, "get-field routine returns the value in x9");
 }
 
 waza test_type_analysis_distinguishes_nil_from_nullable_scalar_zero() -> unit {
@@ -153,4 +161,23 @@ waza test_type_analysis_classifies_struct_global_as_root() -> unit {
     testing.expect(analysis.error_detail == 0, "struct global analysis should succeed");
     testing.expect(types.type_kind(analysis, analysis.globals[0]) == types.type_struct_ref, "struct global kind");
     testing.expect(types.type_is_heap_reference(analysis, analysis.globals[0]), "struct global is a precise root");
+}
+
+waza test_sha256_native_routine_encodes() -> unit {
+    kaku code = arm64.assembler();
+    emit_sha256_native_routine(code);
+    arm64.assembler_label(code, "runtime_error");
+    kaku result = arm64.assembler_assemble(code);
+    testing.expect(result.error == mu, "the SHA-256 routine should encode");
+    // sha256h q16, q17, v26.4s / sha256h2 q17, q27, v26.4s / sha256su0 v20.4s, v21.4s (reference encodings)
+    kaku h = 0; kaku h2 = 0; kaku su0 = 0; kaku i = 0;
+    aida (i < len(result.words)) {
+        moshi (result.words[i] == uint32(1578779184)) { h = h + 1; }
+        moshi (result.words[i] == uint32(1578783601)) { h2 = h2 + 1; }
+        moshi (result.words[i] == uint32(1579690676)) { su0 = su0 + 1; }
+        i = i + 1;
+    }
+    testing.expect(h == 16 && h2 == 16, "sixteen four-round groups");
+    testing.expect(su0 == 3, "groups 0, 4 and 8 expand the v20 message words from v21");
+    testing.expect(result.words[len(result.words) - 1] == arm64.ret().word, "the routine returns");
 }

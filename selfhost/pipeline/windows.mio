@@ -1,22 +1,31 @@
 yobu "selfhost/frontend";
 yobu "kiso/encoding/mochi";
 yobu "kiso/aot/lowerwinrt";
+yobu "kiso/runtime/abi";
 yobu "kiso/string";
 
 // Windows AMD64 counterpart of linux.mio: the same pure-Mio frontend, a different backend (heap-capable, see
 // kiso/aot/lowerwinrt). Mochi stays in this process's memory; the result is a PE32+ console image with no linker and no libc.
 koukai waza build_windows_source(root: string, entry: string, bunko_root: string) -> NativeBuildResult {
-    kaku compiled = frontend.compile_source(root, entry, bunko_root);
-    moshi (compiled.error != "") { kaesu NativeBuildResult { bytes: [], error: compiled.error }; }
-    kaesu build_windows_mochi(compiled.bytes);
+    kaesu build_windows_source_with_options(root, entry, bunko_root, iie);
 }
 
-koukai waza build_windows_mochi(data: []uint8) -> NativeBuildResult {
+koukai waza build_windows_source_with_options(root: string, entry: string, bunko_root: string, gc_stress: bool) -> NativeBuildResult {
+    kaku compiled = frontend.compile_source(root, entry, bunko_root);
+    moshi (compiled.error != "") { kaesu NativeBuildResult { bytes: [], error: compiled.error }; }
+    kaesu build_windows_mochi_with_options(compiled.bytes, gc_stress);
+}
+
+koukai waza build_windows_mochi(data: []uint8) -> NativeBuildResult { kaesu build_windows_mochi_with_options(data, iie); }
+
+// gc_stress: the RA-1 stress threshold instead of the default 32 MiB, so collections run at almost every poll.
+koukai waza build_windows_mochi_with_options(data: []uint8, gc_stress: bool) -> NativeBuildResult {
     kaku decoded = mochi.decode(data);
     kaku file = decoded.value;
     moshi (decoded.error != mu) { kaesu NativeBuildResult { bytes: [], error: "E_IR frontend produced invalid Mochi" }; }
     moshi (file == mu) { kaesu NativeBuildResult { bytes: [], error: "E_IR frontend returned no module" }; }
-    kaku lowered = lowerwinrt.compile(file);
+    kaku threshold = 33554432; moshi (gc_stress) { threshold = abi.gc_stress_threshold_bytes; }
+    kaku lowered = lowerwinrt.compile_with_gc_threshold(file, threshold);
     moshi (lowered.error != "") { kaesu NativeBuildResult { bytes: [], error: string.concat("E_LOWER ", lowered.error) }; }
     kaesu NativeBuildResult { bytes: lowered.bytes, error: "" };
 }
