@@ -54,7 +54,7 @@ def build(candidates, output, image):
         archives = list(candidates.glob('*-linux-amd64-full.tar.gz'))
         check('single Linux Full archive', len(archives) == 1)
         archive = archives[0]
-        check('Full archive SHA256', digest(archive) == sums[archive.name])
+        check('Full archive SHA256', digest(archive) == sums[archive.name] == verification['archives'][archive.name])
         with tempfile.TemporaryDirectory(prefix='mio docker build ') as temp:
             context = Path(temp)
             extracted = extract(archive, context / 'unpack')

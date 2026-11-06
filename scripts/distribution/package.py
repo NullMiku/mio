@@ -28,7 +28,7 @@ def write_json(path, value):
 
 def inventory(root):
     return {p.relative_to(root).as_posix(): dict(sha256=digest(p), size=p.stat().st_size)
-            for p in sorted(root.rglob('*')) if p.is_file() and p.name != 'manifest.json'}
+            for p in sorted(root.rglob('*')) if p.is_file() and p != root / 'manifest.json'}
 
 
 def safe_name(name):

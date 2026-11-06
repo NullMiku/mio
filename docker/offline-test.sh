@@ -19,6 +19,7 @@ mio build math.mio --target=linux-amd64 -o math
 env -u MIO_BUNKO mio check math.mio
 mio build hello.mio --emit=mochi -o hello.mochi
 mio disasm hello.mochi > hello.disasm
+[ "$(mio exec hello.mochi --target=linux-amd64)" = 'offline hello' ]
 [ -s hello.disasm ]
 mkdir -p sample
 cat > sample/sample_test.mio <<'MIO'

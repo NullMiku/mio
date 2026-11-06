@@ -12,7 +12,7 @@ from package import TARGETS, digest, extract, inventory, write_json
 
 
 def verify(output, target):
-    results = dict(target=target, status='FAIL', checks=[], integrated_tools={})
+    results = dict(target=target, status='FAIL', checks=[], archives={}, integrated_tools={})
     log = []
     def check(name, condition):
         results['checks'].append(dict(name=name, status='PASS' if condition else 'FAIL'))
@@ -26,7 +26,9 @@ def verify(output, target):
             sha, name = line.split('  ', 1)
             check('archive checksum ' + name, digest(output / name) == sha)
             archives.append(output / name)
+            results['archives'][name] = sha
         check('two candidates', len(archives) == 2)
+        archives.sort(key=lambda p: '-full.' in p.name)
         with tempfile.TemporaryDirectory(prefix='Mio 候选 install ') as temp:
             base = Path(temp)
             cwd = base / 'unrelated 工作目录'
@@ -86,6 +88,12 @@ def verify(output, target):
                     if target != 'windows-amd64':
                         code, text = run([cli, 'run', hello, '--target=' + target])
                         check('Full run', code == 0 and text == 'hello from Mio\n')
+                        code, text = run([cli, 'exec', cwd / 'hello.mochi', '--target=' + target])
+                        check('Full exec', code == 0 and text == 'hello from Mio\n')
+                        alias = cwd / 'mio alias'
+                        alias.symlink_to(cli)
+                        code, text = run([alias, 'check', math])
+                        check('Full symlink executable lookup', code == 0)
                         tests = cwd / 'sample'
                         tests.mkdir()
                         (tests / 'sample_test.mio').write_text('yobu "kiso/testing"; waza test_math() -> unit { testing.expect(hai,"ok"); }\n', encoding='utf-8')
