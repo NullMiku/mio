@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import subprocess
+import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,5 +43,15 @@ if __name__ == '__main__':
     destination = args.disposable_checkout.resolve()
     if destination == ROOT:
         parser.error('refusing to prepare the source checkout; copy it first')
+    if destination.exists():
+        parser.error('destination must be new')
+    tracked = subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split('\0')
+    for name in filter(None, tracked):
+        src = ROOT / name
+        if src.is_symlink():
+            parser.error('symlink in source checkout: '+name)
+        dest = destination / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     print(json.dumps(prepare(destination, revision), indent=2))
