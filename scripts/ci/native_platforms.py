@@ -820,8 +820,9 @@ def darwin_thread_bench(report, cli, work):
     report.check("darwin-thread-bench", "PASS" if complete else "FAIL", "native", " | ".join(lines)[:1500], required=False)
 
 
-# Baseline of the phase comparison: the last head measured natively (epoch classification, seed pin, shortened spin, docs), before bounded epoch retention.
-BASELINE_SHA = "ef98ec2f2d6371b8d7f4ad19be7e739c23f4a3b7"
+# Baseline of the phase comparison: the last natively measured head (bounded epoch retention). Normal thread images of the current head are byte-identical to it,
+# so this run is an A/A control that shows the run-to-run noise floor of the comparison; the new evidence is darwin-thread-observe.
+BASELINE_SHA = "868068c8c16c8bfb3c2faed4b7d25466087f6a67"
 
 
 def darwin_thread_phases(report, cli, work):
