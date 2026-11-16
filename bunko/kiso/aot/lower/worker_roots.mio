@@ -128,6 +128,15 @@ waza emit_worker_root_runtime(c:arm64.Assembler,p:[]macho.AddressPatch,first:int
         moshi(i==2){move_x(c,1,24);wr_call(c,"gc_heap_enter");}
         attached_restore(c);i=i+1;
     }
+    // Bounded epoch retention (docs/darwin-thread-heap-exclusion-design.md, section 8): the poll in front of an opcode that the compiler has proven
+    // to continue a straight-line run of this thread's own epoch. The thread that owns the epoch is the only one that can clear the owner word, so
+    // when the owner is this thread nothing is released and only the shadow-root head is republished (release store, as gc_mutator_poll does);
+    // when the epoch is not owned any more (a blocking native in the previous opcode ended it) this is exactly gc_mutator_poll.
+    attached_save(c,"attached_roots_retain");wr_current(c,p,first);wr_increment(c,0,488);
+    emit(c,arm64.ldr_x(9,0,gc.thread_registry));emit(c,arm64.add_imm_x(9,9,gc.gc_registry_owner,iie));emit(c,arm64.ldar_x(10,9));emit(c,arm64.cmp_x(10,0));arm64.assembler_b_cond(c,1,"attached_retain_not_owner");
+    emit(c,arm64.add_imm_x(9,0,gc.thread_shadow,iie));emit(c,arm64.stlr_x(24,9));arm64.assembler_b(c,"attached_retain_done");
+    arm64.assembler_label(c,"attached_retain_not_owner");wr_increment(c,0,480);move_x(c,1,24);wr_call(c,"gc_mutator_poll");
+    arm64.assembler_label(c,"attached_retain_done");attached_restore(c);
     // The legacy allocator may collect, so it sees a coordinator-owned complete
     // snapshot. Keep the epoch stopped until the next solved opcode poll.
     attached_save(c,"runtime_alloc");emit(c,arm64.sub_imm_x(31,31,32,iie));emit(c,arm64.str_x(24,31,0));

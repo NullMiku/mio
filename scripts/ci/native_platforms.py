@@ -731,8 +731,8 @@ def darwin_thread_programs(report, cli, work):
     spec.loader.exec_module(module)
     names = ["basic", "captures", "nested", "many", "channel_basic", "channel_close", "channel_graphs", "channel_mpmc", "summary_copy",
              "gc_stress", "gc_lifecycle", "channel_races", "channel_lifecycle", "invalid_handles", "creation_limit", "lifecycle_cycles",
-             "shutdown_active"]
-    stress = ["basic", "nested", "channel_basic", "channel_close"]
+             "shutdown_active", "epoch_retention"]
+    stress = ["basic", "nested", "channel_basic", "channel_close", "epoch_retention"]
     Path(work).mkdir(parents=True, exist_ok=True)
     failures, passed = [], []
     for name in names:
@@ -820,8 +820,8 @@ def darwin_thread_bench(report, cli, work):
     report.check("darwin-thread-bench", "PASS" if complete else "FAIL", "native", " | ".join(lines)[:1500], required=False)
 
 
-# Baseline of the phase comparison: the last measured candidate head of PR #115 (epoch classification + seed pin), before the channel-wait spin change.
-BASELINE_SHA = "21cfc1ab412775440f75421855711b315b3f62fe"
+# Baseline of the phase comparison: the last head measured natively (epoch classification, seed pin, shortened spin, docs), before bounded epoch retention.
+BASELINE_SHA = "ef98ec2f2d6371b8d7f4ad19be7e739c23f4a3b7"
 
 
 def darwin_thread_phases(report, cli, work):

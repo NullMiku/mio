@@ -693,6 +693,28 @@ waza heap_step_exempt(code:arm64.Assembler,type_result:types.TypeAnalysis,functi
     kaesu iie;
 }
 
+// Bounded epoch retention (cooperative thread builds, docs/darwin-thread-heap-exclusion-design.md section 8). An epoch entered by one opcode is kept
+// by the following opcodes of the same straight-line run instead of being released by the next poll and entered again. A run ends (the next poll
+// releases the epoch) at a branch target, at any opcode that branches, calls, returns or prints, and after retain_limit opcodes.
+teisu retain_limit = 16;
+waza epoch_breaker(opcode: int64) -> bool {
+    kaesu opcode == 17 || opcode == 18 || opcode == 22 || opcode == 25 || opcode == 26 || opcode == 27 || opcode == 45 || opcode == 67;
+}
+// true at every offset that some jump (17, 18) can reach: a run never continues into it.
+waza jump_targets(data: []uint8) -> []bool {
+    kaku targets: []bool = [];
+    kaku i = 0;
+    aida (i <= len(data)) { array.push(targets, iie); i = i + 1; }
+    kaku at = 0;
+    aida (at < len(data)) {
+        kaku code = int64(data[at]); kaku step = width(code);
+        moshi (step == 0) { kaesu targets; }
+        moshi (code == 17 || code == 18) { kaku target = operand_u16(data, at); moshi (target >= 0 && target <= len(data)) { targets[target] = hai; } }
+        at = at + step;
+    }
+    kaesu targets;
+}
+
 waza emit_nullable_box(code: arm64.Assembler, patches: []macho.AddressPatch,
     type_result: types.TypeAnalysis, function_id: int64, after: []int64) -> bool {
     // The produced raw scalar is never published under its boxed result type.
@@ -1186,6 +1208,7 @@ waza emit_call(code: arm64.Assembler, patches: []macho.AddressPatch,
 waza emit_block(code: arm64.Assembler, patches: []macho.AddressPatch, file: mochi.File,
     type_result: types.TypeAnalysis, ids: []int64, data: []uint8, prefix: string, function_id: int64) -> LowerError? {
     kaku offset = 0;
+    kaku targets = jump_targets(data); kaku held = iie; kaku run = 0;
     aida (offset < len(data)) {
         arm64.assembler_label(code, block_label(prefix, offset));
         kaku live_depth = len(type_result.blocks[function_id + 1].entry[offset]);
@@ -1208,14 +1231,25 @@ waza emit_block(code: arm64.Assembler, patches: []macho.AddressPatch, file: moch
         moshi (attached_roots_enabled(code)) {
             kaku roots=emit_shadow_push(code,patches,type_result,function_id,type_result.blocks[function_id+1].entry[offset]);
             moshi(roots<0){kaesu LowerError.UnsafeType((function_id+1)*1000000+offset*100+opcode);}
-            arm64.assembler_bl(code,"attached_roots_poll");
             kaku heap_step=opcode>=30 || opcode==19 || opcode==23;
             // A heap step enters a stopped Epoch (heap exclusion) before the opcode body. It is needed only when the body can allocate, publish a
             // reference, run a write barrier or touch captured-cell storage; see heap_step_exempt for the audited exemptions. The solved Safepoint
             // poll and the shadow-root publication above stay for EVERY opcode.
             moshi(heap_step && heap_step_exempt(code,type_result,function_id,offset,opcode,operand,instruction_width)){heap_step=iie;}
+            // Retention: the poll of an opcode that continues a straight-line run of this thread's epoch republishes the roots but does not release
+            // the epoch (attached_roots_retain). Never in old_mark/old_sweep builds, never into a branch target, never for an opcode that branches,
+            // calls, returns or prints (the epoch is released BEFORE it, so nothing blocks or runs long while holding it), never beyond retain_limit.
+            kaku retain = iie;
+            moshi(worker_roots_enabled(code) && !old_sweep_enabled(code) && !old_mark_proto_enabled(code) && held && run < retain_limit && !targets[offset] && !epoch_breaker(opcode)){retain = hai;}
+            moshi(retain){arm64.assembler_bl(code,"attached_roots_retain");}
+            sore{arm64.assembler_bl(code,"attached_roots_poll");}
             moshi(worker_roots_enabled(code) && heap_step){
                 arm64.assembler_bl(code,"attached_heap_enter");
+            }
+            moshi(epoch_breaker(opcode)){held = iie; run = 0;}
+            sore {
+                moshi(heap_step){ held = hai; moshi(retain){run = run + 1;} sore {run = 0;} }
+                sore { moshi(retain){run = run + 1;} sore {held = iie; run = 0;} }
             }
             moshi(old_mark_proto_enabled(code)){
                 kaku change=opcode>=30 && opcode!=31 && opcode!=32 && opcode!=33 && opcode!=35 && opcode!=48 && opcode!=30 && opcode!=36 && opcode!=38 && opcode!=44 && opcode!=46 && opcode!=56 && opcode!=57 && opcode!=58 && opcode!=62 && opcode!=40 && opcode!=54 && opcode!=55 && opcode!=65 && opcode!=34 && opcode!=37 && opcode!=39 && opcode!=45 && opcode!=47 && opcode!=49 && opcode!=60 && opcode!=66 && opcode!=67 && opcode!=41 && opcode!=42 && opcode!=43 && opcode!=59 && opcode!=61 && opcode!=63 && opcode!=64 && opcode!=50 && opcode!=51 && opcode!=52 && opcode!=53;

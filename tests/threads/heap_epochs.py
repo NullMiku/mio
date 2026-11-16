@@ -5,7 +5,10 @@ The program is cross-built with `mio build --target=darwin-arm64 --emit-symbols`
 function, the call sites of the runtime routines `attached_heap_enter` (enter a stopped Epoch) and `attached_roots_poll` (solved Safepoint poll)
 are counted. This is a static code-generation check: it runs on any host, needs no macOS, and says nothing about run-time behaviour (that is
 tests/threads/heap_epochs.mio executed by darwin-thread-programs on a real Mac). Expectations:
-  - every function keeps its Safepoint polls (polls > 0), whatever its heap sites;
+  - every function keeps a Safepoint poll before every opcode (polls + retains > 0; a retained poll is `attached_roots_retain`, which republishes the roots
+    and keeps the thread's own epoch instead of releasing it, see the design document, section 8);
+  - epoch retention never appears without an epoch to retain: scalar_loop and read_loop have no retain sites, ref_store (an allocation followed by
+    stores in the same straight-line run) has at least one;
   - scalar_loop and read_loop (scalar stores, array/field reads) have NO heap-entering site;
   - ref_store, captured and nullable (reference/array stores, captured cell, nullable boxing) keep at least one.
 Exit 0 on PASS, 1 on FAIL, 2 on a build problem.
@@ -39,7 +42,7 @@ def text_section(data):
 
 
 def count_sites(image, symbols):
-    """name -> [heap_enter call sites, roots_poll call sites]; runtime routines are keyed 'rt:<name>' and ignored."""
+    """name -> [heap_enter call sites, roots_poll call sites, roots_retain call sites]; runtime routines ('rt:<name>') are ignored."""
     data = Path(image).read_bytes()
     offset, size = text_section(data)
     entries = []
@@ -50,7 +53,7 @@ def count_sites(image, symbols):
     entries.sort()
     words = [w for w, _ in entries]
     routine = {name[3:]: word for word, name in entries if name.startswith("rt:")}
-    heap, poll = routine["attached_heap_enter"], routine["attached_roots_poll"]
+    heap, poll, retain = routine["attached_heap_enter"], routine["attached_roots_poll"], routine.get("attached_roots_retain", -1)
     result = {}
     for index in range(size // 4):
         word = struct.unpack_from("<I", data, offset + 4 * index)[0]
@@ -60,12 +63,12 @@ def count_sites(image, symbols):
         if delta >> 25:
             delta -= 1 << 26
         target = index + delta
-        if target not in (heap, poll):
+        if target not in (heap, poll, retain):
             continue
         name = entries[bisect.bisect_right(words, index) - 1][1]
         if name.startswith("rt:"):
             continue
-        result.setdefault(name, [0, 0])[0 if target == heap else 1] += 1
+        result.setdefault(name, [0, 0, 0])[0 if target == heap else 1 if target == poll else 2] += 1
     return result
 
 
@@ -89,9 +92,13 @@ def main():
         sites = count_sites(image, symbols)
     failures = []
     for name in NO_SITES + KEEP_SITES:
-        heap, poll = sites.get(name, [0, 0])
-        print("%-12s heap_enter sites %3d   safepoint polls %3d" % (name, heap, poll))
-        if poll == 0:
+        heap, poll, retain = sites.get(name, [0, 0, 0])
+        print("%-12s heap_enter sites %3d   safepoint polls %3d   retained polls %3d" % (name, heap, poll, retain))
+        if name in NO_SITES and retain != 0:
+            failures.append("%s: %d retained polls without an epoch to retain" % (name, retain))
+        if name == "ref_store" and retain == 0:
+            failures.append("ref_store: no retained poll (epoch retention not applied)")
+        if poll + retain == 0:
             failures.append("%s: no Safepoint poll (missing function or polls removed)" % name)
         if name in NO_SITES and heap != 0:
             failures.append("%s: %d heap-entering sites, expected 0" % (name, heap))
