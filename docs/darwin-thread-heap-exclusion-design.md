@@ -128,6 +128,15 @@ Expected benefit: only single-mutator phases of thread-enabled programs (main be
 * Roots remain valid because the poll/push are unchanged; the real collection path still calls `gc_begin` and obtains ownership.
 Not implemented here because it cannot be validated without native Darwin runs of the start/join, nested and shutdown suites.
 
+## 7. Native measurements after the epoch classification, and the next step chosen
+
+Run 43818508856 (head dc858dd), `mpmc_long` sampled 25 s in, symbolized: `native_word_wait_spin` 43.2 %, `__psynch_cvwait` 41.9 %, epoch frames about 10 %. Same-job phases (runs 43823333447, 43825301236): alloc_1 4.7-5.2 s, alloc_2 81.5-94 s (baseline over the 120 s budget), alloc_4 over the 120 s budget on both sides.
+
+Two candidates remain; only one was taken, and why:
+
+1. **Allocation epoch cost (alloc_2/alloc_4).** Every allocation is a full epoch (`runtime_alloc` -> `gc_heap_enter` -> roots snapshot) and with a second running thread each epoch costs a park/wake of that thread. Fixing it means changing heap ownership (sections 4.1-4.7). Sections 4.5/4.7 still list unresolved invariants (array reads under a heap lock, non-opcode heap callers `worker_heap_alloc`/`worker_sweep_*`/nativefs, the snapshot in a fast path, `heap_lock` wake loss) that cannot be bounded and validated by a one-commit change, and no profile of alloc_2 existed. Not taken. The phase driver now samples alloc_2/alloc_4 (`--sample-after`, `--symbols`) so the next decision rests on a measured profile.
+2. **Channel word_wait spin.** Measured at 43 % of all samples under oversubscription (9 channel threads, 3 cores). The spin does not poll a safepoint, so a collector that needs this thread's acknowledgement also waits for it. Taken as a controlled experiment: the per-call budget drops from 4000 to 128 reads (`worker_roots.mio`). It changes no heap access, no ordering and no handshake: the waiter-count announce (`word_add` with `dmb ish`), the compare-and-wait in the kernel, the GC-safe blocked region (`attached_native_enter/leave`) and the predicate re-checks are untouched. The budget belongs to one call, never spans an epoch change, and nothing resembling the #113 collector-park spin is added. If CPU time or elapsed time does not improve in the same-job alternating comparison, the commit is reverted by a normal follow-up commit and the evidence is kept.
+
 ## 6. Validation status
 
 See DARWIN_THREADS_REPORT.md of the task (native Darwin: NOT_RUN). Commands to run on an Apple M4 Pro are listed there; the benchmark driver is `scripts/ci/thread_bench.py`.

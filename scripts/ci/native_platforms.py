@@ -820,7 +820,8 @@ def darwin_thread_bench(report, cli, work):
     report.check("darwin-thread-bench", "PASS" if complete else "FAIL", "native", " | ".join(lines)[:1500], required=False)
 
 
-BASELINE_SHA = "54ff14d6173a1e9faad30820f49e138bd071bd53"
+# Baseline of the phase comparison: the last measured candidate head of PR #115 (epoch classification + seed pin), before the channel-wait spin change.
+BASELINE_SHA = "21cfc1ab412775440f75421855711b315b3f62fe"
 
 
 def darwin_thread_phases(report, cli, work):
@@ -829,9 +830,13 @@ def darwin_thread_phases(report, cli, work):
     start_join, fan_join, pingpong or the alloc_* phases. PASS only if every benchmark phase is COMPLETE (probe excluded)."""
     import json
     Path(work).mkdir(parents=True, exist_ok=True)
-    phases = ["start_join", "fan_join", "pingpong", "alloc_1", "alloc_2", "alloc_4", "mpmc_probe", "mpmc"]
-    argv = [sys.executable, ROOT / "scripts/ci/thread_bench.py", "--mio", str(cli), "--target", "darwin-arm64", "--repeat", "1", "--budget", "120",
-            "--output", str(Path(work) / "phases")]
+    # Weak scaling alloc_1/2/4 (2000000 iterations per thread), strong scaling alloc_s1/alloc_s4 (4000000 in total; alloc_2 is the 2-thread point),
+    # the original mpmc_long reproducer (unchanged program, 120 s watchdog) and the bounded probe. Everything lands under logs/ so the CI upload keeps
+    # reports, raw stdout/stderr of every run (failed and timed-out ones too), samples and symbol maps.
+    phases = ["start_join", "fan_join", "pingpong", "alloc_1", "alloc_2", "alloc_4", "alloc_s1", "alloc_s4", "mpmc_probe", "mpmc_long"]
+    phases_dir = report.logs / "thread-phases"
+    argv = [sys.executable, ROOT / "scripts/ci/thread_bench.py", "--mio", str(cli), "--target", "darwin-arm64", "--repeat", "2", "--budget", "120",
+            "--sample-after", "25", "--symbols", "--output", str(phases_dir)]
     # Baseline compiler: the pre-change tree (BASELINE_SHA, origin/Mio-2.2.0 before the epoch classification) built natively by the compiler under test,
     # so baseline and candidate images run on the same runner in the same job. If it cannot be built the phases run for the candidate only.
     base_dir = Path(work) / "baseline-src"
@@ -847,15 +852,15 @@ def darwin_thread_phases(report, cli, work):
             argv += ["--baseline-mio", str(base_cli)]
     for phase in phases:
         argv += ["--phase", phase]
-    code, out, err, seconds = run(report, "darwin-thread-phases-run", argv, timeout=4200)
+    code, out, err, seconds = run(report, "darwin-thread-phases-run", argv, timeout=6600)
     lines = []
     try:
-        data = json.loads((Path(work) / "phases" / "report.json").read_text())
+        data = json.loads((phases_dir / "report.json").read_text())
         for phase, entry in data["phases"].items():
             for label, contender in entry["contenders"].items():
-                run0 = contender.get("runs", [{}])[0] if contender.get("runs") else {}
-                lines.append("%s/%s=%s %.1fs %s" % (phase, label[:4], contender.get("status"), run0.get("wall_s", 0), " ".join(
-                    "%s,%s,%s" % (k, v[0], v[1]) for k, v in (run0.get("rows") or {}).items())[:120]))
+                runs = contender.get("runs") or []
+                lines.append("%s/%s=%s wall%s cpu%s" % (phase, label[:4], contender.get("status"),
+                             [r.get("wall_s") for r in runs], [round(r.get("user_s", 0) + r.get("system_s", 0), 1) for r in runs]))
     except (OSError, ValueError, KeyError) as problem:
         lines.append("no report: %s" % problem)
     report.check("darwin-thread-phases", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:4000], required=False)

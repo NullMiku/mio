@@ -6,7 +6,7 @@ ones of the combined program) and run as its own process with its own budget: an
 if the process exited 0, was not killed by the budget, printed exactly the expected measurement line(s) and the work count matches. Partial output of a
 timed-out phase is kept as partial evidence and never counted as a measurement.
 
-  phases:   start_join fan_join pingpong mpmc alloc_1 alloc_2 alloc_4 mpmc_probe   (and `all`: the original combined program, original 240 s budget)
+  phases:   start_join fan_join pingpong mpmc alloc_1 alloc_2 alloc_4 alloc_s1 alloc_s4 mpmc_probe mpmc_long   (and `all`: the original combined program, original 240 s budget)
   examples: scripts/ci/thread_bench.py --mio build/mio --target darwin-arm64 --repeat 5 --output build/bench/candidate
             scripts/ci/thread_bench.py --mio build/mio-candidate --baseline-mio build/mio-baseline --phase mpmc --phase pingpong --repeat 5
 
@@ -38,7 +38,12 @@ PHASES = {
     "alloc_2": ("alloc_scale(2);", "alloc_2", 4000000, 120),
     "alloc_4": ("alloc_scale(4);", "alloc_4", 8000000, 120),
     "mpmc_probe": ("mpmc_probe();", "mpmc_probe", None, 120),
+    "alloc_s1": ("alloc_strong(1);", "alloc_s1", 4000000, 120),   # STRONG scaling: 4000000 iterations in total over 1 or 4 threads
+    "alloc_s4": ("alloc_strong(4);", "alloc_s4", 4000000, 120),
+    # the original reproducer program tests/threads/mpmc_long.mio, unchanged, with its own 120 s watchdog
+    "mpmc_long": (None, "mpmc_long", None, 120),
 }
+FILES = {"mpmc_long": ROOT / "tests/threads/mpmc_long.mio"}
 ORDER = ["start_join", "fan_join", "pingpong", "mpmc", "alloc_1", "alloc_2", "alloc_4"]
 ALL_EXPECTED = {name: PHASES[name][2] for name in ORDER}
 ALL_BUDGET = 240   # the budget of the original darwin-thread-bench run
@@ -57,15 +62,20 @@ def host_target():
     return None
 
 
-def build(mio, call, target, work, label, bunko_root):
-    text = SOURCE.read_text()
-    marker = "\nrun();\n"
-    if not text.endswith(marker):
-        raise SystemExit("efficiency.mio must end with a bare `run();` line")
-    source = work / (label + ".mio")
-    source.write_text(text[:-len(marker)] + "\n" + call + "\n")
+def build(mio, call, target, work, label, bunko_root, phase=None, symbols=False):
+    if phase in FILES:
+        source = FILES[phase]
+    else:
+        text = SOURCE.read_text()
+        marker = "\nrun();\n"
+        if not text.endswith(marker):
+            raise SystemExit("efficiency.mio must end with a bare `run();` line")
+        source = work / (label + ".mio")
+        source.write_text(text[:-len(marker)] + "\n" + call + "\n")
     image = work / label
     argv = [str(mio), "build", str(source), "--target=" + target, "-o", str(image)]
+    if symbols and target == "darwin-arm64":
+        argv += ["--emit-symbols", str(work / (label + ".sym"))]
     if bunko_root:
         argv += ["--bunko-root", str(bunko_root)]
     done = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
@@ -75,21 +85,31 @@ def build(mio, call, target, work, label, bunko_root):
     return image, ""
 
 
-def run_once(image, budget):
+def run_once(image, budget, sample_after=0, sample_path=None):
+    """Run one image under a budget. A run still alive after sample_after seconds (macOS only) gets a `sample` of all threads written to sample_path."""
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     start = time.monotonic()
-    timed_out = False
+    proc = subprocess.Popen([str(image)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    timed_out, sampled = False, None
     try:
-        done = subprocess.run([str(image)], capture_output=True, text=True, timeout=budget)
-        code, out, err = done.returncode, done.stdout, done.stderr
-    except subprocess.TimeoutExpired as expired:
+        if sample_after and sample_after < budget and sample_path and Path("/usr/bin/sample").exists():
+            try:
+                out, err = proc.communicate(timeout=sample_after)
+            except subprocess.TimeoutExpired:
+                taken = subprocess.run(["/usr/bin/sample", str(proc.pid), "3", "1", "-mayDie", "-file", str(sample_path)], capture_output=True, text=True, timeout=120)
+                sampled = taken.returncode == 0 and Path(sample_path).is_file()
+                out, err = proc.communicate(timeout=max(1, budget - (time.monotonic() - start)))
+        else:
+            out, err = proc.communicate(timeout=budget)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
         timed_out, code = True, None
-        out = (expired.stdout.decode() if isinstance(expired.stdout, bytes) else expired.stdout) or ""
-        err = (expired.stderr.decode() if isinstance(expired.stderr, bytes) else expired.stderr) or ""
     wall = time.monotonic() - start
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
     return dict(exit=code, timed_out=timed_out, wall_s=round(wall, 3), user_s=round(after.ru_utime - before.ru_utime, 3),
-                system_s=round(after.ru_stime - before.ru_stime, 3), stdout=out, stderr=err[-300:])
+                system_s=round(after.ru_stime - before.ru_stime, 3), stdout=out or "", stderr=(err or "")[-2000:], sampled=sampled)
 
 
 def parse(out):
@@ -112,6 +132,8 @@ def judge(phase, result):
         return "PARTIAL", None, "budget exceeded; partial output %r" % result["stdout"][:200]
     if result["exit"] != 0:
         return "FAIL", None, "exit %s stderr %r" % (result["exit"], result["stderr"][:120])
+    if phase == "mpmc_long":   # tests/threads/mpmc_long.mio prints the received and the sent count
+        return ("COMPLETE", {}, "") if result["stdout"] == "200000\n200000\n" else ("FAIL", None, "wrong output %r" % result["stdout"][:80])
     if rows is None:
         return "FAIL", None, "unparsable output %r" % result["stdout"][:120]
     if phase == "all":
@@ -149,6 +171,8 @@ def main():
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--budget", type=int, help="override every phase budget (seconds); recorded in the report")
     parser.add_argument("--bunko-root", help="Bunko root for BOTH compilers (omit to use each compiler's embedded Bunko)")
+    parser.add_argument("--sample-after", type=int, default=0, help="macOS: `sample` every run still alive after this many seconds into <output>/sample-*.txt")
+    parser.add_argument("--symbols", action="store_true", help="darwin-arm64: build with --emit-symbols (<output>/<phase>-<label>.sym) so samples can be attributed")
     parser.add_argument("--output", default=str(ROOT / "build/thread-bench"))
     args = parser.parse_args()
     if args.target is None:
@@ -176,7 +200,7 @@ def main():
                 if image:
                     os.chmod(image, 0o755)
             else:
-                image, why = build(path, call, args.target, work, "%s-%s" % (phase, label), args.bunko_root)
+                image, why = build(path, call, args.target, work, "%s-%s" % (phase, label), args.bunko_root, phase, args.symbols)
             if image is None:
                 entry["contenders"][label] = dict(status="FAIL", reason="build failed: " + why)
                 failed = True
@@ -192,7 +216,10 @@ def main():
                 for label, _ in contenders:      # alternate: candidate, baseline, candidate, baseline ...
                     if label not in images:
                         continue
-                    result = run_once(images[label], budget)
+                    tag = "%s-%s-%d" % (phase, label, repeat)
+                    result = run_once(images[label], budget, args.sample_after, work / ("sample-%s.txt" % tag))
+                    (work / (tag + ".out")).write_text(result["stdout"])   # complete raw output of every run, also of failed and timed-out ones
+                    (work / (tag + ".err")).write_text(result["stderr"])
                     status, rows, why = judge(phase, result)
                     entry["contenders"][label]["runs"].append(dict(status=status, reason=why, rows=rows, **{k: v for k, v in result.items() if k != "stdout"}))
                     print("%-10s %-9s run %d: %-8s exit %s %.1fs %s" % (phase, label, repeat, status, result["exit"], result["wall_s"], why), flush=True)
@@ -200,7 +227,7 @@ def main():
                 runs = entry["contenders"][label]["runs"]
                 complete = [r for r in runs if r["status"] == "COMPLETE"]
                 entry["contenders"][label]["status"] = "COMPLETE" if len(complete) == len(runs) and runs else ("PARTIAL" if any(r["status"] == "PARTIAL" for r in runs) else "FAIL")
-                if phase not in ("all", "mpmc_probe") and complete:
+                if phase not in ("all", "mpmc_probe", "mpmc_long") and complete:
                     entry["contenders"][label]["elapsed_ms"] = summarize([r["rows"][PHASES[phase][1]][0] for r in complete])
                 entry["contenders"][label]["wall_s"] = summarize([r["wall_s"] for r in runs])
                 entry["contenders"][label]["cpu_s"] = summarize([round(r["user_s"] + r["system_s"], 3) for r in runs])

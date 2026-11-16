@@ -70,8 +70,12 @@ waza emit_word_natives(c:arm64.Assembler,p:[]macho.AddressPatch,first:int64) -> 
     // word_wait(h, i, expected): returns once the word differs from expected, on a wake, or after at most 100 ms (callers re-check).
     arm64.assembler_label(c,"native_word_wait");word_address(c,p,first,"native_word_bad");
     emit(c,arm64.sub_imm_x(31,31,48,iie));emit(c,arm64.str_x(30,31,0));emit(c,arm64.str_x(0,31,8));emit(c,arm64.str_x(1,31,16));emit(c,arm64.str_x(2,31,24));
-    // Short holds are the common case: spin a bounded number of reads (no safepoint needed, it ends in microseconds) before sleeping.
-    wr_num(c,15,4000);arm64.assembler_label(c,"native_word_wait_spin");emit(c,arm64.ldar_x(14,13));emit(c,arm64.cmp_x(14,2));arm64.assembler_b_cond(c,1,"native_word_wait_done");
+    // Short holds are the common case: spin a bounded number of reads (no safepoint, so a collector waiting for this thread's acknowledgement waits
+    // for the whole spin) before sleeping. The budget is for this one call only; it never spans an epoch change and it is not the collector-park spin
+    // that #113 removed. Measured on macOS 15 with 3 cores and 9 channel threads (run 43818508856, mpmc_long): 4000 reads put 43 % of all samples into
+    // this loop, because with more runnable threads than cores the holder that must change the word is usually not running. 128 reads (about a
+    // microsecond at most) still cover a hold by a running thread.
+    wr_num(c,15,128);arm64.assembler_label(c,"native_word_wait_spin");emit(c,arm64.ldar_x(14,13));emit(c,arm64.cmp_x(14,2));arm64.assembler_b_cond(c,1,"native_word_wait_done");
     emit(c,arm64.sub_imm_x(15,15,1,iie));arm64.assembler_cbnz_x(c,15,"native_word_wait_spin");
     // Then block in the kernel on the word (ulock wait, 64-bit compare-and-wait) until a wake or 100 ms (a safety net: callers re-check the word).
     // The thread is in the blocked region for the whole wait, exactly like a blocking write: a stop-the-world collection does not wait for it and its
