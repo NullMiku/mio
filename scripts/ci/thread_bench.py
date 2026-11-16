@@ -62,7 +62,7 @@ def host_target():
     return None
 
 
-def build(mio, call, target, work, label, bunko_root, phase=None, symbols=False):
+def build(mio, call, target, work, label, bunko_root, phase=None, symbols=False, observe=False, env=None):
     if phase in FILES:
         source = FILES[phase]
     else:
@@ -76,20 +76,45 @@ def build(mio, call, target, work, label, bunko_root, phase=None, symbols=False)
     argv = [str(mio), "build", str(source), "--target=" + target, "-o", str(image)]
     if symbols and target == "darwin-arm64":
         argv += ["--emit-symbols", str(work / (label + ".sym"))]
+    if observe and target == "darwin-arm64":
+        argv += ["--observe"]
     if bunko_root:
         argv += ["--bunko-root", str(bunko_root)]
-    done = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True)
+    done = subprocess.run(argv, cwd=ROOT, capture_output=True, text=True, env=dict(os.environ, **(env or {})))
     if done.returncode != 0 or not image.is_file():
         return None, (done.stderr or done.stdout)[-300:]
     os.chmod(image, 0o755)
     return image, ""
 
 
+def time_prefix():
+    """macOS: `/usr/bin/time -l` reports per-run peak RSS and context switches (RUSAGE_CHILDREN's maximum is not per run)."""
+    return ["/usr/bin/time", "-l"] if platform.system() == "Darwin" and Path("/usr/bin/time").exists() else []
+
+
+def split_time_report(err):
+    """(program stderr, {maxrss_bytes, voluntary_csw, involuntary_csw}) from stderr that ends with /usr/bin/time -l output."""
+    info, kept = {}, []
+    for line in err.splitlines():
+        text = line.strip()
+        if text.endswith("maximum resident set size") or text.endswith("voluntary context switches") or text.endswith("involuntary context switches"):
+            number = text.split()[0]
+            if number.isdigit():
+                key = "maxrss_bytes" if "resident" in text else ("involuntary_csw" if text.endswith("involuntary context switches") else "voluntary_csw")
+                info[key] = int(number)
+                continue
+        if text and text.split()[0].replace(".", "").isdigit() and any(w in text for w in ("real", "user", "sys")) and len(text.split()) <= 7:
+            continue
+        kept.append(line)
+    return "\n".join(kept), info
+
+
 def run_once(image, budget, sample_after=0, sample_path=None):
     """Run one image under a budget. A run still alive after sample_after seconds (macOS only) gets a `sample` of all threads written to sample_path."""
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     start = time.monotonic()
-    proc = subprocess.Popen([str(image)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    prefix = time_prefix()
+    proc = subprocess.Popen(prefix + [str(image)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     timed_out, sampled = False, None
     try:
         if sample_after and sample_after < budget and sample_path and Path("/usr/bin/sample").exists():
@@ -108,8 +133,44 @@ def run_once(image, budget, sample_after=0, sample_path=None):
         timed_out, code = True, None
     wall = time.monotonic() - start
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    program_err, usage = split_time_report(err or "")
     return dict(exit=code, timed_out=timed_out, wall_s=round(wall, 3), user_s=round(after.ru_utime - before.ru_utime, 3),
-                system_s=round(after.ru_stime - before.ru_stime, 3), stdout=out or "", stderr=(err or "")[-2000:], sampled=sampled)
+                system_s=round(after.ru_stime - before.ru_stime, 3), stdout=out or "", stderr=program_err[-2000:], stderr_full=program_err, sampled=sampled, **usage)
+
+
+BOUNDS_NS = ["1us", "4us", "16us", "64us", "256us", "1ms", "4ms", "16ms", "inf"]   # upper bounds of the 9 observed wait buckets
+
+
+def parse_observation(err):
+    """`mio-thread name=value` and `mio-gc name=value` lines of an observed (--observe) image's stderr."""
+    values = {}
+    for line in err.splitlines():
+        for tag in ("mio-thread ", "mio-gc "):
+            if line.startswith(tag) and "=" in line:
+                name, _, value = line[len(tag):].partition("=")
+                if value.strip().isdigit():
+                    values[("thread." if tag == "mio-thread " else "gc.") + name] = int(value)
+    return values
+
+
+def summarize_waits(values):
+    """Per kind (heap_enter, poll, block_leave): calls, mean ns, and the upper bound of the bucket holding p50/p95/p99 (bucket resolution, not interpolated)."""
+    result = {}
+    for kind in ("heap_enter", "poll", "block_leave"):
+        buckets = [values.get("thread.%s_bucket_%d" % (kind, i), 0) for i in range(9)]
+        calls = sum(buckets)
+        if not calls:
+            continue
+        def at(fraction):
+            need, seen = fraction * calls, 0
+            for index, count in enumerate(buckets):
+                seen += count
+                if seen >= need:
+                    return BOUNDS_NS[index]
+            return BOUNDS_NS[-1]
+        result[kind] = dict(calls=calls, mean_ns=round(values.get("thread.%s_total_ns" % kind, 0) / calls), max_ns=values.get("thread.%s_max_ns" % kind, 0),
+                            p50_bucket_upper=at(0.50), p95_bucket_upper=at(0.95), p99_bucket_upper=at(0.99), buckets=buckets)
+    return result
 
 
 def parse(out):
@@ -172,6 +233,8 @@ def main():
     parser.add_argument("--budget", type=int, help="override every phase budget (seconds); recorded in the report")
     parser.add_argument("--bunko-root", help="Bunko root for BOTH compilers (omit to use each compiler's embedded Bunko)")
     parser.add_argument("--sample-after", type=int, default=0, help="macOS: `sample` every run still alive after this many seconds into <output>/sample-*.txt")
+    parser.add_argument("--observe", action="store_true", help="darwin-arm64: INSTRUMENTED runs (never timing): build with --observe, once with and once without bounded epoch retention "
+                        "(MIO_OBSERVE_NO_RETENTION=1, same compiler), and report epoch entries, wait-bucket distributions, GC pause counters and peak RSS")
     parser.add_argument("--symbols", action="store_true", help="darwin-arm64: build with --emit-symbols (<output>/<phase>-<label>.sym) so samples can be attributed")
     parser.add_argument("--output", default=str(ROOT / "build/thread-bench"))
     args = parser.parse_args()
@@ -182,6 +245,10 @@ def main():
     work.mkdir(parents=True, exist_ok=True)
     runnable = host_target() == args.target
     contenders = [("candidate", args.mio)] + ([("baseline", args.baseline_mio)] if args.baseline_mio else [])
+    contender_env = {}
+    if args.observe:
+        contenders = [("observed", args.mio), ("observed-noretention", args.mio)]
+        contender_env = {"observed-noretention": {"MIO_OBSERVE_NO_RETENTION": "1"}}
     report = dict(host=dict(system=platform.system(), machine=platform.machine(), release=platform.release(), cpus=os.cpu_count()),
                   target=args.target, executed=runnable, repeat=args.repeat,
                   compilers={label: dict(path=str(path), sha256=sha256(path)) for label, path in contenders}, phases={})
@@ -200,7 +267,7 @@ def main():
                 if image:
                     os.chmod(image, 0o755)
             else:
-                image, why = build(path, call, args.target, work, "%s-%s" % (phase, label), args.bunko_root, phase, args.symbols)
+                image, why = build(path, call, args.target, work, "%s-%s" % (phase, label), args.bunko_root, phase, args.symbols, args.observe, contender_env.get(label))
             if image is None:
                 entry["contenders"][label] = dict(status="FAIL", reason="build failed: " + why)
                 failed = True
@@ -219,9 +286,15 @@ def main():
                     tag = "%s-%s-%d" % (phase, label, repeat)
                     result = run_once(images[label], budget, args.sample_after, work / ("sample-%s.txt" % tag))
                     (work / (tag + ".out")).write_text(result["stdout"])   # complete raw output of every run, also of failed and timed-out ones
-                    (work / (tag + ".err")).write_text(result["stderr"])
+                    (work / (tag + ".err")).write_text(result["stderr_full"])
                     status, rows, why = judge(phase, result)
-                    entry["contenders"][label]["runs"].append(dict(status=status, reason=why, rows=rows, **{k: v for k, v in result.items() if k != "stdout"}))
+                    extra = {}
+                    if args.observe:   # instrumented run: epoch/wait/GC counters printed by the image itself at exit
+                        values = parse_observation(result["stderr_full"])
+                        extra = dict(observation=values, waits=summarize_waits(values), instrumented=True)
+                        if not values and status == "COMPLETE":
+                            status, why = "FAIL", "observed image printed no mio-thread/mio-gc counters"
+                    entry["contenders"][label]["runs"].append(dict(status=status, reason=why, rows=rows, **extra, **{k: v for k, v in result.items() if k not in ("stdout", "stderr_full")}))
                     print("%-10s %-9s run %d: %-8s exit %s %.1fs %s" % (phase, label, repeat, status, result["exit"], result["wall_s"], why), flush=True)
             for label in images:
                 runs = entry["contenders"][label]["runs"]

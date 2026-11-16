@@ -866,6 +866,36 @@ def darwin_thread_phases(report, cli, work):
     report.check("darwin-thread-phases", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:4000], required=False)
 
 
+def darwin_thread_observe(report, cli, work):
+    """Evidence only (non-required, INSTRUMENTED runs, never used for timing): the thread phases built with --observe, once with and once without
+    bounded epoch retention (same compiler, MIO_OBSERVE_NO_RETENTION=1). The images print the epochs entered, the wait distributions of the epoch
+    protocol calls (heap enter, poll/park, block leave), the heap observation record (collections, pause histogram, live/peak bytes) and the driver adds
+    per-run peak RSS and context switches. Reports and raw stderr land under logs/thread-observe (uploaded). PASS only if every run completed and printed counters."""
+    import json
+    Path(work).mkdir(parents=True, exist_ok=True)
+    out_dir = report.logs / "thread-observe"
+    argv = [sys.executable, ROOT / "scripts/ci/thread_bench.py", "--mio", str(cli), "--target", "darwin-arm64", "--observe", "--repeat", "1", "--budget", "120",
+            "--output", str(out_dir)]
+    for phase in ("alloc_1", "alloc_2", "pingpong", "mpmc_probe"):
+        argv += ["--phase", phase]
+    code, out, err, seconds = run(report, "darwin-thread-observe-run", argv, timeout=2400)
+    lines = []
+    try:
+        data = json.loads((out_dir / "report.json").read_text())
+        for phase, entry in data["phases"].items():
+            for label, contender in entry["contenders"].items():
+                runs = contender.get("runs") or []
+                for r in runs:
+                    obs = r.get("observation") or {}
+                    he = (r.get("waits") or {}).get("heap_enter", {})
+                    lines.append("%s/%s=%s epochs=%s heap_enter p95<=%s mean_ns=%s gc=%s rss_mb=%s vcsw=%s" % (
+                        phase, label.replace("observed-", "")[:6], r.get("status"), obs.get("thread.epochs_entered"), he.get("p95_bucket_upper"), he.get("mean_ns"),
+                        obs.get("gc.gc_count"), round(r.get("maxrss_bytes", 0) / 1048576), r.get("voluntary_csw")))
+    except (OSError, ValueError, KeyError) as problem:
+        lines.append("no report: %s" % problem)
+    report.check("darwin-thread-observe", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:4000], required=False)
+
+
 def darwin_thread_repro(report, cli, work):
     """Diagnostic (non-required): tests/threads/pingpong_close.mio, run three times with a stack sample of any run that takes longer than 8 seconds."""
     Path(work).mkdir(parents=True, exist_ok=True)
@@ -1148,6 +1178,7 @@ def follower(args, target):
             darwin_thread_repro(report, cli, work / "thread-repro")
             darwin_thread_bench(report, cli, work / "thread-bench")
             darwin_thread_phases(report, cli, work / "thread-phases")
+            darwin_thread_observe(report, cli, work / "thread-observe")
         mio_run_protocol(report, cli, work)
         os_process_protocol(report, cli, work)
         mio_test_protocol(report, cli, work)
