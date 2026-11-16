@@ -137,6 +137,25 @@ Two candidates remain; only one was taken, and why:
 1. **Allocation epoch cost (alloc_2/alloc_4).** Every allocation is a full epoch (`runtime_alloc` -> `gc_heap_enter` -> roots snapshot) and with a second running thread each epoch costs a park/wake of that thread. Fixing it means changing heap ownership (sections 4.1-4.7). Sections 4.5/4.7 still list unresolved invariants (array reads under a heap lock, non-opcode heap callers `worker_heap_alloc`/`worker_sweep_*`/nativefs, the snapshot in a fast path, `heap_lock` wake loss) that cannot be bounded and validated by a one-commit change, and no profile of alloc_2 existed. Not taken. The phase driver now samples alloc_2/alloc_4 (`--sample-after`, `--symbols`) so the next decision rests on a measured profile.
 2. **Channel word_wait spin.** Measured at 43 % of all samples under oversubscription (9 channel threads, 3 cores). The spin does not poll a safepoint, so a collector that needs this thread's acknowledgement also waits for it. Taken as a controlled experiment: the per-call budget drops from 4000 to 128 reads (`worker_roots.mio`). It changes no heap access, no ordering and no handshake: the waiter-count announce (`word_add` with `dmb ish`), the compare-and-wait in the kernel, the GC-safe blocked region (`attached_native_enter/leave`) and the predicate re-checks are untouched. The budget belongs to one call, never spans an epoch change, and nothing resembling the #113 collector-park spin is added. If CPU time or elapsed time does not improve in the same-job alternating comparison, the commit is reverted by a normal follow-up commit and the evidence is kept.
 
+### 7.1 Result of the experiment (run 43837173035, head f86c362, same job, 2 alternating repetitions, baseline = 21cfc1a)
+
+| workload | baseline wall / CPU (user+system) | candidate wall / CPU | state |
+| --- | --- | --- | --- |
+| mpmc_long (original, 120 s watchdog) | 83.9 s, 79.8 s / 119.7 s, 115.0 s | 78.7 s, 79.0 s / 98.2 s, 98.6 s | all COMPLETE, output 200000/200000 |
+| mpmc_probe, messages in 10 s | 24.3k, 29.4k | 27.9k, 24.9k | within noise |
+| pingpong | 1.22 s, 1.53 s | 0.99 s, 1.47 s | within noise |
+| alloc_1 / alloc_s1 | 5.5 s, 5.2 s / 9.4 s, 10.0 s | 5.1 s, 5.2 s / 9.3 s, 9.8 s | unchanged |
+| alloc_2 (= strong 2 threads) | 87.3 s, 83.9 s | 84.0 s, 108.1 s | noise; both COMPLETE |
+| alloc_4 / alloc_s4 | PARTIAL 120 s (CPU 230 s) | PARTIAL 120 s (CPU 189-224 s) | unchanged, budget exceeded |
+
+Reading: the shorter spin does not raise throughput on the 3-core runner (the epoch protocol, not the spin, bounds it); it lowers CPU time of mpmc_long by about 16 % for the same wall time. Two repetitions per cell: treat the CPU figure as indicative. Not measured: a many-core Mac (the M4 Pro), where a short spin could cost latency; run `pingpong` and `mpmc_probe` there before keeping the value.
+
+### 7.2 What the allocation profile says (samples taken 25 s into alloc_2 and alloc_4, symbolized)
+
+alloc_2: `__psynch_cvwait` 67.1 %, `mach_absolute_time` 9.9 %, `__psynch_cvbroad` 4.3 %, `attached_platform_trylock` 3.5 %, `attached_gc_begin_member` 3.1 %, `pthread_mutex_trylock` 2.7 %. alloc_4: 67.0 %, 9.5 %, 5.9 %, 2.4 %, 2.3 %. No allocator or collector frame appears: the time is the epoch handshake itself (threads parked in `gc_park_locked`, wake broadcast in `gc_end`, clock reads in the owner's acknowledgement loop and the park deadline). Strong scaling confirms it: 4000000 iterations take 9.3 s on one thread, 84 s on two and more than 120 s on four, so the cost per allocation grows with the number of threads.
+
+Smallest next step that does not yet need the full heap-lock protocol: **epoch retention across consecutive heap steps of one thread.** Today a heap opcode's epoch is released by the poll in front of the next opcode (`gc_end`, broadcast) and the next heap opcode immediately re-acquires it (`gc_begin`, acknowledgement loop, every other thread wakes and parks again). Keeping the epoch across a straight-line run of heap opcodes removes those release/acquire pairs. It would need: a bounded run length and release at every back edge, call and block boundary (fairness and collector progress), release before any blocking native (`gc_block_enter` already starts with `gc_mutator_poll`), unchanged root publication per opcode, and a proof that no opcode between the two polls reads state that another thread could have changed (it holds the epoch, so none can). It removes at most the redundant pairs, not the O(threads) cost of the first acquisition; the heap-lock protocol of section 4 is still needed for scaling.
+
 ## 6. Validation status
 
 See DARWIN_THREADS_REPORT.md of the task (native Darwin: NOT_RUN). Commands to run on an Apple M4 Pro are listed there; the benchmark driver is `scripts/ci/thread_bench.py`.
