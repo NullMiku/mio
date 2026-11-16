@@ -820,6 +820,31 @@ def darwin_thread_bench(report, cli, work):
     report.check("darwin-thread-bench", "PASS" if complete else "FAIL", "native", " | ".join(lines)[:1500], required=False)
 
 
+def darwin_thread_phases(report, cli, work):
+    """Evidence only (non-required): every benchmark phase of benchmarks/threads/efficiency.mio built and run as its own process with its own budget
+    (scripts/ci/thread_bench.py), plus the 10 s mpmc_probe that reports per-worker counts. Unlike darwin-thread-bench, an unfinished mpmc cannot hide
+    start_join, fan_join, pingpong or the alloc_* phases. PASS only if every benchmark phase is COMPLETE (probe excluded)."""
+    import json
+    Path(work).mkdir(parents=True, exist_ok=True)
+    phases = ["start_join", "fan_join", "pingpong", "alloc_1", "alloc_2", "alloc_4", "mpmc_probe", "mpmc"]
+    argv = [sys.executable, ROOT / "scripts/ci/thread_bench.py", "--mio", str(cli), "--target", "darwin-arm64", "--repeat", "1", "--budget", "120",
+            "--output", str(Path(work) / "phases")]
+    for phase in phases:
+        argv += ["--phase", phase]
+    code, out, err, seconds = run(report, "darwin-thread-phases-run", argv, timeout=3000)
+    lines = []
+    try:
+        data = json.loads((Path(work) / "phases" / "report.json").read_text())
+        for phase, entry in data["phases"].items():
+            contender = entry["contenders"]["candidate"]
+            run0 = contender.get("runs", [{}])[0] if contender.get("runs") else {}
+            lines.append("%s=%s %.1fs %s" % (phase, contender.get("status"), run0.get("wall_s", 0), " ".join(
+                "%s,%s,%s" % (k, v[0], v[1]) for k, v in (run0.get("rows") or {}).items())[:160]))
+    except (OSError, ValueError, KeyError) as problem:
+        lines.append("no report: %s" % problem)
+    report.check("darwin-thread-phases", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:1500], required=False)
+
+
 def darwin_thread_repro(report, cli, work):
     """Diagnostic (non-required): tests/threads/pingpong_close.mio, run three times with a stack sample of any run that takes longer than 8 seconds."""
     Path(work).mkdir(parents=True, exist_ok=True)
@@ -1101,6 +1126,7 @@ def follower(args, target):
             darwin_thread_faults(report, cli, work / "thread-faults")
             darwin_thread_repro(report, cli, work / "thread-repro")
             darwin_thread_bench(report, cli, work / "thread-bench")
+            darwin_thread_phases(report, cli, work / "thread-phases")
         mio_run_protocol(report, cli, work)
         os_process_protocol(report, cli, work)
         mio_test_protocol(report, cli, work)
