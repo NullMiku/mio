@@ -761,6 +761,28 @@ def darwin_thread_programs(report, cli, work):
     report.check("darwin-thread-programs", "FAIL" if failures else "PASS", "native", "; ".join(failures)[:900], passed=passed)
 
 
+def darwin_thread_epochs(report, cli, work):
+    """Evidence for the heap-exclusion classification (non-required until it has a CI history).
+    Static half: tests/threads/heap_epochs.py cross-builds tests/threads/heap_epochs.mio for darwin-arm64 and counts the heap-entering call sites per
+    function of the emitted image. Run-time half: the same program built natively, normal and --gc-stress, run on this host, output compared."""
+    code, out, err, seconds = run(report, "darwin-thread-epochs-static", [sys.executable, ROOT / "tests/threads/heap_epochs.py", "--mio", str(cli)], timeout=300)
+    problems = [] if code == 0 else ["static: " + brief((out + err).replace("\n", " | "), 300)]
+    Path(work).mkdir(parents=True, exist_ok=True)
+    expected = b"hai\nhai\nhai\nhai\n2465794134\n"
+    for label, extra in (("normal", ()), ("gc-stress", ("--gc-stress",))):
+        image = Path(work) / ("heap-epochs-" + label)
+        ok, reason, _ = cli_build(report, "darwin-thread-epochs-build-" + label, cli, str(ROOT / "tests/threads/heap_epochs.mio"), "darwin-arm64", image, extra=extra)
+        if not ok:
+            problems.append("%s: build failed: %s" % (label, brief(reason, 160)))
+            continue
+        for repeat in range(3):
+            code, out, err, seconds = run_sampled(report, "darwin-thread-epochs-run-%s-%d" % (label, repeat), [image], timeout=180, sample_after=60)
+            if code != 0 or out.encode() != expected:
+                problems.append("%s run %d: exit %s after %.1fs stdout %r stderr %s" % (label, repeat, code, seconds or 0, out[:80], brief(err, 80)))
+                break
+    report.check("darwin-thread-epochs", "FAIL" if problems else "PASS", "native", "; ".join(problems)[:900], required=False)
+
+
 def darwin_thread_probe(report, cli, work):
     """Diagnostic (non-required): tests/threads/limit_probe.mio output, exit status and time are recorded as evidence, never compared."""
     Path(work).mkdir(parents=True, exist_ok=True)
@@ -1075,6 +1097,7 @@ def follower(args, target):
             darwin_thread_core(report, cli, work / "thread-core")
             darwin_thread_probe(report, cli, work / "thread-probe")
             darwin_thread_programs(report, cli, work / "thread-programs")
+            darwin_thread_epochs(report, cli, work / "thread-epochs")
             darwin_thread_faults(report, cli, work / "thread-faults")
             darwin_thread_repro(report, cli, work / "thread-repro")
             darwin_thread_bench(report, cli, work / "thread-bench")

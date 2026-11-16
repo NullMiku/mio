@@ -47,6 +47,8 @@ PROGRAMS = {
     "channel_races": b"80\n",
     "gc_lifecycle": b"913200\n",
     "channel_lifecycle": b"2000\nhai\n9\nhai\n1\n",
+    # Heap-exclusion classification: Epoch-free scalar/read opcodes beside Epoch-owning mutations (docs/darwin-thread-heap-exclusion-design.md)
+    "heap_epochs": b"hai\nhai\nhai\nhai\n2465794134\n",
 }
 # Programs whose process must be killed by a fault (the guard page of a thread stack): name -> (stdout before the fault, signal number)
 FAULTS = {"stack_overflow": (b"hai\n", 11)}

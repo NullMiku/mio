@@ -655,6 +655,44 @@ waza is_raw_producer(opcode: int64) -> bool {
         (opcode >= 50 && opcode <= 55) || opcode == 32 || opcode == 60;
 }
 
+// Opcodes whose body needs no stopped Epoch in the cooperative thread builds.
+//
+// Why an Epoch-free body is safe: gc_begin returns only after every registered thread that is not blocked has acknowledged the Epoch at a
+// solved poll, and a thread acknowledges only at the poll in front of an opcode. So an opcode body that runs without an Epoch of its own is
+// never concurrent with an Epoch owner (an owner waits for it to finish), with a collection, or with any other Epoch-owning mutation. It can
+// only run concurrently with other Epoch-free bodies, which therefore must not write memory that another thread reads. Allocation
+// (runtime_alloc) enters its own Epoch, so exempting an opcode never exempts an allocation. The argument needs every mutation to be a full
+// stop-the-world Epoch: a protocol with a separate, cheaper heap lock (docs/darwin-thread-heap-exclusion-design.md) must re-audit the array
+// reads (31, 32, 60: length and payload pointer are two words that a push can replace) before keeping them Epoch-free.
+//   scalar slot store (19, 23, 49): a non-nullable integer/float/bool value into a global slot or into a non-captured local. The body is one
+//     plain store into __DATA or this thread's own frame: no heap word, header, remembered set, barrier or boxing is involved, and the shadow
+//     roots published before it are unchanged by it. Reference, nullable (boxing allocates) and captured-cell (heap cell + barrier) targets keep the Epoch.
+//   read-only opcodes (32 len, 34 is-nil, 37 field, 39/40 enum tag/payload, 47 upvalue read, 60 capacity, 31 index): loads only, with checks that
+//     end in runtime_error. They write no heap memory and cannot allocate; an index read whose result would be boxed (nullable scalar element)
+//     keeps the Epoch because the box is allocated.
+//   register-only opcodes (50-53 float/int conversions, 55 integer range conversion): arithmetic on the popped operand and a push, failing through
+//     runtime_error; 66 (type constraint) emits no code at all, it only annotates the stack top for the type analysis.
+waza heap_step_exempt(code:arm64.Assembler,type_result:types.TypeAnalysis,function_id:int64,offset:int64,opcode:int64,operand:int64,instruction_width:int64) -> bool {
+    kaku node=-1;
+    moshi(opcode==19 && operand>=0 && operand<len(type_result.globals)){node=type_result.globals[operand];}
+    moshi((opcode==23 || (opcode==49 && !old_sweep_enabled(code))) && function_id>=0){
+        moshi(operand>=0 && operand<len(type_result.locals[function_id])){
+            moshi(!type_result.cells[function_id][operand]){node=type_result.locals[function_id][operand];}
+        }
+    }
+    moshi(node>=0){
+        kaku kind=types.type_kind(type_result,node);
+        moshi(!types.type_nullable(type_result,node) && (kind==types.type_integer || kind==types.type_float32 || kind==types.type_float64 || kind==types.type_bool)){kaesu hai;}
+    }
+    moshi(opcode==32 || opcode==34 || opcode==37 || opcode==39 || opcode==40 || opcode==47 || opcode==60){kaesu hai;}
+    moshi((opcode>=50 && opcode<=53) || opcode==55 || opcode==66){kaesu hai;}
+    moshi(opcode==31){
+        kaku after_read=type_result.blocks[function_id+1].entry[offset+instruction_width];
+        moshi(len(after_read)>0){moshi(!is_nullable_scalar(type_result,after_read[len(after_read)-1])){kaesu hai;}}
+    }
+    kaesu iie;
+}
+
 waza emit_nullable_box(code: arm64.Assembler, patches: []macho.AddressPatch,
     type_result: types.TypeAnalysis, function_id: int64, after: []int64) -> bool {
     // The produced raw scalar is never published under its boxed result type.
@@ -1172,33 +1210,10 @@ waza emit_block(code: arm64.Assembler, patches: []macho.AddressPatch, file: moch
             moshi(roots<0){kaesu LowerError.UnsafeType((function_id+1)*1000000+offset*100+opcode);}
             arm64.assembler_bl(code,"attached_roots_poll");
             kaku heap_step=opcode>=30 || opcode==19 || opcode==23;
-            moshi(old_sweep_enabled(code)){
-                // Keep every solved Safepoint, but a non-nullable scalar store
-                // into a global or a non-captured native local changes no heap
-                // edge/header/remembered metadata and requires no STW epoch.
-                // Cell stores, references and all allocation paths stay owned.
-                kaku node=-1;
-                moshi(opcode==19 && operand>=0 && operand<len(type_result.globals)){node=type_result.globals[operand];}
-                moshi(opcode==23 && function_id>=0){
-                    moshi(operand>=0 && operand<len(type_result.locals[function_id])){
-                        moshi(!type_result.cells[function_id][operand]){node=type_result.locals[function_id][operand];}
-                    }
-                }
-                moshi(node>=0){
-                    kaku kind=types.type_kind(type_result,node);
-                    moshi(!types.type_nullable(type_result,node) && (kind==types.type_integer || kind==types.type_float32 || kind==types.type_float64 || kind==types.type_bool)){heap_step=iie;}
-                }
-                // Nonallocating readers do not change metadata or publish
-                // edges. They run to the next poll without acknowledging a
-                // new stop in the middle of a read; closed Sweep claims cannot
-                // contain a legitimately reachable old operand. Nullable raw
-                // boxing index paths remain conservatively heap-owned.
-                moshi(opcode==32 || opcode==34 || opcode==37 || opcode==39 || opcode==40 || opcode==47 || opcode==60){heap_step=iie;}
-                moshi(opcode==31){
-                    kaku after_read=type_result.blocks[function_id+1].entry[offset+instruction_width];
-                    moshi(len(after_read)>0){moshi(!is_nullable_scalar(type_result,after_read[len(after_read)-1])){heap_step=iie;}}
-                }
-            }
+            // A heap step enters a stopped Epoch (heap exclusion) before the opcode body. It is needed only when the body can allocate, publish a
+            // reference, run a write barrier or touch captured-cell storage; see heap_step_exempt for the audited exemptions. The solved Safepoint
+            // poll and the shadow-root publication above stay for EVERY opcode.
+            moshi(heap_step && heap_step_exempt(code,type_result,function_id,offset,opcode,operand,instruction_width)){heap_step=iie;}
             moshi(worker_roots_enabled(code) && heap_step){
                 arm64.assembler_bl(code,"attached_heap_enter");
             }
