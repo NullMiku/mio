@@ -51,6 +51,8 @@ PROGRAMS = {
     "heap_epochs": b"hai\nhai\nhai\nhai\n2465794134\n",
     # Bounded epoch retention: long straight-line allocation runs on four threads, compared with the sequential result
     "epoch_retention": b"hai\nhai\nhai\nhai\n108827160\n",
+    # Heap-access audit regressions (array growth/read and transfer, captured cell references, nullable boxing, nested initialization)
+    "heap_invariants": b"hai\nhai\nhai\nhai\n310242027\n",
 }
 # Programs whose process must be killed by a fault (the guard page of a thread stack): name -> (stdout before the fault, signal number)
 FAULTS = {"stack_overflow": (b"hai\n", 11)}
