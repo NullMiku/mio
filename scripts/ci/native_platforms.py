@@ -14,7 +14,7 @@ Engines are recorded separately for native execution, build and PE inspection, t
            Windows also runs the two TCP echo examples as separate native processes.
   summary  Combines the platform reports; fails unless every required check is PASS.
 
-This candidate suite does not use the trusted GF4 seed. Stable distribution verifies it separately.
+This candidate suite does not use the trusted native seed. Stable distribution verifies it separately.
 Python only starts processes, compares bytes and writes JSON; it generates no code.
 """
 import argparse
@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT / "tests/windows-amd64"))
 from verify_pe import verify_winsock
 
 sys.path.insert(0, str(ROOT / "scripts/distribution"))
-from seed_evidence import GF4_SEED_SHA256
+from seed_evidence import NATIVE_V21_SEED_SHA256
 from prepare import EMPTY
 
 STARTED = time.monotonic()
@@ -91,8 +91,8 @@ class Report:
                                   url="%s/%s/actions/runs/%s" % (os.environ.get("GITHUB_SERVER_URL", ""),
                                                                  os.environ.get("GITHUB_REPOSITORY", ""),
                                                                  os.environ.get("GITHUB_RUN_ID", ""))),
-                         seed=dict(status="NOT_RUN", sha256=GF4_SEED_SHA256,
-                                   reason="the candidate suite does not use the trusted GF4 Native Seed; "
+                         seed=dict(status="NOT_RUN", sha256=NATIVE_V21_SEED_SHA256,
+                                   reason="the candidate suite does not use the trusted Native Seed (bootstrap-v2.1.0-seed.1); "
                                           "Stage A comes from the Go-hosted reference VM and is not seed-verified"),
                          checks=self.checks, hashes=self.hashes)
         inputs = ROOT / "distribution-input.json"
@@ -1321,7 +1321,7 @@ def summary(args):
     if any(result != "success" for result in jobs.values()):
         overall = "FAIL"
     text = ["## Native verification: %s" % overall, "",
-            "Stage A is go-hosted (Go reference VM runs the pure-Mio Linux lowering); the trusted GF4 Native Seed is "
+            "Stage A is go-hosted (Go reference VM runs the pure-Mio Linux lowering); the trusted Native Seed (bootstrap-v2.1.0-seed.1) is "
             "NOT_RUN. Native execution, builds and static PE checks are recorded separately.", "",
             "| target | status | checks | seed |", "|---|---|---|---|", *rows, ""]
     text.extend(f"- Native {name} job: {result}" for name, result in jobs.items() if result != "success")
