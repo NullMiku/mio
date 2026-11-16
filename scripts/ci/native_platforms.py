@@ -820,6 +820,9 @@ def darwin_thread_bench(report, cli, work):
     report.check("darwin-thread-bench", "PASS" if complete else "FAIL", "native", " | ".join(lines)[:1500], required=False)
 
 
+BASELINE_SHA = "54ff14d6173a1e9faad30820f49e138bd071bd53"
+
+
 def darwin_thread_phases(report, cli, work):
     """Evidence only (non-required): every benchmark phase of benchmarks/threads/efficiency.mio built and run as its own process with its own budget
     (scripts/ci/thread_bench.py), plus the 10 s mpmc_probe that reports per-worker counts. Unlike darwin-thread-bench, an unfinished mpmc cannot hide
@@ -829,20 +832,33 @@ def darwin_thread_phases(report, cli, work):
     phases = ["start_join", "fan_join", "pingpong", "alloc_1", "alloc_2", "alloc_4", "mpmc_probe", "mpmc"]
     argv = [sys.executable, ROOT / "scripts/ci/thread_bench.py", "--mio", str(cli), "--target", "darwin-arm64", "--repeat", "1", "--budget", "120",
             "--output", str(Path(work) / "phases")]
+    # Baseline compiler: the pre-change tree (BASELINE_SHA, origin/Mio-2.2.0 before the epoch classification) built natively by the compiler under test,
+    # so baseline and candidate images run on the same runner in the same job. If it cannot be built the phases run for the candidate only.
+    base_dir = Path(work) / "baseline-src"
+    base_cli = Path(work) / "mio-baseline"
+    shutil.rmtree(base_dir, ignore_errors=True)
+    base_dir.mkdir(parents=True)
+    code, out, err, _ = run(report, "darwin-thread-phases-baseline-fetch", ["git", "fetch", "--depth=1", "origin", BASELINE_SHA], timeout=300)
+    if code == 0:
+        code, out, err, _ = run(report, "darwin-thread-phases-baseline-archive", ["sh", "-c", "git archive %s | tar -x -C %s" % (BASELINE_SHA, base_dir)], timeout=300)
+    if code == 0:
+        ok, reason, _ = cli_build(report, "darwin-thread-phases-baseline-build", cli, "selfhost/cli", "darwin-arm64", base_cli, extra=("--bunko-root", str(base_dir / "bunko")), cwd=base_dir)
+        if ok:
+            argv += ["--baseline-mio", str(base_cli)]
     for phase in phases:
         argv += ["--phase", phase]
-    code, out, err, seconds = run(report, "darwin-thread-phases-run", argv, timeout=3000)
+    code, out, err, seconds = run(report, "darwin-thread-phases-run", argv, timeout=4200)
     lines = []
     try:
         data = json.loads((Path(work) / "phases" / "report.json").read_text())
         for phase, entry in data["phases"].items():
-            contender = entry["contenders"]["candidate"]
-            run0 = contender.get("runs", [{}])[0] if contender.get("runs") else {}
-            lines.append("%s=%s %.1fs %s" % (phase, contender.get("status"), run0.get("wall_s", 0), " ".join(
-                "%s,%s,%s" % (k, v[0], v[1]) for k, v in (run0.get("rows") or {}).items())[:160]))
+            for label, contender in entry["contenders"].items():
+                run0 = contender.get("runs", [{}])[0] if contender.get("runs") else {}
+                lines.append("%s/%s=%s %.1fs %s" % (phase, label[:4], contender.get("status"), run0.get("wall_s", 0), " ".join(
+                    "%s,%s,%s" % (k, v[0], v[1]) for k, v in (run0.get("rows") or {}).items())[:120]))
     except (OSError, ValueError, KeyError) as problem:
         lines.append("no report: %s" % problem)
-    report.check("darwin-thread-phases", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:1500], required=False)
+    report.check("darwin-thread-phases", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:4000], required=False)
 
 
 def darwin_thread_repro(report, cli, work):
