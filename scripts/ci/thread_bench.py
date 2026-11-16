@@ -87,55 +87,40 @@ def build(mio, call, target, work, label, bunko_root, phase=None, symbols=False,
     return image, ""
 
 
-def time_prefix():
-    """macOS: `/usr/bin/time -l` reports per-run peak RSS and context switches (RUSAGE_CHILDREN's maximum is not per run)."""
-    return ["/usr/bin/time", "-l"] if platform.system() == "Darwin" and Path("/usr/bin/time").exists() else []
-
-
-def split_time_report(err):
-    """(program stderr, {maxrss_bytes, voluntary_csw, involuntary_csw}) from stderr that ends with /usr/bin/time -l output."""
-    info, kept = {}, []
-    for line in err.splitlines():
-        text = line.strip()
-        if text.endswith("maximum resident set size") or text.endswith("voluntary context switches") or text.endswith("involuntary context switches"):
-            number = text.split()[0]
-            if number.isdigit():
-                key = "maxrss_bytes" if "resident" in text else ("involuntary_csw" if text.endswith("involuntary context switches") else "voluntary_csw")
-                info[key] = int(number)
-                continue
-        if text and text.split()[0].replace(".", "").isdigit() and any(w in text for w in ("real", "user", "sys")) and len(text.split()) <= 7:
-            continue
-        kept.append(line)
-    return "\n".join(kept), info
-
-
 def run_once(image, budget, sample_after=0, sample_path=None):
-    """Run one image under a budget. A run still alive after sample_after seconds (macOS only) gets a `sample` of all threads written to sample_path."""
-    before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    """Run one image under a budget with per-child resource usage from wait4 (user/system CPU, peak RSS, context switches of THIS process only, exact for
+    runs that are killed at the budget too). The child gets its own process group so the budget kill reaches it. A run still alive after sample_after
+    seconds (macOS only) gets a `sample` of all threads written to sample_path."""
+    import signal, tempfile
     start = time.monotonic()
-    prefix = time_prefix()
-    proc = subprocess.Popen(prefix + [str(image)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    timed_out, sampled = False, None
-    try:
-        if sample_after and sample_after < budget and sample_path and Path("/usr/bin/sample").exists():
-            try:
-                out, err = proc.communicate(timeout=sample_after)
-            except subprocess.TimeoutExpired:
+    with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+        proc = subprocess.Popen([str(image)], stdout=out_f, stderr=err_f, start_new_session=True)
+        sampled, timed_out, status, usage = None, False, None, None
+        while True:
+            pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
+            if pid:
+                break
+            elapsed = time.monotonic() - start
+            if elapsed >= budget:
+                timed_out = True
+                os.killpg(proc.pid, signal.SIGKILL)
+                _, status, usage = os.wait4(proc.pid, 0)
+                break
+            if sample_after and sampled is None and elapsed >= sample_after and sample_path and Path("/usr/bin/sample").exists():
                 taken = subprocess.run(["/usr/bin/sample", str(proc.pid), "3", "1", "-mayDie", "-file", str(sample_path)], capture_output=True, text=True, timeout=120)
                 sampled = taken.returncode == 0 and Path(sample_path).is_file()
-                out, err = proc.communicate(timeout=max(1, budget - (time.monotonic() - start)))
-        else:
-            out, err = proc.communicate(timeout=budget)
-        code = proc.returncode
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        out, err = proc.communicate()
-        timed_out, code = True, None
-    wall = time.monotonic() - start
-    after = resource.getrusage(resource.RUSAGE_CHILDREN)
-    program_err, usage = split_time_report(err or "")
-    return dict(exit=code, timed_out=timed_out, wall_s=round(wall, 3), user_s=round(after.ru_utime - before.ru_utime, 3),
-                system_s=round(after.ru_stime - before.ru_stime, 3), stdout=out or "", stderr=program_err[-2000:], stderr_full=program_err, sampled=sampled, **usage)
+                continue
+            time.sleep(0.005)
+        wall = time.monotonic() - start
+        proc.returncode = 0
+        out_f.seek(0)
+        err_f.seek(0)
+        out, err = out_f.read().decode(errors="replace"), err_f.read().decode(errors="replace")
+    code = None if timed_out else os.waitstatus_to_exitcode(status)
+    scale = 1024 if platform.system() == "Linux" else 1   # ru_maxrss is KiB on Linux, bytes on macOS
+    return dict(exit=code, timed_out=timed_out, wall_s=round(wall, 3), user_s=round(usage.ru_utime, 3), system_s=round(usage.ru_stime, 3), stdout=out,
+                stderr=err[-2000:], stderr_full=err, sampled=sampled, maxrss_bytes=usage.ru_maxrss * scale,
+                voluntary_csw=usage.ru_nvcsw, involuntary_csw=usage.ru_nivcsw)
 
 
 BOUNDS_NS = ["1us", "4us", "16us", "64us", "256us", "1ms", "4ms", "16ms", "inf"]   # upper bounds of the 9 observed wait buckets
