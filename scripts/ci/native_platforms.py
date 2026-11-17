@@ -220,11 +220,11 @@ def peak_rss_mib(err):
     return int(match.group(1)) // 1024 if match else 0
 
 
-def cli_build(report, label, cli, entry, target, output, extra=(), cwd=ROOT):
+def cli_build(report, label, cli, entry, target, output, extra=(), cwd=ROOT, env=None):
     argv = [cli, "build", entry, "--target=" + target, "-o", output, *extra]
     if not report.exec_prefix and platform.system() == "Darwin" and Path("/usr/bin/time").exists():
         argv = ["/usr/bin/time", "-l", *argv]  # resource usage only; the build itself is unchanged
-    code, out, err, seconds = run(report, label, argv, cwd=cwd, timeout=CLI_BUILD_TIMEOUT)
+    code, out, err, seconds = run(report, label, argv, cwd=cwd, timeout=CLI_BUILD_TIMEOUT, env=env)
     ok = code == 0 and Path(output).is_file()
     if ok and not is_windows(target):
         os.chmod(output, 0o755)
@@ -731,8 +731,8 @@ def darwin_thread_programs(report, cli, work):
     spec.loader.exec_module(module)
     names = ["basic", "captures", "nested", "many", "channel_basic", "channel_close", "channel_graphs", "channel_mpmc", "summary_copy",
              "gc_stress", "gc_lifecycle", "channel_races", "channel_lifecycle", "invalid_handles", "creation_limit", "lifecycle_cycles",
-             "shutdown_active", "epoch_retention", "heap_invariants", "alloc_lock"]
-    stress = ["basic", "nested", "channel_basic", "channel_close", "epoch_retention", "heap_invariants"]
+             "shutdown_active", "epoch_retention", "heap_invariants", "alloc_lock", "alloc_lock_stress"]
+    stress = ["basic", "nested", "channel_basic", "channel_close", "epoch_retention", "heap_invariants", "alloc_lock_stress"]
     Path(work).mkdir(parents=True, exist_ok=True)
     failures, passed = [], []
     for name in names:
@@ -925,6 +925,60 @@ def darwin_thread_repro(report, cli, work):
         bad += 0 if (code == 0 and out == expected) else 1
         lines.append("%s: exit %s after %.1fs stdout %r" % (name, code, seconds or 0, out[:40]))
     report.check("darwin-thread-repro", "FAIL" if bad else "PASS", "native", " | ".join(lines)[:1200], required=False)
+
+
+def darwin_thread_lockstress(report, cli, work):
+    """Closes the gap that --gc-stress compiles the allocation lock out (docs/darwin-thread-heap-exclusion-design.md section 12). Test-only image
+    (MIO_ALLOC_LOCK_STRESS=1 with --observe): the real lock fast path and, on every fourth locked attempt, a forced try-failure that falls back to a
+    real collection, with in-lock checks (no stopped world, epoch counter unchanged) that abort the image. Runs repeatedly; PASS needs the exact
+    output AND counters proving that BOTH the lock path (alloc_lock_fast, alloc_lock_invariant_checked) and collections/fallback (alloc_epoch_path,
+    alloc_lock_forced_fail, gc_count) really ran in every run. The `violate` image polls inside the locked region on purpose and must trip the checks
+    in at least one run (detector sensitivity); an unexpected pass of the control is reported FAIL because the checks would then be untested.
+    Non-required until it has passed repeatedly on native runners."""
+    import re
+    Path(work).mkdir(parents=True, exist_ok=True)
+    source = str(ROOT / "tests/threads/alloc_lock_stress.mio")
+    expected = "hai\nhai\nhai\nhai\nhai\n3047825\n"
+    failures, lines = [], []
+
+    def counters(err):
+        found = {}
+        for key, value in re.findall(r"mio-(?:thread|gc) ([a-z_]+)=(\d+)", err):
+            found[key] = int(value)
+        return found
+
+    image = Path(work) / "stress"
+    ok, reason, _ = cli_build(report, "darwin-thread-lockstress-build", cli, source, "darwin-arm64", image, extra=("--observe",), env={"MIO_ALLOC_LOCK_STRESS": "1"})
+    if not ok:
+        report.check("darwin-thread-lockstress", "FAIL", "native", "build failed: " + brief(reason, 300), required=False)
+        return
+    for repeat in range(6):
+        code, out, err, seconds = run_sampled(report, "darwin-thread-lockstress-run-%d" % repeat, [image], timeout=240, sample_after=60)
+        c = counters(err or "")
+        need = ("alloc_lock_fast", "alloc_epoch_path", "alloc_lock_forced_fail", "alloc_lock_invariant_checked", "gc_count")
+        missing = [k for k in need if not c.get(k)]
+        lines.append("run%d exit=%s %.1fs fast=%s epoch_path=%s forced=%s checked=%s gc=%s epochs=%s gave_up=%s" % (
+            repeat, code, seconds or 0, c.get("alloc_lock_fast"), c.get("alloc_epoch_path"), c.get("alloc_lock_forced_fail"),
+            c.get("alloc_lock_invariant_checked"), c.get("gc_count"), c.get("epochs_entered"), c.get("alloc_lock_gave_up")))
+        if code != 0 or out != expected:
+            failures.append("run %d: exit %s stdout %r stderr %s" % (repeat, code, out[:80], brief(err, 120)))
+        elif missing:
+            failures.append("run %d: counters absent or zero (%s): the path under test did not run" % (repeat, ",".join(missing)))
+    control = Path(work) / "violate"
+    ok, reason, _ = cli_build(report, "darwin-thread-lockstress-control-build", cli, source, "darwin-arm64", control, extra=("--observe",), env={"MIO_ALLOC_LOCK_STRESS": "violate"})
+    tripped = 0
+    if ok:
+        for repeat in range(4):
+            code, out, err, seconds = run_sampled(report, "darwin-thread-lockstress-control-run-%d" % repeat, [control], timeout=240, sample_after=60)
+            lines.append("control%d exit=%s %.1fs" % (repeat, code, seconds or 0))
+            if code != 0:
+                tripped += 1
+        if not tripped:
+            failures.append("control image (poll inside the lock) never tripped the in-lock checks in 4 runs: detector sensitivity not shown")
+    else:
+        failures.append("control build failed: " + brief(reason, 200))
+    lines.append("control tripped %d of 4" % tripped)
+    report.check("darwin-thread-lockstress", "FAIL" if failures else "PASS", "native", ("; ".join(failures) + " | " + " | ".join(lines))[:9000], required=False)
 
 
 def darwin_thread_faults(report, cli, work):
@@ -1178,6 +1232,7 @@ def follower(args, target):
             darwin_thread_probe(report, cli, work / "thread-probe")
             darwin_thread_programs(report, cli, work / "thread-programs")
             darwin_thread_epochs(report, cli, work / "thread-epochs")
+            darwin_thread_lockstress(report, cli, work / "thread-lockstress")
             darwin_thread_faults(report, cli, work / "thread-faults")
             darwin_thread_repro(report, cli, work / "thread-repro")
             darwin_thread_bench(report, cli, work / "thread-bench")

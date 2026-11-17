@@ -54,6 +54,8 @@ PROGRAMS = {
     # Heap-access audit regressions (array growth/read and transfer, captured cell references, nullable boxing, nested initialization)
     "heap_invariants": b"hai\nhai\nhai\nhai\n310242027\n",
     "alloc_lock": b"hai\nhai\nhai\nhai\nhai\n1349806440710\n",
+    # Small-workload variant of alloc_lock with managed fields, enums and in-place mutation: the program of the Darwin lock-stress image (design doc section 12)
+    "alloc_lock_stress": b"hai\nhai\nhai\nhai\nhai\n3047825\n",
 }
 # Programs whose process must be killed by a fault (the guard page of a thread stack): name -> (stdout before the fault, signal number)
 FAULTS = {"stack_overflow": (b"hai\n", 11)}

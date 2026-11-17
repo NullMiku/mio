@@ -268,3 +268,25 @@ New `mio-thread` counters: `alloc_lock_fast` (allocations served under the lock)
 
 ### 11.7 Regression and measurement
 `tests/threads/alloc_lock.mio` (four workers plus main, 300000 iterations each of struct + array-literal allocation with a rolling survivor window, array growth and a 700-element array every 5000 iterations that leaves the fast path; every total compared with the sequential value; Linux-x86-64 runs it too, GC-stress is skipped because the lock is compiled out there) and the existing `epoch_retention`, `heap_invariants`, `heap_epochs`, `gc_stress`, `gc_lifecycle`, `channel_*`. Native: `darwin-thread-programs` (normal and stress), `darwin-thread-phases` (same-job alternating A/B against head ebff537) and `darwin-thread-observe`.
+
+## 12. Lock-stress validation image (test/instrumentation only)
+
+### 12.1 The gap
+`--gc-stress` makes the allocator collect at every allocation, which is incompatible with try mode (no collection under the lock), so section 11 compiled the lock out of gc-stress images. The existing gc-stress checks therefore never ran the lock fast path, and natural-GC benchmarks only collect when the heap goal is crossed (117 collections in 8 million allocations in `alloc_2`). Neither is stress coverage of the lock path.
+
+### 12.2 Mechanism (selected only by `MIO_ALLOC_LOCK_STRESS=1` together with `--observe`; never by default)
+The image is built with `gc_stress` = true *and* the lock, so the fallback path (the unchanged Epoch + snapshot + `runtime_alloc_legacy`) collects at every allocation it serves, and the lock path serves the rest:
+* **Forced try-failure.** Under the lock, every fourth attempt (a counter in context 0's tail, touched only while holding the lock) releases the lock and takes the fallback without touching the heap. So about a quarter of lock-eligible allocations end in a real collection, the other three quarters run the real `runtime_alloc_try` concurrently with the other threads' collections and mutations.
+* **Try mode never collects.** The stress collect in the allocator body is skipped when `x21 = 256` (`runtime_stress_try_skip`); the fallback (`x21 = 0`) collects as in every gc-stress image. Without the lock label these instructions are not emitted.
+* **In-lock invariants** (acquire loads from the registry, checked before the allocator runs and again before the release; a failed check jumps to `runtime_error`): (1) `gc_registry_phase != gc_stopped`, (2) `gc_registry_epoch` is unchanged since entry to the locked region. Only `gc_end` increments the epoch counter and the phase becomes `gc_stopped` only after every non-blocked thread acknowledged at a poll, so a thread that holds the lock without polling can never see either change. This is an independent check of the exclusion argument of 11.3, not a restatement of it.
+* **Counters** (observed image, printed at exit): `alloc_lock_fast`, `alloc_epoch_path`, `alloc_lock_forced_fail`, `alloc_lock_invariant_checked` (lock-served allocations whose invariants were verified), plus the existing `epochs_entered` and `gc_count`.
+* **Detector sensitivity control** (`MIO_ALLOC_LOCK_STRESS=violate`): the same image with one deliberate protocol violation, a poll inside the locked region. The in-lock checks must trip (nonzero exit) in at least one of several runs; a control that never trips means the checks are untested.
+* **Program.** `tests/threads/alloc_lock_stress.mio`: five mutators, structs with managed fields, enum values, linked lists, arrays of structs, element stores into older arrays and array growth (Epoch-owning mutations), results compared with the sequential run. It also runs unchanged in `tests/threads/run.py` (normal and `--gc-stress`) and as an ordinary and `--gc-stress` Darwin program, so the existing stress coverage is untouched and extended.
+
+### 12.3 What it does and does not establish
+* Shows: the lock path and real collections both ran, interleaved, in every run (counters), without a failed in-lock invariant and with exact program output. Repeated native runs and the control give the evidence of record.
+* Does not show: absence of races by construction (stress is evidence, not proof; the argument is 11.3 plus the invariants); behaviour on many-core hardware; timing (the image is instrumented and collects constantly, its speed is meaningless).
+* Memory ordering: the lock word is acquired with `ldaxr` and released with `stlr` as in 11.3; the stress words (epoch seen, attempt counter) are only accessed while holding the lock; the registry reads are `ldar`.
+
+### 12.4 Where it is off and rollback
+Absent from every image built without the variable (byte-identical to the previous head for all non-stress builds, checked over the tests/threads programs for all six targets, normal, `--gc-stress` and `--observe`). Rollback: remove the `darwin-thread-lockstress` check and the `lock_stress` argument; production images do not change.

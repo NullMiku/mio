@@ -708,6 +708,7 @@ waza heap_step_exempt(code:arm64.Assembler,type_result:types.TypeAnalysis,functi
 teisu retain_limit = 16;
 // Heap-lock allocation is compiled in (label worker_alloc_lock) for cooperative thread builds that retain epochs, are not collection-stressed and are
 // not old-heap prototype builds; every other image is byte-identical to one built before the feature existed.
+waza alloc_lock_stress_enabled(code: arm64.Assembler) -> bool { kaesu arm64.assembler_label_word(code, "worker_alloc_lock_stress") >= 0; }
 waza alloc_lock_enabled(code: arm64.Assembler) -> bool { kaesu arm64.assembler_label_word(code, "worker_alloc_lock") >= 0; }
 waza epoch_breaker(opcode: int64) -> bool {
     kaesu opcode == 17 || opcode == 18 || opcode == 22 || opcode == 25 || opcode == 26 || opcode == 27 || opcode == 45 || opcode == 67;
@@ -1953,12 +1954,14 @@ waza emit_runtime_alloc(code: arm64.Assembler, gc_stress: bool, observation: boo
     move_bits(code, 9, uint32(0), uint32(runtime_max_heap_bytes));
     emit(code, arm64.cmp_x(19, 9)); arm64.assembler_b_cond(code, 8, "runtime_alloc_fail");
     moshi (gc_stress) {
+        moshi(alloc_lock_stress_enabled(code)){emit(code,arm64.cmp_imm_x(21,256,iie));arm64.assembler_b_cond(code,2,"runtime_stress_try_skip");}
         moshi(old_mark_proto_enabled(code)){
             arm64.assembler_bl(code,"old_stress_minor");arm64.assembler_cbz_x(code,9,"runtime_stress_major");arm64.assembler_bl(code,"gen_minor");arm64.assembler_b(code,"runtime_stress_collected");arm64.assembler_label(code,"runtime_stress_major");
         }
         arm64.assembler_bl(code,"runtime_collect");
         moshi(old_mark_proto_enabled(code)){arm64.assembler_label(code,"runtime_stress_collected");}
         emit(code,arm64.movz_x(21,1,0));
+        moshi(alloc_lock_stress_enabled(code)){arm64.assembler_label(code,"runtime_stress_try_skip");}
     }
     arm64.assembler_bl(code,"memory_sample");
     arm64.assembler_label(code, "runtime_alloc_retry");
@@ -2343,17 +2346,24 @@ koukai waza compile_with_public_threads(file:mochi.File,capacity:int64,gc_stress
     moshi(start_id<0 || start_id>=len(file.functions) || join_id<0 || join_id>=len(file.functions) || start_id==join_id){kaesu failed(LowerError.InvalidFunction());}
     kaku s=file.functions[start_id];kaku j=file.functions[join_id];
     moshi(s.parameter_count!=1 || !s.returns_value || j.parameter_count!=1 || !j.returns_value){kaesu failed(LowerError.InvalidFunction());}
-    kaesu compile_worker_target(file,gc_stress,capacity,iie,iie,hai,[start_id,join_id,-1,-1],iie,32768,iie,iie,3,hai);
+    kaesu compile_worker_target(file,gc_stress,capacity,iie,iie,hai,[start_id,join_id,-1,-1],iie,32768,iie,iie,3,hai,0);
 }
 // Diagnostic build of the public thread image (mio build --observe): the heap observation record of the single-threaded runtime (collection counts,
 // pause histogram, live/peak bytes, on stderr at exit) plus per-thread timing counters of the epoch protocol (worker_roots.mio, label worker_observe,
 // printed as `mio-thread name=value` lines on stderr by the main thread when it ends). `retention` false builds the same image without bounded epoch
 // retention so the epoch counts of the two can be compared. Never used for timing; a normal build contains none of this code.
+// Test-only image (MIO_ALLOC_LOCK_STRESS=1 with --observe): the real allocation lock fast path next to frequent real collections. See
+// docs/darwin-thread-heap-exclusion-design.md section 12. Never selected by default.
+koukai waza compile_with_public_threads_lock_stress(file:mochi.File,capacity:int64,start_id:int64,join_id:int64,violate:bool) -> LowerResult {
+    moshi(start_id<0||join_id<0||start_id==join_id){kaesu failed(LowerError.InvalidFunction());}
+    kaku mode=1;moshi(violate){mode=2;}
+    kaesu compile_worker_target(file,hai,capacity,hai,iie,hai,[start_id,join_id,-1,-1],iie,32768,iie,iie,3,hai,mode);
+}
 koukai waza compile_with_public_threads_observed(file:mochi.File,capacity:int64,gc_stress:bool,start_id:int64,join_id:int64,retention:bool) -> LowerResult {
     moshi(start_id<0 || start_id>=len(file.functions) || join_id<0 || join_id>=len(file.functions) || start_id==join_id){kaesu failed(LowerError.InvalidFunction());}
     kaku s=file.functions[start_id];kaku j=file.functions[join_id];
     moshi(s.parameter_count!=1 || !s.returns_value || j.parameter_count!=1 || !j.returns_value){kaesu failed(LowerError.InvalidFunction());}
-    kaesu compile_worker_target(file,gc_stress,capacity,hai,iie,hai,[start_id,join_id,-1,-1],iie,32768,iie,iie,3,retention);
+    kaesu compile_worker_target(file,gc_stress,capacity,hai,iie,hai,[start_id,join_id,-1,-1],iie,32768,iie,iie,3,retention,0);
 }
 // Experimental Old collector with typed SATB and coordinated allocation/Minor.
 // Unsupported writes still Abort/join. This is not full E4 capability acceptance.
@@ -2382,19 +2392,19 @@ waza compile_old_profile(file:mochi.File,capacity:int64,queue_slots:int64,gc_str
     kaesu compile_worker_impl(file,gc_stress,capacity,iie,iie,hai,bindings,hai,queue_slots,full_sweep,release_fault);
 }
 waza compile_worker_impl(input_file: mochi.File, gc_stress: bool, capacity: int64, observation: bool, adaptive: bool, attached:bool, worker_bindings:[]int64, old_proto:bool, queue_slots:int64, full_sweep:bool, release_fault:bool) -> LowerResult {
-    kaesu compile_worker_target(input_file,gc_stress,capacity,observation,adaptive,attached,worker_bindings,old_proto,queue_slots,full_sweep,release_fault,0,hai);
+    kaesu compile_worker_target(input_file,gc_stress,capacity,observation,adaptive,attached,worker_bindings,old_proto,queue_slots,full_sweep,release_fault,0,hai,0);
 }
 // Linux AArch64 target: the same lowering and runtime as Darwin, with every Darwin system call routed through the
 // linux_syscall adapter (linuxabi.mio). The caller links the words with an ELF container (kiso/aot/linuxarm64).
 koukai waza compile_linux_arm64(file: mochi.File, capacity: int64, gc_stress: bool) -> LowerResult {
-    kaesu compile_worker_target(file,gc_stress,capacity,iie,iie,iie,[],iie,32768,iie,iie,1,hai);
+    kaesu compile_worker_target(file,gc_stress,capacity,iie,iie,iie,[],iie,32768,iie,iie,1,hai,0);
 }
 // Windows ARM64 target: the same lowering and runtime, with every Darwin system call routed through the windows_syscall adapter
 // (winabi.mio, Win32 imports) and a PE entry routine windows_start. The caller packages the words with kiso/aot/winarm64.
 koukai waza compile_windows_arm64(file: mochi.File, capacity: int64, gc_stress: bool) -> LowerResult {
-    kaesu compile_worker_target(file,gc_stress,capacity,iie,iie,iie,[],iie,32768,iie,iie,2,hai);
+    kaesu compile_worker_target(file,gc_stress,capacity,iie,iie,iie,[],iie,32768,iie,iie,2,hai,0);
 }
-waza compile_worker_target(input_file: mochi.File, gc_stress: bool, capacity: int64, observation: bool, adaptive: bool, attached:bool, worker_bindings:[]int64, old_proto:bool, queue_slots:int64, full_sweep:bool, release_fault:bool, abi: int64, retention: bool) -> LowerResult {
+waza compile_worker_target(input_file: mochi.File, gc_stress: bool, capacity: int64, observation: bool, adaptive: bool, attached:bool, worker_bindings:[]int64, old_proto:bool, queue_slots:int64, full_sweep:bool, release_fault:bool, abi: int64, retention: bool, lock_stress: int64) -> LowerResult {
     kaku file = input_file;
     kaku metadata_bytes = runtime_metadata_bytes;
     moshi (observation) { metadata_bytes = observation_metadata_bytes; }
@@ -2434,7 +2444,9 @@ waza compile_worker_target(input_file: mochi.File, gc_stress: bool, capacity: in
     moshi(abi!=3){arm64.assembler_label(code,"worker_evidence");}
     moshi(observation && abi==3 && len(worker_bindings)>0){arm64.assembler_label(code,"worker_observe");}
     moshi(!retention){arm64.assembler_label(code,"worker_no_retention");}
-    moshi(len(worker_bindings)>0 && retention && !gc_stress && !old_proto && !full_sweep){arm64.assembler_label(code,"worker_alloc_lock");}
+    moshi(len(worker_bindings)>0 && retention && (!gc_stress || lock_stress>0) && !old_proto && !full_sweep){arm64.assembler_label(code,"worker_alloc_lock");}
+    moshi(lock_stress>0 && len(worker_bindings)>0 && retention && abi==3 && observation && gc_stress && !old_proto && !full_sweep){arm64.assembler_label(code,"worker_alloc_lock_stress");}
+    moshi(lock_stress==2 && len(worker_bindings)>0 && retention && abi==3 && observation && gc_stress && !old_proto && !full_sweep){arm64.assembler_label(code,"worker_alloc_lock_violate");}
     moshi(old_proto){arm64.assembler_label(code,"old_mark_proto_enabled");}
     moshi(full_sweep){arm64.assembler_label(code,"old_sweep_enabled");}
     moshi(release_fault){arm64.assembler_label(code,"sweep_unmap_fault_enabled");}

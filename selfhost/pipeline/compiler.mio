@@ -132,6 +132,12 @@ waza build_signed_thread_image(file: mochi.File, capacity: int64, gc_stress: boo
     // --observe: a diagnostic image that prints the heap observation record and the epoch-protocol counters on stderr at exit (never for timing).
     // MIO_OBSERVE_NO_RETENTION=1 builds that image without bounded epoch retention so the epoch counts of both variants can be compared.
     moshi (observation) { lowered = lower.compile_with_public_threads_observed(file, capacity, gc_stress, start_id, join_id, os.getenv("MIO_OBSERVE_NO_RETENTION") != "1"); }
+    // MIO_ALLOC_LOCK_STRESS=1 (with --observe): the test-only image that runs the real allocation lock fast path next to frequent real collections
+    // (docs/darwin-thread-heap-exclusion-design.md section 12). Requires --observe; without it the variable has no effect.
+    // MIO_ALLOC_LOCK_STRESS=violate is the detector-sensitivity control: it polls inside the locked region on purpose, and the in-lock checks must trip.
+    moshi (observation && (os.getenv("MIO_ALLOC_LOCK_STRESS") == "1" || os.getenv("MIO_ALLOC_LOCK_STRESS") == "violate")) {
+        lowered = lower.compile_with_public_threads_lock_stress(file, capacity, start_id, join_id, os.getenv("MIO_ALLOC_LOCK_STRESS") == "violate");
+    }
     // --emit-symbols: the same function/runtime word map as for ordinary images, so stack samples of a thread image can be attributed.
     moshi (symbols != "" && lowered.error == mu) {
         kaku written = write_symbols(symbols, file, lowered);
