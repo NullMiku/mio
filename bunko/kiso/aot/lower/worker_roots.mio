@@ -241,12 +241,17 @@ waza emit_worker_root_runtime(c:arm64.Assembler,p:[]macho.AddressPatch,first:int
         arm64.assembler_b(c,"runtime_alloc_slow");
         arm64.assembler_label(c,"runtime_alloc_locked");
         moshi(wr_lock_stress(c)){
-            // x0/x1 (size, kind) must survive; x9-x12 are free. Invariant 1: no stopped world while the lock is held (phase != gc_stopped).
-            wr_ctx(c,p,first,9,0);emit(c,arm64.add_imm_x(9,9,400,iie));
+            // Lock held. x0/x1 (size, kind) are clobbered by wr_current and reloaded from the saved frame (sp+144/152) before the allocator runs.
+            // Invariant 1: no stopped world while the lock is held, UNLESS this thread owns that epoch itself (an epoch-owning opcode may allocate
+            // through the fast path; everyone else is parked then). Invariant 2: the epoch counter does not move while the lock is held.
+            wr_current(c,p,first);emit(c,arm64.ldr_x(9,0,gc.thread_registry));
+            emit(c,arm64.add_imm_x(12,9,gc.gc_registry_owner,iie));emit(c,arm64.ldar_x(10,12));emit(c,arm64.movz_x(13,0,0));emit(c,arm64.cmp_x(10,0));arm64.assembler_b_cond(c,1,"runtime_alloc_stress_notself");emit(c,arm64.movz_x(13,1,0));
+            arm64.assembler_label(c,"runtime_alloc_stress_notself");
+            wr_ctx(c,p,first,11,0);wr_num(c,12,wr_alloc_lock);emit(c,arm64.add_x(11,11,12));emit(c,arm64.str_x(13,11,24));
+            arm64.assembler_cbnz_x(c,13,"runtime_alloc_stress_phase_ok");
             emit(c,arm64.add_imm_x(12,9,gc.gc_registry_phase,iie));emit(c,arm64.ldar_x(10,12));emit(c,arm64.cmp_imm_x(10,gc.gc_stopped,iie));arm64.assembler_b_cond(c,0,"runtime_error");
-            // remember the epoch counter: it must not move while the lock is held (an epoch that started and ended would have been acknowledged by this thread)
-            emit(c,arm64.add_imm_x(12,9,gc.gc_registry_epoch,iie));emit(c,arm64.ldar_x(10,12));
-            wr_ctx(c,p,first,11,0);wr_num(c,12,wr_alloc_lock);emit(c,arm64.add_x(11,11,12));emit(c,arm64.str_x(10,11,8));
+            arm64.assembler_label(c,"runtime_alloc_stress_phase_ok");
+            emit(c,arm64.add_imm_x(12,9,gc.gc_registry_epoch,iie));emit(c,arm64.ldar_x(10,12));emit(c,arm64.str_x(10,11,8));
             // forced try-failure: every wr_stress_period-th locked attempt gives up without touching the heap, so the Epoch fallback (a real collection here) runs
             emit(c,arm64.ldr_x(10,11,16));emit(c,arm64.add_imm_x(10,10,1,iie));emit(c,arm64.str_x(10,11,16));
             wr_num(c,12,wr_stress_period-1);emit(c,arm64.and_x(12,10,12));arm64.assembler_cbnz_x(c,12,"runtime_alloc_stress_go");
@@ -255,17 +260,20 @@ waza emit_worker_root_runtime(c:arm64.Assembler,p:[]macho.AddressPatch,first:int
             arm64.assembler_b(c,"runtime_alloc_slow");
             arm64.assembler_label(c,"runtime_alloc_stress_go");
             moshi(wr_lock_violate(c)){
-                // control only: acknowledge a pending epoch while holding the lock, then rebuild x0/x1 from the saved request
-                wr_poll(c,p,first,"gc_mutator_poll");emit(c,arm64.ldr_x(0,31,144));emit(c,arm64.ldr_x(1,31,152));
+                // control only: poll while holding the lock (the real protocol forbids it)
+                wr_poll(c,p,first,"gc_mutator_poll");
             }
+            emit(c,arm64.ldr_x(0,31,144));emit(c,arm64.ldr_x(1,31,152));
         }
         arm64.assembler_bl(c,"runtime_alloc_try");
         moshi(wr_lock_stress(c)){
-            // Invariants 1 and 2 again before the release; x0 (the result) is untouched.
+            // Invariants 1 and 2 again before the release; x0 (the result) is untouched (x9-x13 only).
+            wr_ctx(c,p,first,11,0);wr_num(c,12,wr_alloc_lock);emit(c,arm64.add_x(11,11,12));
             wr_ctx(c,p,first,9,0);emit(c,arm64.add_imm_x(9,9,400,iie));
+            emit(c,arm64.ldr_x(13,11,24));arm64.assembler_cbnz_x(c,13,"runtime_alloc_stress_post_ok");
             emit(c,arm64.add_imm_x(12,9,gc.gc_registry_phase,iie));emit(c,arm64.ldar_x(10,12));emit(c,arm64.cmp_imm_x(10,gc.gc_stopped,iie));arm64.assembler_b_cond(c,0,"runtime_error");
-            emit(c,arm64.add_imm_x(12,9,gc.gc_registry_epoch,iie));emit(c,arm64.ldar_x(10,12));
-            wr_ctx(c,p,first,11,0);wr_num(c,12,wr_alloc_lock);emit(c,arm64.add_x(11,11,12));emit(c,arm64.ldr_x(12,11,8));emit(c,arm64.cmp_x(10,12));arm64.assembler_b_cond(c,1,"runtime_error");
+            arm64.assembler_label(c,"runtime_alloc_stress_post_ok");
+            emit(c,arm64.add_imm_x(12,9,gc.gc_registry_epoch,iie));emit(c,arm64.ldar_x(10,12));emit(c,arm64.ldr_x(12,11,8));emit(c,arm64.cmp_x(10,12));arm64.assembler_b_cond(c,1,"runtime_error");
         }
         // release (store-release): the allocator's writes are visible to the next holder, which acquires with ldaxr
         wr_ctx(c,p,first,9,0);wr_num(c,10,wr_alloc_lock);emit(c,arm64.add_x(9,9,10));emit(c,arm64.movz_x(10,0,0));emit(c,arm64.stlr_x(10,9));

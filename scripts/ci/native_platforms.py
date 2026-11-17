@@ -933,7 +933,7 @@ def darwin_thread_lockstress(report, cli, work):
     real collection, with in-lock checks (no stopped world, epoch counter unchanged) that abort the image. Runs repeatedly; PASS needs the exact
     output AND counters proving that BOTH the lock path (alloc_lock_fast, alloc_lock_invariant_checked) and collections/fallback (alloc_epoch_path,
     alloc_lock_forced_fail, gc_count) really ran in every run. The `violate` image polls inside the locked region on purpose and must trip the checks
-    in at least one run (detector sensitivity); an unexpected pass of the control is reported FAIL because the checks would then be untested.
+    in at least one run (detector sensitivity, counted only when the stress image itself passed); an unexpected pass of the control is reported FAIL because the checks would then be untested.
     Non-required until it has passed repeatedly on native runners."""
     import re
     Path(work).mkdir(parents=True, exist_ok=True)
@@ -967,17 +967,21 @@ def darwin_thread_lockstress(report, cli, work):
     control = Path(work) / "violate"
     ok, reason, _ = cli_build(report, "darwin-thread-lockstress-control-build", cli, source, "darwin-arm64", control, extra=("--observe",), env={"MIO_ALLOC_LOCK_STRESS": "violate"})
     tripped = 0
+    stress_failed = bool(failures)
     if ok:
         for repeat in range(4):
             code, out, err, seconds = run_sampled(report, "darwin-thread-lockstress-control-run-%d" % repeat, [control], timeout=240, sample_after=60)
             lines.append("control%d exit=%s %.1fs" % (repeat, code, seconds or 0))
             if code != 0:
                 tripped += 1
-        if not tripped:
+        if stress_failed:
+            # a control that fails because the stress image itself fails shows nothing about the checks
+            lines.append("control INCONCLUSIVE: the stress image failed, so a control failure cannot be attributed to the injected violation")
+        elif not tripped:
             failures.append("control image (poll inside the lock) never tripped the in-lock checks in 4 runs: detector sensitivity not shown")
     else:
         failures.append("control build failed: " + brief(reason, 200))
-    lines.append("control tripped %d of 4" % tripped)
+    lines.append("control tripped %d of 4%s" % (tripped, " (not attributable)" if stress_failed else ""))
     report.check("darwin-thread-lockstress", "FAIL" if failures else "PASS", "native", ("; ".join(failures) + " | " + " | ".join(lines))[:9000], required=False)
 
 
