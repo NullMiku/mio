@@ -9,7 +9,8 @@ tests/threads/heap_epochs.mio executed by darwin-thread-programs on a real Mac).
     and keeps the thread's own epoch instead of releasing it, see the design document, section 8);
   - epoch retention never appears without an epoch to retain: scalar_loop and read_loop have no retain sites, ref_store (an allocation followed by
     stores in the same straight-line run) has at least one;
-  - scalar_loop and read_loop (scalar stores, array/field reads) have NO heap-entering site;
+  - scalar_loop, read_loop (scalar stores, array/field reads) and alloc_only (struct/array literals bound to non-captured locals; allocation lock) have NO
+    heap-entering site;
   - ref_store, captured and nullable (reference/array stores, captured cell, nullable boxing) keep at least one.
 Exit 0 on PASS, 1 on FAIL, 2 on a build problem.
 """
@@ -23,7 +24,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-NO_SITES = ("scalar_loop", "read_loop")
+NO_SITES = ("scalar_loop", "read_loop", "alloc_only")
 KEEP_SITES = ("ref_store", "captured", "nullable")
 
 

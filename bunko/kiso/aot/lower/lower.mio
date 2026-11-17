@@ -680,10 +680,19 @@ waza heap_step_exempt(code:arm64.Assembler,type_result:types.TypeAnalysis,functi
             moshi(!type_result.cells[function_id][operand]){node=type_result.locals[function_id][operand];}
         }
     }
+    // With the allocation lock: a reference (non-nullable-scalar) value into a non-captured local is one plain store into this thread's own frame
+    // (emit_local): no barrier (the barrier and cell code run only for captured locals), no boxing, no heap word. The value stays reachable from the
+    // published operand/local roots exactly as before, and a collector only scans this frame while the thread stands at a poll.
+    moshi(node>=0 && (opcode==23 || opcode==49) && alloc_lock_enabled(code) && types.type_kind(type_result,node)!=types.type_unknown && !is_nullable_scalar(type_result,node)){kaesu hai;}
     moshi(node>=0){
         kaku kind=types.type_kind(type_result,node);
         moshi(!types.type_nullable(type_result,node) && (kind==types.type_integer || kind==types.type_float32 || kind==types.type_float64 || kind==types.type_bool)){kaesu hai;}
     }
+    // Allocation-only constructors (30 and 56 array literal, 57 array of n copies, 36 struct literal, 38 enum value) when the allocation lock exists:
+    // their bodies allocate through runtime_alloc, which takes the allocation lock (a fast path that never collects) or, when it cannot, its own
+    // Epoch, and then only initialize the fresh, unpublished object and pop/push this thread's operand stack. No barrier, remembered-set write or
+    // store into a published object occurs (emit_object, emit_array_construct), so they need no Epoch of their own.
+    moshi(alloc_lock_enabled(code) && (opcode==30 || opcode==36 || opcode==38 || opcode==56 || opcode==57)){kaesu hai;}
     moshi(opcode==32 || opcode==34 || opcode==37 || opcode==39 || opcode==40 || opcode==47 || opcode==60){kaesu hai;}
     moshi((opcode>=50 && opcode<=53) || opcode==55 || opcode==66){kaesu hai;}
     moshi(opcode==31){
@@ -697,6 +706,9 @@ waza heap_step_exempt(code:arm64.Assembler,type_result:types.TypeAnalysis,functi
 // by the following opcodes of the same straight-line run instead of being released by the next poll and entered again. A run ends (the next poll
 // releases the epoch) at a branch target, at any opcode that branches, calls, returns or prints, and after retain_limit opcodes.
 teisu retain_limit = 16;
+// Heap-lock allocation is compiled in (label worker_alloc_lock) for cooperative thread builds that retain epochs, are not collection-stressed and are
+// not old-heap prototype builds; every other image is byte-identical to one built before the feature existed.
+waza alloc_lock_enabled(code: arm64.Assembler) -> bool { kaesu arm64.assembler_label_word(code, "worker_alloc_lock") >= 0; }
 waza epoch_breaker(opcode: int64) -> bool {
     kaesu opcode == 17 || opcode == 18 || opcode == 22 || opcode == 25 || opcode == 26 || opcode == 27 || opcode == 45 || opcode == 67;
 }
@@ -1922,10 +1934,22 @@ waza emit_free_head(code: arm64.Assembler, class: int64, head: int64) -> unit {
 
 waza emit_runtime_alloc(code: arm64.Assembler, gc_stress: bool, observation: bool) -> unit {
     kaku name="runtime_alloc";moshi(worker_roots_enabled(code)){name="runtime_alloc_legacy";}
+    // Heap-lock allocation (docs/darwin-thread-heap-exclusion-design.md, section 11): runtime_alloc_try is the same allocator with x21 = 256 (try mode).
+    // In try mode every edge that would collect, grow the heap, map a large object or report out-of-memory returns 0 instead, without any side effect,
+    // and the caller falls back to the ordinary Epoch path. The caller holds the allocation lock; nothing here polls or blocks.
+    kaku lock=alloc_lock_enabled(code);
+    moshi(lock){
+        arm64.assembler_label(code, "runtime_alloc_try");
+        emit(code, arm64.stp_pre_x(29, 30, 31, -16)); emit(code, arm64.add_imm_x(29, 31, 0, iie));
+        emit(code, arm64.stp_pre_x(19, 20, 31, -16)); emit(code, arm64.stp_pre_x(21, 22, 31, -16));
+        move_x(code, 19, 0); move_x(code, 20, 1); emit(code, arm64.movz_x(21, 256, 0));
+        arm64.assembler_b(code, "runtime_alloc_body");
+    }
     arm64.assembler_label(code, name);
     emit(code, arm64.stp_pre_x(29, 30, 31, -16)); emit(code, arm64.add_imm_x(29, 31, 0, iie));
     emit(code, arm64.stp_pre_x(19, 20, 31, -16)); emit(code, arm64.stp_pre_x(21, 22, 31, -16));
     move_x(code, 19, 0); move_x(code, 20, 1); emit(code, arm64.movz_x(21, 0, 0));
+    arm64.assembler_label(code, "runtime_alloc_body");
     move_bits(code, 9, uint32(0), uint32(runtime_max_heap_bytes));
     emit(code, arm64.cmp_x(19, 9)); arm64.assembler_b_cond(code, 8, "runtime_alloc_fail");
     moshi (gc_stress) {
@@ -1944,6 +1968,7 @@ waza emit_runtime_alloc(code: arm64.Assembler, gc_stress: bool, observation: boo
     emit(code,arm64.ldr_x(9,23,memory_Goal)); emit(code,arm64.cmp_x(10,9)); arm64.assembler_b_cond(code,8,"los_alloc_exhausted");
     emit(code,arm64.ldr_x(10,23,los_Threshold)); arm64.assembler_cbnz_x(code,10,"los_threshold_ready");
     move_bits(code,10,uint32(0),uint32(131072)); arm64.assembler_label(code,"los_threshold_ready"); emit(code,arm64.cmp_x(22,10)); arm64.assembler_b_cond(code,3,"los_alloc_small");
+    moshi(lock){emit(code,arm64.cmp_imm_x(21,256,iie)); arm64.assembler_b_cond(code,2,"los_alloc_exhausted");}
     arm64.assembler_bl(code,"los_alloc"); arm64.assembler_cbnz_x(code,0,"runtime_alloc_done"); arm64.assembler_b(code,"los_alloc_exhausted");
     arm64.assembler_label(code,"los_alloc_small");
     move_x(code,0,23); emit(code,arm64.add_imm_x(1,23,3072,iie)); emit(code,arm64.ldr_x(2,23,8)); emit(code,arm64.sub_x(3,2,1)); emit(code,arm64.ldr_x(4,23,0)); emit(code,arm64.sub_x(4,4,1)); emit(code,arm64.add_x(4,4,22)); emit(code,arm64.movz_x(5,0,0)); arm64.assembler_bl(code,"memory.commit"); arm64.assembler_cbz_x(code,0,"los_alloc_exhausted");
@@ -1981,6 +2006,7 @@ waza emit_runtime_alloc(code: arm64.Assembler, gc_stress: bool, observation: boo
     emit(code, arm64.ldr_x(13, 23, 0)); emit(code, arm64.add_x(14, 13, 22)); emit(code, arm64.ldr_x(9, 23, 8)); emit(code, arm64.cmp_x(14, 9));
     arm64.assembler_b_cond(code, 9, "runtime_alloc_bump");
     arm64.assembler_label(code,"los_alloc_exhausted");
+    moshi(lock){kaku real=block_label("runtime_alloc_real_",len(code.words)); emit(code,arm64.cmp_imm_x(21,256,iie)); arm64.assembler_b_cond(code,3,real); emit(code,arm64.movz_x(0,0,0)); arm64.assembler_b(code,"runtime_alloc_done"); arm64.assembler_label(code,real);}
     emit(code, arm64.cmp_imm_x(21, 2, iie)); arm64.assembler_b_cond(code, 2, "runtime_alloc_fail");
     emit(code, arm64.add_imm_x(21, 21, 1, iie)); emit(code, arm64.cmp_imm_x(21, 1, iie));
     arm64.assembler_b_cond(code, 1, "gen_alloc_major");
@@ -1993,7 +2019,9 @@ waza emit_runtime_alloc(code: arm64.Assembler, gc_stress: bool, observation: boo
     move_x(code,0,19); arm64.assembler_bl(code,"memory_grow"); arm64.assembler_b(code, "runtime_alloc_retry");
     arm64.assembler_label(code, "runtime_alloc_bump");
     emit(code, arm64.str_x(14, 23, 0)); emit(code, arm64.str_x(20, 13, 0)); emit(code, arm64.sub_imm_x(9, 22, 16, iie)); emit(code, arm64.str_x(9, 13, 8)); emit(code, arm64.add_imm_x(0, 13, 16, iie)); arm64.assembler_b(code, "runtime_alloc_done");
-    arm64.assembler_label(code, "runtime_alloc_fail"); emit(code,arm64.add_imm_x(9,19,31,iie)); emit(code,arm64.movn_x(10,15,0)); emit(code,arm64.and_x(9,9,10)); emit(code,arm64.str_x(9,23,2816)); emit(code, arm64.movz_x(0, 0, 0));
+    arm64.assembler_label(code, "runtime_alloc_fail");
+    moshi(lock){kaku real=block_label("runtime_alloc_real_",len(code.words)); emit(code,arm64.cmp_imm_x(21,256,iie)); arm64.assembler_b_cond(code,3,real); emit(code,arm64.movz_x(0,0,0)); arm64.assembler_b(code,"runtime_alloc_done"); arm64.assembler_label(code,real);}
+    emit(code,arm64.add_imm_x(9,19,31,iie)); emit(code,arm64.movn_x(10,15,0)); emit(code,arm64.and_x(9,9,10)); emit(code,arm64.str_x(9,23,2816)); emit(code, arm64.movz_x(0, 0, 0));
     arm64.assembler_label(code, "runtime_alloc_done");
     arm64.assembler_cbz_x(code, 0, "gen_alloc_registered"); arm64.assembler_bl(code, "gen_register");
     arm64.assembler_label(code, "gen_alloc_registered");
@@ -2406,6 +2434,7 @@ waza compile_worker_target(input_file: mochi.File, gc_stress: bool, capacity: in
     moshi(abi!=3){arm64.assembler_label(code,"worker_evidence");}
     moshi(observation && abi==3 && len(worker_bindings)>0){arm64.assembler_label(code,"worker_observe");}
     moshi(!retention){arm64.assembler_label(code,"worker_no_retention");}
+    moshi(len(worker_bindings)>0 && retention && !gc_stress && !old_proto && !full_sweep){arm64.assembler_label(code,"worker_alloc_lock");}
     moshi(old_proto){arm64.assembler_label(code,"old_mark_proto_enabled");}
     moshi(full_sweep){arm64.assembler_label(code,"old_sweep_enabled");}
     moshi(release_fault){arm64.assembler_label(code,"sweep_unmap_fault_enabled");}

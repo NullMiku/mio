@@ -4,6 +4,7 @@
 // same call made sequentially: an Epoch-free body that raced with an Epoch-owning mutation would corrupt one of these totals.
 //   scalar_loop   only non-captured, non-nullable scalar locals          -> no heap-entering site
 //   read_loop     scalar locals plus array index/len and struct field reads -> no heap-entering site
+//   alloc_only    struct/array literals bound to non-captured locals plus field/index reads -> no heap-entering site (allocation lock build)
 //   ref_store     array element stores and an allocation                  -> keeps its sites
 //   captured      a local shared with a closure (captured cell)           -> keeps its sites
 //   nullable      a nullable scalar local (assignment boxes)              -> keeps its sites
@@ -23,6 +24,13 @@ waza read_loop(a: []int64, p: Point, n: int64) -> int64 {
     kaku t = 0;
     kaku i = 0;
     aida (i < n) { t = t + a[i - (i / len(a)) * len(a)] + p.x + len(a); i = i + 1; }
+    kaesu t;
+}
+
+waza alloc_only(n: int64) -> int64 {
+    kaku t = 0;
+    kaku i = 0;
+    aida (i < n) { kaku p = Point { x: i, y: i + 1 }; kaku a = [i, i + 2, i + 3]; t = t + p.y + a[2] - a[0]; i = i + 1; }
     kaesu t;
 }
 
@@ -58,7 +66,7 @@ waza shared_array() -> []int64 { kaku a: []int64 = []; kaku i = 0; aida (i < 64)
 waza mixed(seed: int64) -> int64 {
     kaku a = shared_array();
     kaku p = Point { x: seed, y: seed + 1 };
-    kaku t = scalar_loop(20000 + seed) + read_loop(a, p, 20000) + ref_store(5000 + seed) + captured(3000) + nullable(3000);
+    kaku t = scalar_loop(20000 + seed) + read_loop(a, p, 20000) + alloc_only(30000 + seed) + ref_store(5000 + seed) + captured(3000) + nullable(3000);
     kaesu t;
 }
 

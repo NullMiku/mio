@@ -731,7 +731,7 @@ def darwin_thread_programs(report, cli, work):
     spec.loader.exec_module(module)
     names = ["basic", "captures", "nested", "many", "channel_basic", "channel_close", "channel_graphs", "channel_mpmc", "summary_copy",
              "gc_stress", "gc_lifecycle", "channel_races", "channel_lifecycle", "invalid_handles", "creation_limit", "lifecycle_cycles",
-             "shutdown_active", "epoch_retention", "heap_invariants"]
+             "shutdown_active", "epoch_retention", "heap_invariants", "alloc_lock"]
     stress = ["basic", "nested", "channel_basic", "channel_close", "epoch_retention", "heap_invariants"]
     Path(work).mkdir(parents=True, exist_ok=True)
     failures, passed = [], []
@@ -820,9 +820,10 @@ def darwin_thread_bench(report, cli, work):
     report.check("darwin-thread-bench", "PASS" if complete else "FAIL", "native", " | ".join(lines)[:1500], required=False)
 
 
-# Baseline of the phase comparison: the last natively measured head (bounded epoch retention). Normal thread images of the current head are byte-identical to it,
-# so this run is an A/A control that shows the run-to-run noise floor of the comparison; the new evidence is darwin-thread-observe.
-BASELINE_SHA = "868068c8c16c8bfb3c2faed4b7d25466087f6a67"
+# Baseline of the phase comparison: the last natively measured head (ebff537: bounded epoch retention, observation build, spin 128). The candidate adds the
+# allocation lock (docs/darwin-thread-heap-exclusion-design.md section 11), so baseline and candidate thread images differ and the comparison is the A/B of
+# that change; the A/A noise floor of the comparison was measured earlier (c7bece5 against 868068c, byte-identical images).
+BASELINE_SHA = "ebff537c86f0b669794000ddcabd45e3cab92b1f"
 
 
 def darwin_thread_phases(report, cli, work):
@@ -838,7 +839,7 @@ def darwin_thread_phases(report, cli, work):
     phases_dir = report.logs / "thread-phases"
     argv = [sys.executable, ROOT / "scripts/ci/thread_bench.py", "--mio", str(cli), "--target", "darwin-arm64", "--repeat", "2", "--budget", "120",
             "--sample-after", "25", "--symbols", "--output", str(phases_dir)]
-    # Baseline compiler: the pre-change tree (BASELINE_SHA, origin/Mio-2.2.0 before the epoch classification) built natively by the compiler under test,
+    # Baseline compiler: the previous head (BASELINE_SHA) built natively by the compiler under test,
     # so baseline and candidate images run on the same runner in the same job. If it cannot be built the phases run for the candidate only.
     base_dir = Path(work) / "baseline-src"
     base_cli = Path(work) / "mio-baseline"

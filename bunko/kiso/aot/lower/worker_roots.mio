@@ -32,6 +32,14 @@ teisu wr_snapshot_capacity=4000;
 teisu wr_obs=41032;
 teisu wr_obs_kind=88;
 teisu wr_obs_retained=264;
+// Allocation lock (docs/darwin-thread-heap-exclusion-design.md section 11). The lock word lives in the zero-initialized tail of the main thread's
+// context (context 0, nothing else uses bytes 41304..41599). Observed builds also count, per thread context: allocations served by the lock fast path,
+// allocations that took the Epoch path, and lock acquisitions given up after the spin budget.
+teisu wr_alloc_lock=41440;
+teisu wr_obs_alloc=41304;
+teisu wr_alloc_spin=256;
+// Largest request served by the lock fast path (the legacy allocator maps a large object at 128 KiB or more and the fast path never maps).
+teisu wr_alloc_small=4095;
 waza wr_observed(c:arm64.Assembler) -> bool {kaesu arm64.assembler_label_word(c,"worker_observe")>=0;}
 // Start of a timed runtime call: push the current time (attached_platform_now returns nanoseconds in x0).
 waza wr_obs_begin(c:arm64.Assembler,p:[]macho.AddressPatch,first:int64) -> unit {
@@ -171,6 +179,9 @@ waza emit_worker_observation_dump(c:arm64.Assembler,p:[]macho.AddressPatch,first
     wr_obs_total(c,p,first,488,iie);wr_obs_print(c,"runtime_protocol_calls");
     wr_obs_total(c,p,first,8648,iie);wr_obs_print(c,"blocking_native_entries");
     wr_obs_total(c,p,first,wr_obs+wr_obs_retained,iie);wr_obs_print(c,"retained_polls_taken");
+    wr_obs_total(c,p,first,wr_obs_alloc,iie);wr_obs_print(c,"alloc_lock_fast");
+    wr_obs_total(c,p,first,wr_obs_alloc+8,iie);wr_obs_print(c,"alloc_epoch_path");
+    wr_obs_total(c,p,first,wr_obs_alloc+16,iie);wr_obs_print(c,"alloc_lock_gave_up");
     kaku names=["heap_enter","poll","block_leave"];kaku k=0;
     aida(k<3){
         kaku b=0;aida(b<9){wr_obs_total(c,p,first,wr_obs+k*wr_obs_kind+b*8,iie);wr_obs_print(c,string.concat(string.concat(names[k],"_bucket_"),convert.format_int(b)));b=b+1;}
@@ -209,8 +220,31 @@ waza emit_worker_root_runtime(c:arm64.Assembler,p:[]macho.AddressPatch,first:int
     moshi(wr_observed(c)){emit_worker_observation_dump(c,p,first);}
     // The legacy allocator may collect, so it sees a coordinator-owned complete
     // snapshot. Keep the epoch stopped until the next solved opcode poll.
-    attached_save(c,"runtime_alloc");emit(c,arm64.sub_imm_x(31,31,32,iie));emit(c,arm64.str_x(24,31,0));
-    wr_current(c,p,first);emit(c,arm64.str_x(0,31,16));move_x(c,1,24);wr_call(c,"gc_heap_enter");
+    attached_save(c,"runtime_alloc");
+    // Lock fast path. Correct because an Epoch owner starts only after every other non-blocked thread has acknowledged at a poll, and nothing between
+    // the lock and its release polls, blocks or collects: a thread holding the lock is never concurrent with an Epoch owner, a collection or an
+    // Epoch-owning mutation, and the lock only orders the lock holders among themselves. The holder runs a bounded straight-line allocator (try mode),
+    // so the spin below ends after at most one allocation by the holder; an exhausted budget (a descheduled holder) falls back to the Epoch path.
+    moshi(alloc_lock_enabled(c)){
+        emit(c,arm64.cmp_imm_x(0,wr_alloc_small,iie));arm64.assembler_b_cond(c,8,"runtime_alloc_slow");
+        wr_ctx(c,p,first,9,0);wr_num(c,10,wr_alloc_lock);emit(c,arm64.add_x(9,9,10));wr_num(c,11,wr_alloc_spin);emit(c,arm64.movz_x(13,1,0));
+        arm64.assembler_label(c,"runtime_alloc_spin");emit(c,arm64.ldxr_x(12,9,hai));arm64.assembler_cbnz_x(c,12,"runtime_alloc_busy");emit(c,arm64.stxr_x(14,13,9,hai));arm64.assembler_cbnz_x(c,14,"runtime_alloc_spin");arm64.assembler_b(c,"runtime_alloc_locked");
+        arm64.assembler_label(c,"runtime_alloc_busy");emit(c,arm64.sub_imm_x(11,11,1,iie));arm64.assembler_cbnz_x(c,11,"runtime_alloc_spin");
+        moshi(wr_observed(c)){wr_current(c,p,first);wr_num(c,11,wr_obs_alloc+16);emit(c,arm64.add_x(11,0,11));emit(c,arm64.ldr_x(12,11,0));emit(c,arm64.add_imm_x(12,12,1,iie));emit(c,arm64.str_x(12,11,0));}
+        arm64.assembler_b(c,"runtime_alloc_slow");
+        arm64.assembler_label(c,"runtime_alloc_locked");arm64.assembler_bl(c,"runtime_alloc_try");
+        // release (store-release): the allocator's writes are visible to the next holder, which acquires with ldaxr
+        wr_ctx(c,p,first,9,0);wr_num(c,10,wr_alloc_lock);emit(c,arm64.add_x(9,9,10));emit(c,arm64.movz_x(10,0,0));emit(c,arm64.stlr_x(10,9));
+        arm64.assembler_cbz_x(c,0,"runtime_alloc_slow");
+        emit(c,arm64.str_x(0,31,144));
+        moshi(wr_observed(c)){wr_current(c,p,first);wr_num(c,11,wr_obs_alloc);emit(c,arm64.add_x(11,0,11));emit(c,arm64.ldr_x(12,11,0));emit(c,arm64.add_imm_x(12,12,1,iie));emit(c,arm64.str_x(12,11,0));}
+        attached_restore(c);
+    }
+    arm64.assembler_label(c,"runtime_alloc_slow");
+    emit(c,arm64.sub_imm_x(31,31,32,iie));emit(c,arm64.str_x(24,31,0));
+    wr_current(c,p,first);emit(c,arm64.str_x(0,31,16));
+    moshi(wr_observed(c)){wr_num(c,11,wr_obs_alloc+8);emit(c,arm64.add_x(11,0,11));emit(c,arm64.ldr_x(12,11,0));emit(c,arm64.add_imm_x(12,12,1,iie));emit(c,arm64.str_x(12,11,0));}
+    move_x(c,1,24);wr_call(c,"gc_heap_enter");
     moshi(old_mark_proto_enabled(c)){arm64.assembler_bl(c,"old_pause_epoch");}
     emit(c,arm64.ldr_x(0,31,16));wr_addr(c,1,0,wr_snapshot);emit(c,arm64.str_x(31,1,0));emit(c,arm64.str_x(31,1,8));wr_imports(c,p,first);wr_call(c,"gc_scan_roots");
     emit(c,arm64.ldr_x(9,31,16));wr_snapshot_trace(c,9);
