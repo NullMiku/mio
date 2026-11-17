@@ -175,7 +175,7 @@ def judge(phase, result):
     """COMPLETE / PARTIAL / FAIL plus the measurement (ms, work) of a complete run."""
     rows = parse(result["stdout"])
     if result["timed_out"]:
-        return "PARTIAL", None, "budget exceeded; partial output %r" % result["stdout"][:200]
+        return "PARTIAL", None, "budget exceeded (censored: the true duration is longer than the budget); partial output %r" % result["stdout"][:200]
     if result["exit"] != 0:
         return "FAIL", None, "exit %s stderr %r" % (result["exit"], result["stderr"][:120])
     if phase == "mpmc_long":   # tests/threads/mpmc_long.mio prints the received and the sent count

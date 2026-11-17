@@ -837,7 +837,7 @@ def darwin_thread_phases(report, cli, work):
     # reports, raw stdout/stderr of every run (failed and timed-out ones too), samples and symbol maps.
     phases = ["start_join", "fan_join", "pingpong", "alloc_1", "alloc_2", "alloc_4", "alloc_s1", "alloc_s4", "mpmc_probe", "mpmc_long"]
     phases_dir = report.logs / "thread-phases"
-    argv = [sys.executable, ROOT / "scripts/ci/thread_bench.py", "--mio", str(cli), "--target", "darwin-arm64", "--repeat", "2", "--budget", "120",
+    argv = [sys.executable, ROOT / "scripts/ci/thread_bench.py", "--mio", str(cli), "--target", "darwin-arm64", "--repeat", "4", "--budget", "120",
             "--sample-after", "25", "--symbols", "--output", str(phases_dir)]
     # Baseline compiler: the previous head (BASELINE_SHA) built natively by the compiler under test,
     # so baseline and candidate images run on the same runner in the same job. If it cannot be built the phases run for the candidate only.
@@ -861,11 +861,13 @@ def darwin_thread_phases(report, cli, work):
         for phase, entry in data["phases"].items():
             for label, contender in entry["contenders"].items():
                 runs = contender.get("runs") or []
+                # A run cut off at the budget is a censored observation: its wall time is a lower bound (">"), never an exact duration.
                 lines.append("%s/%s=%s wall%s cpu%s" % (phase, label[:4], contender.get("status"),
-                             [r.get("wall_s") for r in runs], [round(r.get("user_s", 0) + r.get("system_s", 0), 1) for r in runs]))
+                             [(">%s(censored)" if r.get("status") == "PARTIAL" else "%s") % r.get("wall_s") for r in runs],
+                             [round(r.get("user_s", 0) + r.get("system_s", 0), 1) for r in runs]))
     except (OSError, ValueError, KeyError) as problem:
         lines.append("no report: %s" % problem)
-    report.check("darwin-thread-phases", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:4000], required=False)
+    report.check("darwin-thread-phases", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:9000], required=False)
 
 
 def darwin_thread_observe(report, cli, work):
@@ -895,7 +897,7 @@ def darwin_thread_observe(report, cli, work):
                         obs.get("gc.gc_count"), round(r.get("maxrss_bytes", 0) / 1048576), r.get("voluntary_csw")))
     except (OSError, ValueError, KeyError) as problem:
         lines.append("no report: %s" % problem)
-    report.check("darwin-thread-observe", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:4000], required=False)
+    report.check("darwin-thread-observe", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:9000], required=False)
 
 
 def darwin_thread_repro(report, cli, work):
