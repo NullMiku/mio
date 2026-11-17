@@ -248,6 +248,8 @@ waza emit_worker_root_runtime(c:arm64.Assembler,p:[]macho.AddressPatch,first:int
             emit(c,arm64.add_imm_x(12,9,gc.gc_registry_owner,iie));emit(c,arm64.ldar_x(10,12));emit(c,arm64.movz_x(13,0,0));emit(c,arm64.cmp_x(10,0));arm64.assembler_b_cond(c,1,"runtime_alloc_stress_notself");emit(c,arm64.movz_x(13,1,0));
             arm64.assembler_label(c,"runtime_alloc_stress_notself");
             wr_ctx(c,p,first,11,0);wr_num(c,12,wr_alloc_lock);emit(c,arm64.add_x(11,11,12));emit(c,arm64.str_x(13,11,24));
+            // test-only: remember whether the holder is context 0 (the main thread) for the epoch-trip status
+            wr_ctx(c,p,first,15,0);emit(c,arm64.movz_x(14,0,0));emit(c,arm64.cmp_x(0,15));arm64.assembler_b_cond(c,1,"runtime_alloc_stress_notmain");emit(c,arm64.movz_x(14,1,0));arm64.assembler_label(c,"runtime_alloc_stress_notmain");emit(c,arm64.str_x(14,11,32));
             arm64.assembler_cbnz_x(c,13,"runtime_alloc_stress_phase_ok");
             emit(c,arm64.add_imm_x(12,9,gc.gc_registry_phase,iie));emit(c,arm64.ldar_x(10,12));emit(c,arm64.cmp_imm_x(10,gc.gc_stopped,iie));arm64.assembler_b_cond(c,0,"runtime_alloc_stress_trip_pre");
             arm64.assembler_label(c,"runtime_alloc_stress_phase_ok");
@@ -279,8 +281,13 @@ waza emit_worker_root_runtime(c:arm64.Assembler,p:[]macho.AddressPatch,first:int
             arm64.assembler_label(c,"runtime_alloc_stress_trip_pre");emit(c,arm64.movz_x(0,61,0));arm64.assembler_b(c,"runtime_alloc_stress_exit");
             arm64.assembler_label(c,"runtime_alloc_stress_trip_post");emit(c,arm64.movz_x(0,62,0));arm64.assembler_b(c,"runtime_alloc_stress_exit");
             arm64.assembler_label(c,"runtime_alloc_stress_trip_epoch");
-            // status = 64 + 8 * (saved epoch & 7) + (current epoch & 7) + 128 * (owner-self flag): says whether the epoch really moved or the saved copy was lost
-            wr_num(c,14,7);emit(c,arm64.and_x(12,12,14));emit(c,arm64.and_x(10,10,14));emit(c,arm64.lsl_x(12,12,3));emit(c,arm64.add_x(0,12,10));emit(c,arm64.add_imm_x(0,0,64,iie));emit(c,arm64.lsl_x(13,13,7));emit(c,arm64.add_x(0,0,13));
+            // status = 64 + (current-saved epoch & 3) + 4 * (registry owner nonzero) + 8 * (registry phase & 7) + 128 * (holder is context 0)
+            wr_num(c,14,3);emit(c,arm64.sub_x(10,10,12));emit(c,arm64.and_x(10,10,14));
+            emit(c,arm64.add_imm_x(12,9,gc.gc_registry_phase,iie));emit(c,arm64.ldar_x(12,12));wr_num(c,14,7);emit(c,arm64.and_x(12,12,14));emit(c,arm64.lsl_x(12,12,3));
+            emit(c,arm64.add_x(0,10,12));emit(c,arm64.add_imm_x(0,0,64,iie));
+            emit(c,arm64.add_imm_x(12,9,gc.gc_registry_owner,iie));emit(c,arm64.ldar_x(12,12));emit(c,arm64.movz_x(15,0,0));arm64.assembler_cbz_x(c,12,"runtime_alloc_stress_trip_noowner");emit(c,arm64.movz_x(15,4,0));
+            arm64.assembler_label(c,"runtime_alloc_stress_trip_noowner");emit(c,arm64.add_x(0,0,15));
+            emit(c,arm64.ldr_x(14,11,32));emit(c,arm64.lsl_x(14,14,7));emit(c,arm64.add_x(0,0,14));
             arm64.assembler_label(c,"runtime_alloc_stress_exit");emit(c,arm64.movz_x(16,1,0));emit(c,arm64.svc(128));
             arm64.assembler_label(c,"runtime_alloc_stress_checks_ok");
         }
