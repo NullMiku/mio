@@ -278,7 +278,9 @@ waza emit_worker_root_runtime(c:arm64.Assembler,p:[]macho.AddressPatch,first:int
             arm64.assembler_b(c,"runtime_alloc_stress_checks_ok");
             arm64.assembler_label(c,"runtime_alloc_stress_trip_pre");emit(c,arm64.movz_x(0,61,0));arm64.assembler_b(c,"runtime_alloc_stress_exit");
             arm64.assembler_label(c,"runtime_alloc_stress_trip_post");emit(c,arm64.movz_x(0,62,0));arm64.assembler_b(c,"runtime_alloc_stress_exit");
-            arm64.assembler_label(c,"runtime_alloc_stress_trip_epoch");emit(c,arm64.movz_x(0,63,0));
+            arm64.assembler_label(c,"runtime_alloc_stress_trip_epoch");
+            // status = 64 + 8 * (saved epoch & 7) + (current epoch & 7) + 128 * (owner-self flag): says whether the epoch really moved or the saved copy was lost
+            wr_num(c,14,7);emit(c,arm64.and_x(12,12,14));emit(c,arm64.and_x(10,10,14));emit(c,arm64.lsl_x(12,12,3));emit(c,arm64.add_x(0,12,10));emit(c,arm64.add_imm_x(0,0,64,iie));emit(c,arm64.lsl_x(13,13,7));emit(c,arm64.add_x(0,0,13));
             arm64.assembler_label(c,"runtime_alloc_stress_exit");emit(c,arm64.movz_x(16,1,0));emit(c,arm64.svc(128));
             arm64.assembler_label(c,"runtime_alloc_stress_checks_ok");
         }
