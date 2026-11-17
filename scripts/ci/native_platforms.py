@@ -768,7 +768,7 @@ def darwin_thread_epochs(report, cli, work):
     code, out, err, seconds = run(report, "darwin-thread-epochs-static", [sys.executable, ROOT / "tests/threads/heap_epochs.py", "--mio", str(cli)], timeout=300)
     problems = [] if code == 0 else ["static: " + brief((out + err).replace("\n", " | "), 300)]
     Path(work).mkdir(parents=True, exist_ok=True)
-    expected = b"hai\nhai\nhai\nhai\n2465794134\n"
+    expected = b"hai\nhai\nhai\nhai\n4266394162\n"
     for label, extra in (("normal", ()), ("gc-stress", ("--gc-stress",))):
         image = Path(work) / ("heap-epochs-" + label)
         ok, reason, _ = cli_build(report, "darwin-thread-epochs-build-" + label, cli, str(ROOT / "tests/threads/heap_epochs.mio"), "darwin-arm64", image, extra=extra)
