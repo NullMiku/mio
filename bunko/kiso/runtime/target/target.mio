@@ -1,0 +1,37 @@
+yobu "kiso/runtime/gc";
+
+// ABI descriptors describe capabilities, not optimistic platform names.
+// Unknown pressure and unavailable memory limits are valid optional inputs.
+koukai kata TargetInfo {
+    os: string; arch: string; abi: string; pointer_bits: int64; little_endian: bool;
+    page_size_query: bool; atomic64: bool; threads: bool; tls: bool;
+    park_wake: bool; monotonic_clock: bool; virtual_memory: bool;
+    precise_roots: bool; stack_alignment: int64; concurrent_collector: bool;
+    executable: bool;
+}
+koukai waza descriptor(os: string, arch: string, abi: string) -> TargetInfo {
+    kaesu TargetInfo { os: os, arch: arch, abi: abi, pointer_bits: 64,
+        little_endian: hai, page_size_query: iie, atomic64: iie, threads: iie,
+        tls: iie, park_wake: iie, monotonic_clock: iie, virtual_memory: iie,
+        precise_roots: iie, stack_alignment: 16, concurrent_collector: iie, executable: iie };
+}
+koukai waza concurrent_error(t: TargetInfo) -> string {
+    moshi (t.pointer_bits != 64 || t.stack_alignment < 16 || !t.page_size_query ||
+        !t.atomic64 || !t.threads || !t.tls || !t.park_wake || !t.monotonic_clock ||
+        !t.virtual_memory || !t.precise_roots || !t.concurrent_collector || !t.executable) {
+        kaesu "NOT_SUPPORTED: concurrent collector target contract incomplete";
+    }
+    kaesu "";
+}
+koukai waza operation_error(t: TargetInfo, op: gc.RuntimeOp) -> string {
+    moshi (!gc.valid_operation(op)) { kaesu "INVALID_RUNTIME_OP"; }
+    moshi (op.kind <= gc.fence && !t.atomic64) { kaesu "NOT_SUPPORTED: atomic64"; }
+    moshi (op.kind >= gc.thread_start && op.kind <= gc.thread_identity && !t.threads) { kaesu "NOT_SUPPORTED: threads"; }
+    moshi ((op.kind == gc.tls_get || op.kind == gc.tls_set || op.kind == gc.tls_create || op.kind == gc.tls_destroy) && !t.tls) { kaesu "NOT_SUPPORTED: TLS"; }
+    moshi ((op.kind == gc.park || op.kind == gc.wake) && !t.park_wake) { kaesu "NOT_SUPPORTED: park/wake"; }
+    moshi (((op.kind >= gc.reserve && op.kind <= gc.memory_release) || op.kind == gc.protect) && !t.virtual_memory) { kaesu "NOT_SUPPORTED: virtual memory"; }
+    moshi (op.kind >= gc.mutex_create && op.kind <= gc.condition_destroy && !t.park_wake) { kaesu "NOT_SUPPORTED: synchronization lifecycle"; }
+    moshi (op.kind == gc.clock && !t.monotonic_clock) { kaesu "NOT_SUPPORTED: monotonic clock"; }
+    moshi (op.kind >= gc.roots && op.kind <= gc.write_barrier && !t.precise_roots) { kaesu "NOT_SUPPORTED: roots/barrier"; }
+    kaesu "";
+}
