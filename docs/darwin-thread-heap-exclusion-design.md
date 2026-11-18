@@ -290,3 +290,16 @@ The image is built with `gc_stress` = true *and* the lock, so the fallback path 
 
 ### 12.4 Where it is off and rollback
 Absent from every image built without the variable (byte-identical to the previous head for all non-stress builds, checked over the tests/threads programs for all six targets, normal, `--gc-stress` and `--observe`). Rollback: remove the `darwin-thread-lockstress` check and the `lock_stress` argument; production images do not change.
+
+### 12.5 Evidence versus assumptions (head a063dce; hosted macOS ARM64, 3 cores)
+Established by execution (Native 44267066617 and Core 44267066670, each six stress runs, all exit 0 with exact program output; control tripped 4 of 4 in both):
+* The lock fast path and real collections ran interleaved: about 114,260 lock-served allocations, about 38,110 Epoch-path allocations, about 38,087 forced try-failures (every 4th locked attempt falls back to a real collection), `gc_count` about 42,870, `epochs_entered` about 54,100-54,170 per run; `alloc_lock_invariant_checked` equals `alloc_lock_fast` in every run (every locked allocation was checked).
+* In every checked hold no collection ran (heap collection counter unchanged), no stopped world was visible at entry or exit for a non-owner, the epoch advanced at most once and never for the owner itself.
+* The control (a poll inside the lock) trips the same checks (exit 60/205) while the stress image passes in the same job, so a trip is attributable and the detector is sensitive.
+* Existing coverage is unchanged and green: `alloc_lock`, `alloc_lock_stress` (normal and `--gc-stress`), `epoch_retention` (carried-over epoch), `heap_invariants`, `heap_epochs`, `gc_stress`, `gc_lifecycle`, channels; non-stress and non-Darwin images are byte-identical to the previous head.
+Assumed or not provable by this mechanism:
+* A non-collecting epoch that begins and completes entirely inside one hold is not distinguishable from `gc_begin`'s publication window (stores are ordered epoch, phase, owner); only the acknowledgement argument of 11.3 covers it (the owner proceeds only after every non-blocked thread, including the holder, acknowledges at a poll, and the holder never polls inside the lock). Not contradicted by any run; not proved.
+* The checks sample at lock entry and release, not continuously.
+* Exact roots: the try-mode allocator never collects, never scans roots and has no side effects when it fails; an allocation that needs a collection always falls back to the unchanged snapshot path. This is supported by the forced fallback counters and the unchanged `gc-stress` suites, but rests on the code argument.
+* ARM64 memory ordering: acquire (`ldaxr`) / release (`stlr`) on the lock, `ldar` registry reads, release stores and acquire loads in the poll/acknowledge protocol. A weakly ordered 3-core hosted runner exercises it; many-core hardware (for example M4 Pro) was NOT measured and is not claimed.
+* The instrumented stress image collects on every allocation: its timing says nothing about performance.
