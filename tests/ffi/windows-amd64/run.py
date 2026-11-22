@@ -89,6 +89,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mio", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--check-embedded", action="store_true", help="also verify Full CLI defaults without an external Bunko tree")
     args = parser.parse_args()
     output, mio = args.output.resolve(), args.mio.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -102,9 +103,9 @@ def main():
         (output / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(status, name, flush=True)
 
-    def run(label, argv, env=None):
+    def run(label, argv, env=None, cwd=ROOT):
         try:
-            proc = subprocess.run(list(map(str, argv)), cwd=ROOT, env=env, capture_output=True, timeout=300)
+            proc = subprocess.run(list(map(str, argv)), cwd=cwd, env=env, capture_output=True, timeout=300)
             code, out, err = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as e:
             code, out, err = None, e.stdout or b"", (e.stderr or b"") + b"\nTIMEOUT"
@@ -164,6 +165,22 @@ def main():
     if code != 0 or not dll.is_file():
         return 1
     report["hashes"][dll.name] = sha(dll)
+    if args.check_embedded:
+        isolated = output / "embedded"
+        isolated.mkdir(exist_ok=True)
+        source, image = isolated / "main.mio", isolated / "main.exe"
+        source.write_text('yobu "kiso/encoding/win64c"; waza f() -> int32 = c "mio_ffi_fixture.dll" "mio_c_no_args"; chant(win64c.descriptor("float32")); chant(f());', encoding="utf-8")
+        image.unlink(missing_ok=True)
+        shutil.copyfile(dll, isolated / dll.name)
+        environment = dict(os.environ)
+        environment.pop("MIO_BUNKO", None)
+        environment.pop("MIO_BUNKO_ROOT", None)
+        code, _, _ = run("embedded-build", [mio, "build", source, "--target=windows-amd64", "-o", image], env=environment, cwd=isolated)
+        record("embedded-build", "PASS" if code == 0 and image.is_file() else "FAIL")
+        if image.is_file():
+            report["hashes"]["embedded/main.exe"] = sha(image)
+            code, out, err = run("embedded-run", [image], env=environment, cwd=isolated)
+            record("embedded-native", "PASS" if (code,out,err)==(0,b"3\n42\n",b"") else "FAIL", exit_code=code)
     if ml:
         builder = build("register-probe-builder", HERE / "backend_probe.mio")
         if builder:

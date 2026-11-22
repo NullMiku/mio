@@ -110,7 +110,9 @@ python tests/runtime-abi/run.py --suite differential --mio <Native Mio CLI.exe> 
 
 `scripts/ci/native_platforms.py` 的 Windows AMD64 follower 使用同一个 Native CLI 执行该驱动，报告名为 `windows-c-ffi`；其原有 workflow 会上传报告和日志，非 PASS 的必需检查使 CI 失败。继续沿用现有候选编译器与 Seed 验证流程，本改动没有新增 Seed 身份、下载源或验证旁路。可信 Seed 验证与本地原生行为验证应分别报告。
 
-2026-11-23 本机 Windows AMD64 验收详见测试目录 README；Darwin/Linux 原生执行和远端完整 CI 未执行时必须标为 `NOT_RUN`，交叉构建不能代替执行。
+Full 的 `selfhost/resources/bunko_data.mio` 已用现有纯 Mio `selfhost/resourcegen.generate` 在 Git LF 源码输入上重新生成，119 个生产模块的内容、长度与 SHA-256 完整匹配。新增模块不能只存在于磁盘 Bunko，而遗漏内嵌发行路径。CI 在隔离目录中用 Full 默认内嵌 Bunko 编译并执行 FFI；Core 保留显式外部 Bunko 路径。
+
+2026-11-23 本机 Windows AMD64 验收详见测试目录 README。Linux AMD64 已在 Ubuntu WSL 实际执行 RA-1 16 项和差分 64 项，另 2 项为原有 NOT_APPLICABLE。Darwin 原生执行和远端完整 CI 未完成时保持 `NOT_RUN`，交叉构建本身不能代替执行。
 
 依据：[Microsoft x64 Calling Convention](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention)、[Microsoft x64 ABI Conventions](https://learn.microsoft.com/en-us/cpp/build/x64-software-conventions)。
 
@@ -156,6 +158,7 @@ selfhost/pipeline/compiler.mio
 selfhost/pipeline/linux.mio
 selfhost/resolver/resolver.mio
 selfhost/resolver/resolver_diff_test.go
+selfhost/resources/bunko_data.mio
 selfhost/typecheck/checker.mio
 selfhost/typecheck/environment.mio
 selfhost/typecheck/expression.mio

@@ -442,7 +442,7 @@ def smoke(report, cli, target, work, label_prefix=""):
 
 def windows_ffi_checks(report, cli):
     output = report.output / "windows-c-ffi"
-    code, out, err, _ = run(report, "windows-c-ffi", [sys.executable, ROOT / "tests/ffi/windows-amd64/run.py", "--mio", cli, "--output", output], timeout=1800)
+    code, out, err, _ = run(report, "windows-c-ffi", [sys.executable, ROOT / "tests/ffi/windows-amd64/run.py", "--mio", cli, "--output", output, "--check-embedded"], timeout=1800)
     status, detail = "FAIL", brief(err or out)
     try:
         result = json.loads((output / "report.json").read_text(encoding="utf-8"))
