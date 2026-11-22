@@ -12,32 +12,41 @@ waza run() -> int64 {
     aida (p < 4) {
         kaku base = p * 50000;
         array.push(producers, thread.start(waza () -> int64 {
-            kaku n = 0;
-            aida (n < 50000) { thread.send[int64](channel, base + n); n = n + 1; }
-            kaesu n;
-        }));
+                    kaku n = 0;
+                    aida (n < 50000) {
+                        thread.send[int64](channel, base + n);
+                        n = n + 1;
+                    }
+                    kaesu n;
+                }));
         p = p + 1;
     }
     kaku c = 0;
     aida (c < 4) {
         array.push(consumers, thread.start(waza () -> int64 {
-            kaku got = 0;
-            aida (hai) {
-                kaku r = thread.receive[int64](channel);
-                moshi (r.closed) { nukeru; }
-                got = got + 1;
-            }
-            kaesu got;
-        }));
+                    kaku got = 0;
+                    aida (hai) {
+                        kaku r = thread.receive[int64](channel);
+                        moshi (r.closed) { nukeru; }
+                        got = got + 1;
+                    }
+                    kaesu got;
+                }));
         c = c + 1;
     }
     kaku sent = 0;
     p = 0;
-    aida (p < 4) { sent = sent + thread.join(producers[p]); p = p + 1; }
+    aida (p < 4) {
+        sent = sent + thread.join(producers[p]);
+        p = p + 1;
+    }
     thread.close[int64](channel);
     kaku received = 0;
     c = 0;
-    aida (c < 4) { received = received + thread.join(consumers[c]); c = c + 1; }
+    aida (c < 4) {
+        received = received + thread.join(consumers[c]);
+        c = c + 1;
+    }
     chant(received);
     chant(sent);
     kaesu 0;
