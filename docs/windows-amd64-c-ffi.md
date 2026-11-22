@@ -131,7 +131,9 @@ bunko/kiso/aot/win64abi/bridge.mio
 bunko/kiso/encoding/mochi/decode.mio
 bunko/kiso/encoding/mochi/win64c_test.mio
 bunko/kiso/encoding/win64c/prototype.mio
+bunko/kiso/encoding/win64c/ci-module.json
 bunko/kiso/encoding/win64c/prototype_test.mio
+bunko/kiso/encoding/win64c/test.sh
 docs/windows-amd64-c-ffi.md
 internal/ast/ast.go
 internal/compiler/builtin.go
