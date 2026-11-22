@@ -1,5 +1,7 @@
 # Darwin ARM64 原生 C ABI
 
+Linux x86-64 的对应实现见 [Linux x86-64 原生 C ABI](linux-amd64-c-ffi.md)；两个目标共用同一套 Mio 声明语法和类型表。
+
 Mio 在 Apple Silicon macOS 上可以从原生 Mach-O 程序调用固定原型的 C 函数。使用 C ABI 的构建需要 Xcode 或 Command Line Tools 提供的 macOS SDK、Clang 和 Apple 链接器。运行生成的程序只需要 macOS 和程序所链接的动态库。普通 Mio 构建继续由 Mio 自带的 Mach-O writer 和签名器完成。
 
 ## 声明和调用
@@ -61,7 +63,7 @@ mio build add.mio --link add.o -o add
 
 参数可以重复。请把静态库放在引用它的目标文件之后。动态库的 install name 决定 dyld 查找位置，`@rpath` 库可以配合 `--rpath` 使用。系统库 libSystem 随系统工具链链接。Mio 接受编译后的目标文件，C 源码由用户用 Clang 编译。
 
-`mio run`、`mio exec` 和 `mio test` 可以调用默认链接的系统 C 符号。显式链接用户库时使用 `mio build` 并执行其产物。跨目标构建在发现 C 声明时会报告 `E_CABI`。Go Reference 可以检查原型和调用，实际执行到 C 调用时会给出错误。
+`mio run`、`mio exec` 和 `mio test` 可以调用默认链接的系统 C 符号。显式链接用户库时使用 `mio build` 并执行其产物。跨目标构建在发现 C 声明时会报告 `E_CABI`（Linux x86-64 只能在 Linux x86-64 主机上原生构建）。Go Reference 可以检查原型和调用，实际执行到 C 调用时会给出错误。
 
 ## 编译器与链接器
 
