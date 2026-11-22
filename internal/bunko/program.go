@@ -108,10 +108,6 @@ func LoadTestProgramWithRegistry(inputPath, bunkoRoot string, registry *mma.Modu
 	return loadRootProgramWithOverlay(root, rootFiles, tests, rootPath, bunkoRoot, registry, Overlay{})
 }
 
-func loadRootProgram(root *ast.Program, tests []TestFunction, rootPath, bunkoRoot string, registry *mma.ModuleRegistry) (*Program, error) {
-	return loadRootProgramWithOverlay(root, nil, tests, rootPath, bunkoRoot, registry, Overlay{})
-}
-
 func loadRootProgramWithOverlay(root *ast.Program, rootFiles []string, tests []TestFunction, rootPath, bunkoRoot string, registry *mma.ModuleRegistry, overlay Overlay) (*Program, error) {
 	return loadRootWithLoader(root, rootFiles, tests, rootPath, registry, NewWithOverlay(bunkoRoot, overlay))
 }

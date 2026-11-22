@@ -7,14 +7,23 @@ waza nothing() -> int64 { kaesu 1; }
 
 waza churn() -> int64 {
     kaku i = 0;
-    aida (i < 20000) { thread.join(thread.start(nothing)); i = i + 1; }
+    aida (i < 20000) {
+        thread.join(thread.start(nothing));
+        i = i + 1;
+    }
     kaku round = 0;
     aida (round < 200) {
         kaku handles: []int64 = [];
         kaku k = 0;
-        aida (k < 32) { array.push(handles, thread.start(nothing)); k = k + 1; }
+        aida (k < 32) {
+            array.push(handles, thread.start(nothing));
+            k = k + 1;
+        }
         k = 0;
-        aida (k < 32) { thread.join(handles[k]); k = k + 1; }
+        aida (k < 32) {
+            thread.join(handles[k]);
+            k = k + 1;
+        }
         round = round + 1;
     }
     kaesu 0;
@@ -36,7 +45,11 @@ waza run() -> int64 {
     };
     kaku handle = thread.start(echo);
     kaku i = 0;
-    aida (i < 2000) { thread.send[int64](ping, i); thread.receive[int64](pong); i = i + 1; }
+    aida (i < 2000) {
+        thread.send[int64](ping, i);
+        thread.receive[int64](pong);
+        i = i + 1;
+    }
     thread.close[int64](ping);
     chant(i);
     chant(thread.join(handle));
