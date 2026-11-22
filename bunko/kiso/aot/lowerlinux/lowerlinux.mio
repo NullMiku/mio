@@ -1436,6 +1436,7 @@ waza uses_threads(file: mochi.File) -> bool {
 }
 
 waza compile_target(file: mochi.File, gc_threshold: int64, darwin: bool) -> LowerResult {
+    moshi (mochi.has_win64_c(file)) { kaesu failed("E_FFI_TARGET Windows AMD64 C ABI requires windows-amd64"); }
     moshi (gc_threshold < 4096) { kaesu failed("INVALID_GC_THRESHOLD"); }
     kaku threads = uses_threads(file);
     moshi (threads && darwin) { kaesu failed("UNSUPPORTED_THREADS_TARGET"); }

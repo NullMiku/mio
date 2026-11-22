@@ -1,4 +1,5 @@
 yobu "kiso/array";
+yobu "kiso/encoding/win64c";
 yobu "kiso/encoding/binary";
 yobu "kiso/string";
 yobu "kiso/utf8";
@@ -61,6 +62,12 @@ koukai kata File {
 koukai kata DecodeResult {
     value: File?;
     error: DecodeError?;
+}
+
+koukai waza has_win64_c(file: File) -> bool {
+    kaku i = 0;
+    aida (i < len(file.functions)) { moshi (win64c.is_external(file.functions[i].name)) { kaesu hai; } i = i + 1; }
+    kaesu iie;
 }
 
 waza failure(kind: DecodeErrorKind, offset: int64, detail: int64) -> DecodeResult {
@@ -454,6 +461,10 @@ koukai waza decode(data: []uint8) -> DecodeResult {
     moshi (validation != mu) { kaesu DecodeResult { value: mu, error: validation }; }
     index = 0;
     aida (index < len(file.functions)) {
+        kaku f = file.functions[index];
+        moshi (win64c.is_external(f.name)) {
+            moshi (win64c.validate(f.name, f.parameter_count, f.returns_value) != "" || len(f.instructions) != 0 || len(f.captures) != 0 || f.local_count != f.parameter_count) { kaesu failure(DecodeErrorKind.InvalidFunction(), index, 0); }
+        }
         validation = validate_instructions(file, file.functions[index].instructions, index);
         moshi (validation != mu) { kaesu DecodeResult { value: mu, error: validation }; }
         index = index + 1;

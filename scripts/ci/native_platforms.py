@@ -440,6 +440,24 @@ def smoke(report, cli, target, work, label_prefix=""):
     return report.check(label_prefix + "cli-hello", "PASS" if ok else "FAIL", "native", "" if ok else "exit %s, stdout %r" % (code, out[:200]))
 
 
+def windows_ffi_checks(report, cli):
+    output = report.output / "windows-c-ffi"
+    code, out, err, _ = run(report, "windows-c-ffi", [sys.executable, ROOT / "tests/ffi/windows-amd64/run.py", "--mio", cli, "--output", output], timeout=1800)
+    status, detail = "FAIL", brief(err or out)
+    try:
+        result = json.loads((output / "report.json").read_text(encoding="utf-8"))
+        status = result["status"]
+        if code != 0 and status == "PASS":
+            status = "FAIL"
+        if code == 0 and status != "PASS":
+            status = "FAIL"
+        detail = "; ".join(c["name"] + ":" + c["status"] for c in result["checks"] if c["status"] != "PASS")
+        report.hashes["windows-c-ffi"] = result["hashes"]
+    except (OSError, ValueError, KeyError):
+        pass
+    report.check("windows-c-ffi", status, "native", detail)
+
+
 def windows_tcp_pe(report, image, label):
     try:
         symbols = verify_winsock(image.read_bytes())
@@ -1088,6 +1106,7 @@ def follower(args, target):
         reactor_checks(report, cli, target, work)
         if target == "windows-amd64":
             windows_tcp_wildcard(report, cli, work)
+            windows_ffi_checks(report, cli)
         contract(report, cli, target)
         contract(report, cli, target, suite="differential")
     return finish(report, cli)

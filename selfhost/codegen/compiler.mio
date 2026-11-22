@@ -4,6 +4,7 @@ yobu "kiso/array";
 yobu "kiso/convert";
 yobu "kiso/string";
 yobu "selfhost/parser";
+yobu "kiso/encoding/win64c";
 yobu "selfhost/resolver";
 yobu "selfhost/typecheck";
 
@@ -233,7 +234,7 @@ waza array_descriptor(state: CompilerState, requested_type_id: int64) -> int64 {
     moshi (code == 1) { descriptor = 12; }
     moshi (code == 2) { descriptor = 13; }
     moshi (code == 3) { descriptor = 14; }
-    moshi (code == 4) { descriptor = 1; }
+    moshi (code == 4 || code == 20 || code == 21) { descriptor = 1; }
     moshi (code == 5) { descriptor = 15; }
     moshi (code == 6) { descriptor = 16; }
     moshi (code == 7) { descriptor = 17; }
@@ -460,6 +461,7 @@ waza emit_function_literal(state: CompilerState, parent: CompileContext, file_id
 waza emit_conversion(state: CompilerState, context: CompileContext, file_id: int64, node_id: int64) -> bool {
     kaku node = state.resolved.files[file_id].ast.nodes[node_id];
     moshi (len(node.children) != 2 || !emit_expression(state, context, file_id, node.children[1])) { kaesu iie; }
+    moshi (node.text == "cptr" || node.text == "uint64") { kaesu hai; }
     kaku source = node_type(state, file_id, node.children[1]);
     kaku source_code = typecheck.type_kind_code(state.checked.types[source].kind);
     moshi (node.text == "float32") {
@@ -1185,6 +1187,11 @@ waza register_layout(state: CompilerState) -> unit {
 
 waza compile_function_body(state: CompilerState, reference: resolver.NodeRef, id: int64, name: string, template: bool) -> unit {
     kaku node = state.resolved.files[reference.file_id].ast.nodes[reference.node_id];
+    moshi (win64c.is_external(node.extra)) {
+        kaku p = win64c.parts(node.extra);
+        state.layout.functions[id] = FunctionLayout { id: id, name: node.extra, parameter_count: node.operator, local_count: node.operator, returns_value: p[3] != "unit", captures: [], instructions: [] };
+        kaesu;
+    }
     kaku context = new_context(hai, binding_of(state, reference.file_id, reference.node_id));
     kaku saved_template = state.emitting_template[0];
     state.emitting_template[0] = template;
@@ -1364,6 +1371,7 @@ waza compile_modules_mode(packages: []resolver.ResolvedPackage, checked_packages
             kaku id = registry_ids[ri];
             kaku fn = layout.functions[id];
             kaku name = string.concat(registry_packages[ri], string.concat("::", registry_names[ri]));
+            moshi (win64c.is_external(fn.name)) { name = fn.name; }
             layout.functions[id] = FunctionLayout { id: fn.id, name: name, parameter_count: fn.parameter_count,
                 local_count: fn.local_count, returns_value: fn.returns_value, captures: fn.captures, instructions: fn.instructions };
             ri = ri + 1;
