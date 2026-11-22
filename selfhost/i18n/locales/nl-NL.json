@@ -59,7 +59,7 @@
     "err.emit_mochi": "deze opdracht kan geen Mochi-bytecode uitgeven",
     "err.symbols": "--emit-symbols geldt alleen voor native darwin-arm64-builds uit broncode",
     "err.observe": "--observe geldt alleen voor native darwin-arm64-builds uit broncode",
-    "err.link_options": "Linkeropties vereisen mio build voor darwin-arm64 op Apple Silicon macOS",
+    "err.link_options": "Linkeropties vereisen mio build voor darwin-arm64 op Apple Silicon macOS of voor linux-amd64 op Linux x86-64",
     "err.link_input": "linkerinvoer bestaat niet: {0}",
     "err.link_search": "zoekpad van de linker is geen map: {0}",
     "lsp.organize_imports": "Imports ordenen",
