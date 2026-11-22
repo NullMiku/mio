@@ -1131,6 +1131,27 @@ def contract(report, cli, target, reference="", suite="contract"):
 
 # ---------------------------------------------------------------------------------------------------- linux
 
+def formatter_checks(report, cli, work):
+    """`mio fmt`, import organization and the LSP import actions (tests/formatter/verify.py): the same cases run against the Go reference CLI and against
+    the native CLI built from this source, with the golden outputs, the rejection of unsafe edits and a program-output comparison before and after
+    formatting. The suite was not run by any workflow. Non-required until it has a CI history. PASS needs the driver to exit 0 and report that it ran its
+    tests; a missing Go toolchain or a failed build of the reference CLI is NOT_RUN, never a pass."""
+    import re
+    Path(work).mkdir(parents=True, exist_ok=True)
+    reference = Path(work) / "mio-reference"
+    code, out, err, seconds = run(report, "formatter-reference-build", ["go", "build", "-o", reference, "./cmd/mio"], timeout=900)
+    if code != 0 or not reference.is_file():
+        report.check("formatter-differential", "NOT_RUN", "go-reference+native", "the Go reference CLI could not be built: " + brief(err or out, 200), required=False)
+        return
+    code, out, err, seconds = run(report, "formatter-differential-run", [sys.executable, ROOT / "tests/formatter/verify.py", "--go", reference, "--native", cli], timeout=900)
+    text = out + err
+    ran = re.search(r"^Ran (\d+) tests? in ", text, re.MULTILINE)
+    passed = code == 0 and ran is not None and int(ran.group(1)) > 0 and re.search(r"^OK\s*$", text, re.MULTILINE) is not None
+    report.check("formatter-differential", "PASS" if passed else "FAIL", "go-reference+native",
+                 ("%s tests, Go reference CLI against the native CLI" % ran.group(1)) if passed else "exit %s: %s" % (code, brief(text, 400)),
+                 required=False, seconds=round(seconds, 1))
+
+
 def linux(args, target="linux-amd64"):
     profile = LINUX_PROFILES[target]
     report = Report(target, args.output)
@@ -1205,6 +1226,7 @@ def linux(args, target="linux-amd64"):
         return finish(report, cli)
     thread_checks(report, cli, target, work / "threads")
     reactor_checks(report, cli, target, work)
+    formatter_checks(report, cli, work / "formatter")
     chain = work / "runtime-chain"
     chain.mkdir(exist_ok=True)
     code, out, err, seconds = run(report, "linux-runtime-chain", [sys.executable, ROOT / "bunko/kiso/runtime/os/linux/check_chain.py"],
