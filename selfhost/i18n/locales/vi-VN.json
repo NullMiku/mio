@@ -62,6 +62,8 @@
     "err.link_options": "Tùy chọn liên kết yêu cầu mio build cho darwin-arm64 trên Apple Silicon macOS",
     "err.link_input": "đầu vào của trình liên kết không tồn tại: {0}",
     "err.link_search": "đường dẫn tìm kiếm của trình liên kết không phải thư mục: {0}",
+    "lsp.organize_imports": "Sắp xếp import",
+    "lsp.add_import": "Thêm import: {0}",
     "err.gc_stress": "--gc-stress chỉ áp dụng cho bản dựng gốc từ mã nguồn",
     "err.host_target": "run và exec yêu cầu đích máy chủ {0}",
     "err.empty_paths": "đường dẫn nguồn và đầu ra không được rỗng",

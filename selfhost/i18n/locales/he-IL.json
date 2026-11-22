@@ -62,6 +62,8 @@
     "err.link_options": "אפשרויות הקישור דורשות mio build עבור darwin-arm64 ב-Apple Silicon macOS",
     "err.link_input": "קלט הלינקר אינו קיים: {0}",
     "err.link_search": "נתיב החיפוש של הלינקר אינו ספרייה: {0}",
+    "lsp.organize_imports": "ארגון ייבואים",
+    "lsp.add_import": "הוספת ייבוא: {0}",
     "err.gc_stress": "--gc-stress חל רק על בניות מקוריות מהמקור",
     "err.host_target": "run ו-exec דורשים את יעד המארח {0}",
     "err.empty_paths": "נתיבי המקור והפלט חייבים להיות לא ריקים",

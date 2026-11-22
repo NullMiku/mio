@@ -62,6 +62,8 @@
     "err.link_options": "Linker-Optionen erfordern mio build für darwin-arm64 unter Apple Silicon macOS",
     "err.link_input": "Linker-Eingabe existiert nicht: {0}",
     "err.link_search": "Linker-Suchpfad ist kein Verzeichnis: {0}",
+    "lsp.organize_imports": "Importe organisieren",
+    "lsp.add_import": "Import hinzufügen: {0}",
     "err.gc_stress": "--gc-stress gilt nur für native Builds aus Quellen",
     "err.host_target": "run und exec benötigen das Hostziel {0}",
     "err.empty_paths": "Quell- und Ausgabepfad dürfen nicht leer sein",

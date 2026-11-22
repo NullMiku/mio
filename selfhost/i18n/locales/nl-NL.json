@@ -62,6 +62,8 @@
     "err.link_options": "Linkeropties vereisen mio build voor darwin-arm64 op Apple Silicon macOS",
     "err.link_input": "linkerinvoer bestaat niet: {0}",
     "err.link_search": "zoekpad van de linker is geen map: {0}",
+    "lsp.organize_imports": "Imports ordenen",
+    "lsp.add_import": "Import toevoegen: {0}",
     "err.gc_stress": "--gc-stress geldt alleen voor native builds uit broncode",
     "err.host_target": "run en exec vereisen het hostdoel {0}",
     "err.empty_paths": "het bron- en uitvoerpad mogen niet leeg zijn",

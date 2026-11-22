@@ -2,6 +2,7 @@ yobu "kiso/array";
 yobu "kiso/convert";
 yobu "kiso/encoding/json";
 yobu "kiso/string";
+yobu "selfhost/i18n";
 yobu "selfhost/imports";
 yobu "selfhost/frontend";
 yobu "selfhost/lexer";
@@ -124,7 +125,7 @@ waza code_actions(state: Session, analysis: DocumentAnalysis, request: json.Docu
     moshi (action_allowed(request, kinds, "source.organizeImports")) {
         kaku organized = imports.organize(buffer.data, analysis.path, analysis.index.analysis, catalog, state.work);
         moshi (organized != mu) {
-            array.push(actions, edit_action(analysis, buffer, "Organize imports", "source.organizeImports", organized));
+            array.push(actions, edit_action(analysis, buffer, i18n.text(state.language[0], i18n.key_lsp_organize_imports), "source.organizeImports", organized));
         }
     }
     moshi (action_allowed(request, kinds, "quickfix")) {
@@ -155,7 +156,7 @@ waza code_actions(state: Session, analysis: DocumentAnalysis, request: json.Docu
                             array.push(seen, name);
                             kaku edit = imports.insertion(buffer.data, name);
                             moshi (edit != mu) {
-                                array.push(actions, edit_action(analysis, buffer, string.concat("Add import: ", name), "quickfix", edit));
+                                array.push(actions, edit_action(analysis, buffer, i18n.format(state.language[0], i18n.key_lsp_add_import, [name]), "quickfix", edit));
                             }
                         }
                     }

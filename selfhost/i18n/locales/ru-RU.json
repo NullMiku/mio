@@ -62,6 +62,8 @@
     "err.link_options": "Параметры компоновщика требуют mio build для darwin-arm64 на Apple Silicon macOS",
     "err.link_input": "входной файл компоновщика не существует: {0}",
     "err.link_search": "путь поиска компоновщика не является каталогом: {0}",
+    "lsp.organize_imports": "Упорядочить импорты",
+    "lsp.add_import": "Добавить импорт: {0}",
     "err.gc_stress": "--gc-stress применяется только к нативным сборкам из исходников",
     "err.host_target": "run и exec требуют целевой платформы хоста {0}",
     "err.empty_paths": "пути исходников и вывода не должны быть пустыми",

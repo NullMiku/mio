@@ -62,6 +62,8 @@
     "err.link_options": "As opções do vinculador exigem mio build para darwin-arm64 no Apple Silicon macOS",
     "err.link_input": "a entrada do vinculador não existe: {0}",
     "err.link_search": "o caminho de pesquisa do vinculador não é um diretório: {0}",
+    "lsp.organize_imports": "Organizar importações",
+    "lsp.add_import": "Adicionar importação: {0}",
     "err.gc_stress": "--gc-stress aplica-se apenas a compilações nativas a partir de fontes",
     "err.host_target": "run e exec exigem o destino do host {0}",
     "err.empty_paths": "os caminhos de origem e saída não podem ser vazios",

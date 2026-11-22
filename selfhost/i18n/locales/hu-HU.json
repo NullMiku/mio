@@ -62,6 +62,8 @@
     "err.link_options": "A linker beállításai mio build parancsot igényelnek darwin-arm64 célra Apple Silicon macOS rendszeren",
     "err.link_input": "a linker bemenete nem létezik: {0}",
     "err.link_search": "a linker keresési útvonala nem könyvtár: {0}",
+    "lsp.organize_imports": "Importok rendezése",
+    "lsp.add_import": "Import hozzáadása: {0}",
     "err.gc_stress": "A --gc-stress csak forrásból készülő natív fordításokra vonatkozik",
     "err.host_target": "a run és az exec a(z) {0} gazdacélt igényli",
     "err.empty_paths": "a forrás- és kimeneti útvonal nem lehet üres",

@@ -21,10 +21,11 @@ koukai kata Session {
     library_root: []string;
     library: []SourceURI;
     import_indexes: []imports.Index;
+    language: []string;
 }
 koukai kata Reply { messages: []string; stop: bool; status: int64; }
 koukai waza session(root: string, bunko: string) -> Session {
-    kaesu Session {work:progress.context(),documents:lsp.store(),flags:[iie,iie,iie,hai,hai,iie],roots:[root],bunko:[bunko],cancelled:[],dirty:[],cache:[],schedule:[150,0,0],library_root:[""],library:[],import_indexes:[]};
+    kaesu Session {work:progress.context(),documents:lsp.store(),flags:[iie,iie,iie,hai,hai,iie],roots:[root],bunko:[bunko],cancelled:[],dirty:[],cache:[],schedule:[150,0,0],library_root:[""],library:[],import_indexes:[],language:["en-US"]};
 }
 waza response(id: string, value: string) -> string {
     kaesu string.concat("{\"jsonrpc\":\"2.0\",\"id\":",string.concat(id,string.concat(",\"result\":",string.concat(value,"}"))));
