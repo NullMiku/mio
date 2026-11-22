@@ -935,6 +935,42 @@ def darwin_c_abi(report, cli, work):
     report.check("darwin-c-abi", "FAIL" if problems else "PASS", "native", ("; ".join(problems) + " | " if problems else "") + detail, required=False)
 
 
+def linux_c_abi(report, cli, work):
+    """Linux x86-64 (System V AMD64) C ABI acceptance (docs/linux-amd64-c-ffi.md), non-required until it has a CI history. tests/ffi/linux-amd64/run.py
+    compiles real C fixtures with the host GCC (and Clang when installed) into objects, a static archive and a shared library, links them into Mio
+    programs with the compiler built from this source, executes the ELF programs, inspects them with readelf/ldd and checks the rejections. The driver
+    exits 0 when something passed even if other checks were SKIP or NOT_RUN, so PASS here additionally requires a report with no FAIL and no NOT_RUN.
+    SKIP is limited to what the host may lack (Clang, the ordinary-binary-identity baseline, the Go reference compiler) and is named in the reason; a SKIP is
+    never counted as a pass. Raw logs land under logs/linux-c-abi."""
+    import json
+    Path(work).mkdir(parents=True, exist_ok=True)
+    output = report.logs / "linux-c-abi"
+    code, out, err, seconds = run(report, "linux-c-abi-run", [sys.executable, ROOT / "tests/ffi/linux-amd64/run.py", "--mio", str(cli), "--output", str(output)], timeout=1800)
+    try:
+        checks = json.loads((output / "report.json").read_text(encoding="utf-8"))["checks"]
+    except (OSError, ValueError, KeyError) as problem:
+        report.check("linux-c-abi", "FAIL", "native", "no report: %s (exit %s) | %s" % (problem, code, brief(out + err, 300)), required=False)
+        return
+    count = lambda status: [item["name"] for item in checks if item.get("status") == status]
+    passed, failed, not_run, skipped = count("PASS"), count("FAIL"), count("NOT_RUN"), count("SKIP")
+    allowed = ("clang-available", "ordinary-binary-identity", "reference-vm")
+    unexpected_skips = [name for name in skipped if name not in allowed]
+    problems = []
+    if code != 0:
+        problems.append("exit %s" % code)
+    if failed:
+        problems.append("FAIL: %s" % ", ".join(failed))
+    if not_run:
+        problems.append("NOT_RUN: %s" % ", ".join(not_run))
+    if unexpected_skips:
+        problems.append("SKIP: %s" % ", ".join(unexpected_skips))
+    if not passed:
+        problems.append("no check passed")
+    detail = "%d PASS, %d FAIL, %d NOT_RUN, %d SKIP%s" % (len(passed), len(failed), len(not_run), len(skipped),
+                                                          " (%s)" % ", ".join(skipped) if skipped and not unexpected_skips else "")
+    report.check("linux-c-abi", "FAIL" if problems else "PASS", "native", ("; ".join(problems) + " | " if problems else "") + detail, required=False)
+
+
 def darwin_thread_repro(report, cli, work):
     """Diagnostic (non-required): tests/threads/pingpong_close.mio, run three times with a stack sample of any run that takes longer than 8 seconds."""
     Path(work).mkdir(parents=True, exist_ok=True)
@@ -1219,6 +1255,8 @@ def linux(args, target="linux-amd64"):
     native_mio_test(report, cli, skips_allowed=True, target=target)
     contract(report, cli, target, reference=str(refvm))
     contract(report, cli, target, reference=str(refvm), suite="differential")
+    if target == "linux-amd64":
+        linux_c_abi(report, cli, work / "linux-c-abi")
     if target != "linux-amd64":
         # The remaining steps are specific to the amd64 hub: the x86-64 runtime chain and the cross-built Stage A images.
         thread_checks(report, cli, target, work / "threads")
