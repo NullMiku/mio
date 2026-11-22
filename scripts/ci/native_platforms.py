@@ -900,6 +900,41 @@ def darwin_thread_observe(report, cli, work):
     report.check("darwin-thread-observe", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:9000], required=False)
 
 
+def darwin_c_abi(report, cli, work):
+    """Darwin ARM64 C ABI acceptance (docs/darwin-arm64-c-ffi.md), non-required until it has a CI history. tests/ffi/darwin-arm64/run.py builds Clang
+    objects, an archive and a dylib, links them into signed Mio programs with the compiler built from this source, runs them, and checks the rejections
+    and the other targets' diagnostics. The module is registered for the deferred `Native Verification / macos-arm64` job only, so without this check the
+    pull-request Native run executed no C ABI test at all. The driver exits 0 when something passed even if other checks were SKIP or NOT_RUN, so PASS here
+    additionally requires a report with no FAIL and no NOT_RUN; the single SKIP the driver reports without `--baseline` (ordinary-binary-identity) is
+    named in the reason and never counted as a pass. The raw log of every command lands under logs/c-abi."""
+    import json
+    Path(work).mkdir(parents=True, exist_ok=True)
+    output = report.logs / "c-abi"
+    code, out, err, seconds = run(report, "darwin-c-abi-run", [sys.executable, ROOT / "tests/ffi/darwin-arm64/run.py", "--mio", str(cli), "--output", str(output)], timeout=1800)
+    try:
+        checks = json.loads((output / "report.json").read_text(encoding="utf-8"))["checks"]
+    except (OSError, ValueError, KeyError) as problem:
+        report.check("darwin-c-abi", "FAIL", "native", "no report: %s (exit %s) | %s" % (problem, code, brief(out + err, 300)), required=False)
+        return
+    count = lambda status: [item["name"] for item in checks if item.get("status") == status]
+    passed, failed, not_run, skipped = count("PASS"), count("FAIL"), count("NOT_RUN"), count("SKIP")
+    unexpected_skips = [name for name in skipped if name != "ordinary-binary-identity"]
+    problems = []
+    if code != 0:
+        problems.append("exit %s" % code)
+    if failed:
+        problems.append("FAIL: %s" % ", ".join(failed))
+    if not_run:
+        problems.append("NOT_RUN: %s" % ", ".join(not_run))
+    if unexpected_skips:
+        problems.append("SKIP: %s" % ", ".join(unexpected_skips))
+    if not passed:
+        problems.append("no check passed")
+    detail = "%d PASS, %d FAIL, %d NOT_RUN, %d SKIP%s" % (len(passed), len(failed), len(not_run), len(skipped),
+                                                          " (%s, no baseline compiler supplied)" % ", ".join(skipped) if skipped and not unexpected_skips else "")
+    report.check("darwin-c-abi", "FAIL" if problems else "PASS", "native", ("; ".join(problems) + " | " if problems else "") + detail, required=False)
+
+
 def darwin_thread_repro(report, cli, work):
     """Diagnostic (non-required): tests/threads/pingpong_close.mio, run three times with a stack sample of any run that takes longer than 8 seconds."""
     Path(work).mkdir(parents=True, exist_ok=True)
@@ -1271,6 +1306,7 @@ def follower(args, target):
             darwin_thread_bench(report, cli, work / "thread-bench")
             darwin_thread_phases(report, cli, work / "thread-phases")
             darwin_thread_observe(report, cli, work / "thread-observe")
+            darwin_c_abi(report, cli, work / "c-abi")
         mio_run_protocol(report, cli, work)
         os_process_protocol(report, cli, work)
         mio_test_protocol(report, cli, work)

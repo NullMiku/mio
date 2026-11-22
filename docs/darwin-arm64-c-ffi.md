@@ -95,3 +95,5 @@ MIO_NATIVE_SEED=/path/to/mio-v2.1.0-darwin-arm64 \
 ```
 
 CI 先校验 Seed 并从当前源码重建 Native 编译器。Mio 单元测试检查原型元数据，独立验收使用 Clang 产出的目标文件、静态库和动态库，加上 libSystem 与 CoreFoundation，执行生成的签名程序。每条命令、原始输出及 PASS、FAIL、SKIP、NOT_RUN 状态进入报告目录。其他目标在该验收中只验证编译和错误诊断。
+
+Native 工作流以非必需检查 `darwin-c-abi` 在 macOS ARM64 上运行同一脚本，日志位于 `logs/c-abi`。该检查要求报告中没有 FAIL 和 NOT_RUN，在没有 `--baseline` 编译器时唯一允许的 SKIP 是 `ordinary-binary-identity`，它不计为通过。
