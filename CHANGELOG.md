@@ -11,6 +11,7 @@
 - Programs that do not use the new keywords keep their exact meaning and their native output. `hidouki` and `matsu` are now reserved words.
 - Fixed a code generator bug: a closure could be matched to a same-numbered closure of an imported package (symptom: "variable has no allocated slot").
 - The Linux ARM64 and Windows ARM64 bootstrap compilers now build the Mochi module in a function of its own, so the sources and the checked packages can be collected before the machine-code lowering starts. Their image heap (1 GiB) was nearly exhausted when compiling the CLI; the output images are unchanged.
+- Asking whether a program needs the async runtime (the E0805 gate on targets other than linux-amd64, for ,  and ) now only parses the import graph instead of running a second complete front end, which keeps the ARM64 self-built CLIs inside their fixed heap.
 - Native CI checks the async capability boundary on every target: `linux-async` (real programs) on linux-amd64, `async-frontend-accepted` and `async-capability-rejection` (E0805, no executable) elsewhere.
 
 ## 2.1.2 — Unreleased
