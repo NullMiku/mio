@@ -20,6 +20,7 @@ kata AsyncState {
     errors: []ParseError;
     counter: []int64;
     names: []string;
+    result: []int64;
 }
 
 // Continuation: kind 0 = the function body ended (fail the task), 1 = call the thunk `name`, 2 = loop back edge through the cell `name`.
@@ -85,8 +86,17 @@ waza mk_type_name(state: AsyncState, name: string, args: []int64, span: SourceSp
 
 waza mk_unit_type(state: AsyncState, span: SourceSpan) -> int64 { kaesu mk_type_name(state, "unit", empty_children(0), span); }
 
+// A private copy of a type annotation: every use of the result type in generated code owns its node (the checker records facts per node).
+waza clone_type(state: AsyncState, id: int64) -> int64 {
+    kaku node = state.arena.nodes[id];
+    kaku children = empty_children(len(node.children));
+    kaku index = 0;
+    aida (index < len(node.children)) { array.push(children, clone_type(state, node.children[index])); index = index + 1; }
+    kaesu add_node(state.arena, node.kind, node.text, node.extra, node.integer, node.flag, node.operator, children, node.span);
+}
+
 waza mk_task_type(state: AsyncState, result: int64) -> int64 {
-    kaesu mk_type_name(state, "async.Task", list1(result), state.arena.nodes[result].span);
+    kaesu mk_type_name(state, "async.Task", list1(clone_type(state, result)), state.arena.nodes[result].span);
 }
 
 // () -> unit
@@ -536,12 +546,12 @@ waza await_step_task(state: AsyncState, id: int64) -> int64 {
 
 waza emit_cont(state: AsyncState, k: Cont, span: SourceSpan) -> []int64 {
     moshi (k.kind == 0) {
-        kaesu list1(mk_runtime_stmt(state, "fail_missing_return", list1(mk_ident(state, "__mio_self", span)), span));
+        kaesu list1(mk_expr_stmt(state, mk_runtime_call(state, "fail_missing_return", list1(clone_type(state, state.result[0])), list1(mk_ident(state, "__mio_self", span)), span), span));
     }
     moshi (k.kind == 1) { kaesu list1(mk_call_thunk(state, k.name, span)); }
     kaku zero = mk(state, NodeKind.IntegerLiteral(), "0", 0, iie, 0, empty_children(0), span);
     kaku entry = mk(state, NodeKind.IndexExpression(), "", 0, iie, 0, list2(mk_ident(state, k.name, span), zero), span);
-    kaesu list1(mk_runtime_stmt(state, "again", list2(mk_ident(state, "__mio_self", span), entry), span));
+    kaesu list1(mk_runtime_stmt(state, "again", list2(mk_field(state, mk_ident(state, "__mio_self", span), "core", span), entry), span));
 }
 
 waza cps(state: AsyncState, list: []int64, k: Cont, lc: LoopCtx, span: SourceSpan) -> []int64 {
@@ -556,13 +566,16 @@ waza cps(state: AsyncState, list: []int64, k: Cont, lc: LoopCtx, span: SourceSpa
         kaku task = await_step_task(state, id);
         moshi (task >= 0) {
             kaku task_node = state.arena.nodes[task];
-            kaku take = mk_runtime_call(state, "take", empty_children(0), list1(mk_ident(state, task_node.text, task_node.span)), node.span);
+            // async.then(__mio_self.core, t.core, waza () -> unit { async.check(t.core); kaku v = t.result[0]; rest })
+            kaku zero = mk(state, NodeKind.IntegerLiteral(), "0", 0, iie, 0, empty_children(0), node.span);
+            kaku read = mk(state, NodeKind.IndexExpression(), "", 0, iie, 0, list2(mk_field(state, mk_ident(state, task_node.text, task_node.span), "result", node.span), zero), node.span);
             kaku inner = empty_children(4);
-            array.push(inner, mk_let(state, node.text, -1, take, node.span));
+            array.push(inner, mk_runtime_stmt(state, "check", list1(mk_field(state, mk_ident(state, task_node.text, task_node.span), "core", task_node.span)), node.span));
+            array.push(inner, mk_let(state, node.text, -1, read, node.span));
             array.append_all(inner, cps(state, rest, k, lc, span));
             kaku args = empty_children(3);
-            array.push(args, mk_ident(state, "__mio_self", node.span));
-            array.push(args, mk_ident(state, task_node.text, task_node.span));
+            array.push(args, mk_field(state, mk_ident(state, "__mio_self", node.span), "core", node.span));
+            array.push(args, mk_field(state, mk_ident(state, task_node.text, task_node.span), "core", task_node.span));
             array.push(args, mk_thunk(state, inner, node.span));
             array.push(out, mk_runtime_stmt(state, "then", args, node.span));
             kaesu out;
@@ -665,7 +678,7 @@ waza rewrite_sync(state: AsyncState, id: int64, lc: LoopCtx, while_depth: int64)
             kaesu list1(id);
         }
         kaku out = empty_children(2);
-        array.push(out, mk_runtime_stmt(state, "complete", list2(mk_ident(state, "__mio_self", node.span), node.children[0]), node.span));
+        array.push(out, mk_expr_stmt(state, mk_runtime_call(state, "complete", list1(clone_type(state, state.result[0])), list2(mk_ident(state, "__mio_self", node.span), node.children[0]), node.span), node.span));
         array.push(out, mk_return(state, node.span));
         kaesu out;
     }
@@ -727,6 +740,7 @@ waza lower_function(state: AsyncState, id: int64) -> int64 {
     kaku node = state.arena.nodes[id];
     state.counter[0] = 0;
     kaku ret = return_type_of(state, id);
+    state.result[0] = ret;
     kaku body = node.children[len(node.children) - 1];
     kaku body_node = state.arena.nodes[body];
     kaku span = node.span;
@@ -739,7 +753,7 @@ waza lower_function(state: AsyncState, id: int64) -> int64 {
     array.push(literal_children, mk_unit_type(state, span));
     array.push(literal_children, mk_block(state, statements, body_node.span));
     kaku literal = mk(state, NodeKind.FunctionLiteral(), "", 1, iie, 0, literal_children, body_node.span);
-    kaku spawn = mk_runtime_call(state, "spawn", list1(ret), list1(literal), body_node.span);
+    kaku spawn = mk_runtime_call(state, "spawn", list1(clone_type(state, ret)), list1(literal), body_node.span);
     kaku return_statement = mk(state, NodeKind.ReturnStatement(), "", 0, iie, 0, list1(spawn), body_node.span);
     kaku children = empty_children(len(node.children));
     kaku index = 0;
@@ -773,7 +787,7 @@ waza entry_call(state: AsyncState, id: int64) -> int64 {
 // reports errors the original tree is kept and the errors are appended (sorted by position) to result.errors.
 koukai waza lower_async(parsed: ParseResult) -> ParseResult {
     moshi (parsed.root < 0 || len(parsed.errors) != 0 || !uses_async(parsed.ast)) { kaesu parsed; }
-    kaku state = AsyncState { arena: parsed.ast, errors: array.with_capacity[ParseError](2), counter: [0], names: array.with_capacity[string](4) };
+    kaku state = AsyncState { arena: parsed.ast, errors: array.with_capacity[ParseError](2), counter: [0], names: array.with_capacity[string](4), result: [-1] };
     kaku root = parsed.ast.nodes[parsed.root];
     kaku index = 0;
     aida (index < len(root.children)) {

@@ -288,6 +288,10 @@ func (l *lowerer) callStatement(name string, args []ast.Expression, span ast.Spa
 	return &ast.ExpressionStatement{Expr: l.runtimeCall(name, nil, args, span), Range: span}
 }
 
+func (l *lowerer) field(left ast.Expression, name string, span ast.Span) ast.Expression {
+	return &ast.FieldExpression{Left: left, Name: name, Range: span}
+}
+
 func thunk(body []ast.Statement, span ast.Span) *ast.FunctionLiteral {
 	return &ast.FunctionLiteral{ReturnType: unitType(span), Body: &ast.BlockStatement{Statements: body, Range: span}, Range: span}
 }
@@ -307,7 +311,7 @@ func (l *lowerer) lowerFunction(fn *ast.FunctionStatement) *ast.FunctionStatemen
 	span := fn.Range
 	body := l.cps(l.normalizeList(fn.Body.Statements), func() []ast.Statement {
 		// Falling off the end of an async function without kaesu leaves the task unfinished: fail it deterministically instead.
-		return []ast.Statement{l.callStatement("fail_missing_return", []ast.Expression{ident(selfName, span)}, span)}
+		return []ast.Statement{&ast.ExpressionStatement{Expr: l.runtimeCall("fail_missing_return", []*ast.TypeRef{l.result}, []ast.Expression{ident(selfName, span)}, span), Range: span}}
 	}, nil, span)
 	self := ident(selfName, span)
 	self.DeclaredType = l.taskType(fn.ReturnType)
@@ -556,14 +560,20 @@ func (l *lowerer) cps(list []ast.Statement, k cont, lc *loopContext, span ast.Sp
 	for i, s := range list {
 		rest := list[i+1:]
 		if let, task, ok := isAwaitStep(s); ok {
-			inner := []ast.Statement{&ast.LetStatement{
-				Name:  let.Name,
-				Value: l.runtimeCall("take", nil, []ast.Expression{ident(task.Name, task.Range)}, let.Range),
+			// async.then(__mio_self.core, t.core, waza () -> unit { async.check(t.core); kaku v = t.result[0]; rest })
+			core := func() ast.Expression { return l.field(ident(task.Name, task.Range), "core", task.Range) }
+			read := &ast.IndexExpression{
+				Left:  l.field(ident(task.Name, task.Range), "result", let.Range),
+				Index: &ast.IntegerLiteral{Value: 0, Raw: "0", Type: "", Range: let.Range},
 				Range: let.Range,
-			}}
+			}
+			inner := []ast.Statement{
+				l.callStatement("check", []ast.Expression{core()}, let.Range),
+				&ast.LetStatement{Name: let.Name, Value: read, Range: let.Range},
+			}
 			inner = append(inner, l.cps(rest, k, lc, span)...)
 			next := thunk(inner, let.Range)
-			out = append(out, l.callStatement("then", []ast.Expression{ident(selfName, let.Range), ident(task.Name, task.Range), next}, let.Range))
+			out = append(out, l.callStatement("then", []ast.Expression{l.field(ident(selfName, let.Range), "core", let.Range), core(), next}, let.Range))
 			return out
 		}
 		if !needsLowering(s) {
@@ -634,7 +644,7 @@ func (l *lowerer) lowerLoop(x *ast.WhileStatement, rest []ast.Statement, k cont,
 	out = append(out, &ast.LetStatement{Name: cellName, Value: &ast.ArrayLiteral{ElementType: "", Range: span}, Range: span})
 	again := func(at ast.Span) []ast.Statement {
 		entry := &ast.IndexExpression{Left: ident(name, at), Index: &ast.IntegerLiteral{Value: 0, Magnitude: 0, Raw: "0", Range: at}, Range: at}
-		return []ast.Statement{l.callStatement("again", []ast.Expression{ident(selfName, at), entry}, at)}
+		return []ast.Statement{l.callStatement("again", []ast.Expression{l.field(ident(selfName, at), "core", at), entry}, at)}
 	}
 	inner := &loopContext{
 		breakWith: func(at ast.Span) []ast.Statement {
@@ -668,7 +678,8 @@ func (l *lowerer) rewriteSync(s ast.Statement, lc *loopContext, whileDepth int) 
 			l.failAt(CodeInvalidDecl, "hidouki 函数的 kaesu 必须带有结果值", x.Range.Start, len("kaesu"))
 			return []ast.Statement{s}
 		}
-		complete := l.callStatement("complete", []ast.Expression{ident(selfName, x.Range), x.Value}, x.Range)
+		// complete[T]: the result type is explicit so generic async functions (where inference cannot see through type parameters) lower too.
+		complete := &ast.ExpressionStatement{Expr: l.runtimeCall("complete", []*ast.TypeRef{l.result}, []ast.Expression{ident(selfName, x.Range), x.Value}, x.Range), Range: x.Range}
 		return []ast.Statement{complete, &ast.ReturnStatement{Range: x.Range}}
 	case *ast.BreakStatement:
 		if lc != nil && whileDepth == 0 {
