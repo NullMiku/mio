@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import re
 import io
 import shutil
 import tarfile
@@ -31,6 +32,7 @@ verify = load("ci_verify", HERE / "verify.py")
 isolation = load("release_isolation", HERE / "release_isolation.py")
 plan = load("ci_plan", HERE / "plan.py")
 native = load("ci_native_platforms", HERE / "native_platforms.py")
+thread_bench = load("ci_thread_bench", HERE / "thread_bench.py")
 
 
 class ContractTests(unittest.TestCase):
@@ -804,6 +806,124 @@ class ThreadBenchmarkEvidenceTests(unittest.TestCase):
 
     def test_wrong_work_count_cannot_pass(self):
         self.assertEqual(self.status(0, self.complete.replace("mpmc,1,400000", "mpmc,1,1")), "FAIL")
+
+
+class ThreadStartFailureEvidenceTests(unittest.TestCase):
+    """Exit status 41 of a Darwin thread sample (run 45078553328) is a failed thread_open_shared; the evidence must say so and a failed sample must never pass."""
+
+    def test_status_table_matches_the_runtime(self):
+        source = (HERE.parents[1] / "bunko/kiso/aot/lower/worker_roots.mio").read_text(encoding="utf-8")
+        found = re.search(r'kaku names=\[([^\]]*)\];\s*kaku id=12;', source)
+        self.assertIsNotNone(found, "wr_call no longer encodes the failed call in the exit status: update thread_bench.decode_runtime_status")
+        names = re.findall(r'"([a-z_]+)"', found.group(1))
+        self.assertEqual(names, thread_bench.RUNTIME_CALLS[:-1], "the decode table drifted from worker_roots.mio")
+        self.assertIn("30+id*4", source.replace(" ", ""), "the exit status formula changed")
+
+    def test_decoding(self):
+        decode = thread_bench.decode_runtime_status
+        self.assertIn("thread_open_shared returned a value >= 3", decode(41))
+        self.assertIn("thread_open_shared returned 1", decode(39))
+        self.assertIn("thread_open_shared returned 2", decode(40))
+        self.assertIn("gc_block_enter returned 1", decode(31))
+        self.assertIn("an unlisted call", decode(30 + 4 * 12 + 3))
+        for other in (None, 0, 1, 2, 29, 30, 34, 82, 139, 255):
+            self.assertEqual(decode(other), "", other)
+
+    def test_judge_reports_the_decoded_status_and_still_fails(self):
+        result = dict(exit=41, timed_out=False, stdout="", stderr="", stderr_full="")
+        status, rows, reason = thread_bench.judge("start_join", result)
+        self.assertEqual((status, rows), ("FAIL", None))
+        self.assertIn("exit 41", reason)
+        self.assertIn("thread_open_shared", reason)
+        status, rows, reason = thread_bench.judge("start_join", dict(result, exit=3))
+        self.assertEqual(status, "FAIL")
+        self.assertNotIn("thread runtime call", reason)
+
+    def repeat_status(self, code, runs):
+        class Evidence:
+            def __init__(self, logs):
+                self.logs = logs
+            def check(self, name, status, *args, **kwargs):
+                self.name, self.status, self.detail, self.required = name, status, args[1] if len(args) > 1 else "", kwargs.get("required", True)
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Evidence(Path(directory))
+            output = Path(directory) / "thread-start-repeat"
+            output.mkdir()
+            if runs is not None:
+                data = {"phases": {"start_join": {"contenders": {
+                    "candidate": {"runs": [dict(status=s, reason=r) for s, r in runs]},
+                    "baseline": {"runs": [dict(status="COMPLETE", reason="")] * len(runs)}}}}}
+                (output / "report.json").write_text(json.dumps(data))
+            with patch.object(native, "run", return_value=(code, "", "", 1.0)):
+                native.darwin_thread_start_repeat(evidence, Path("cli"), Path(directory) / "work")
+            return evidence
+
+    def test_repeat_check_passes_only_when_every_sample_completed(self):
+        good = self.repeat_status(0, [("COMPLETE", "")] * 4)
+        self.assertEqual(good.status, "PASS")
+        self.assertFalse(good.required, "the evidence check must stay non-required")
+
+    def test_repeat_check_fails_on_one_failed_sample_and_names_it(self):
+        bad = self.repeat_status(1, [("COMPLETE", ""), ("FAIL", "exit 41 stderr '' [thread runtime call thread_open_shared returned a value >= 3]"), ("COMPLETE", "")])
+        self.assertEqual(bad.status, "FAIL")
+        self.assertIn("sample 1", bad.detail)
+        self.assertIn("thread_open_shared", bad.detail)
+        # a driver that exits 0 cannot launder a failed sample
+        laundered = self.repeat_status(0, [("COMPLETE", ""), ("FAIL", "exit 41")])
+        self.assertEqual(laundered.status, "FAIL")
+
+    def test_repeat_check_without_report_or_samples_is_not_a_pass(self):
+        self.assertEqual(self.repeat_status(0, None).status, "FAIL")
+        self.assertEqual(self.repeat_status(0, []).status, "FAIL")
+
+    def burst_status(self, outcomes, build=(0, "", "")):
+        """outcomes: one (exit, stdout) per run of the C witness; build: the (exit, out, err) of the compile step."""
+        class Evidence:
+            def check(self, name, status, *args, **kwargs):
+                self.name, self.status, self.detail, self.required = name, status, args[1] if len(args) > 1 else "", kwargs.get("required", True)
+        evidence = Evidence()
+        queue = list(outcomes)
+        def fake(report, label, argv, **kwargs):
+            if label.endswith("-build"):
+                Path(argv[-1]).write_bytes(b"x")
+                return build[0], build[1], build[2], 0.1
+            code, out = queue.pop(0)
+            return code, out, "", 0.1
+        with tempfile.TemporaryDirectory() as directory, patch.object(native, "run", side_effect=fake):
+            native.darwin_pthread_burst(evidence, Path(directory), repeat=len(outcomes), threads=100)
+        return evidence
+
+    ok_line = "pthread_burst threads=100 created=100 refused=0 first_refused_at=-1 first_errno=0\n"
+    refused_line = "pthread_burst threads=100 created=97 refused=3 first_refused_at=41 first_errno=35\n"
+
+    def test_pthread_burst_passes_only_without_any_refusal(self):
+        good = self.burst_status([(0, self.ok_line)] * 3)
+        self.assertEqual(good.status, "PASS")
+        self.assertFalse(good.required)
+        bad = self.burst_status([(0, self.ok_line), (1, self.refused_line)])
+        self.assertEqual(bad.status, "FAIL")
+        import errno
+        self.assertIn("errno 35 (%s)" % errno.errorcode[35], bad.detail)   # the name is the host's (EAGAIN on the Darwin runner)
+        self.assertIn("without any Mio code", bad.detail)
+
+    def test_pthread_burst_cannot_pass_on_missing_or_contradictory_output(self):
+        self.assertEqual(self.burst_status([(0, "")]).status, "FAIL")
+        self.assertEqual(self.burst_status([(1, self.ok_line)]).status, "FAIL")   # exit status must agree with the counts
+        self.assertEqual(self.burst_status([(0, self.refused_line)]).status, "FAIL")
+
+    def test_pthread_burst_without_a_compiler_is_not_run_never_pass(self):
+        self.assertEqual(self.burst_status([], build=(1, "", "clang: not found")).status, "NOT_RUN")
+
+    @unittest.skipUnless(shutil.which("cc"), "needs a C compiler")
+    def test_pthread_burst_witness_builds_warning_free_and_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "burst"
+            built = subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-std=c11", "-pthread", str(HERE.parents[1] / "tests/threads/pthread_burst.c"), "-o", str(binary)],
+                                   capture_output=True, text=True)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            done = subprocess.run([str(binary), "200"], capture_output=True, text=True)
+            self.assertEqual((done.returncode, done.stdout), (0, "pthread_burst threads=200 created=200 refused=0 first_refused_at=-1 first_errno=0\n"))
+            self.assertEqual(subprocess.run([str(binary), "0"], capture_output=True, text=True).returncode, 2)
 
 
 class SeedVerificationTests(unittest.TestCase):
