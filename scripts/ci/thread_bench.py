@@ -171,13 +171,59 @@ def parse(out):
     return rows
 
 
+# The PUBLIC Darwin thread build ends the process when a thread-runtime call fails, with status 30 + 4 * call + min(result, 3)
+# (bunko/kiso/aot/lower/worker_roots.mio, wr_call; `call` indexes this list, an unlisted call is 12). scripts/ci/selftest.py keeps the list identical to the one in
+# that file. The status keeps only the call and whether the result was 1, 2 or at least 3: the OS error number itself is lost, so the decoded text names the
+# call and the class and never claims a cause.
+RUNTIME_CALLS = ["gc_block_enter", "gc_block_leave", "thread_open_shared", "thread_wait_started", "thread_wait_completion", "thread_close",
+                 "gc_mutator_poll", "gc_heap_enter", "thread_attach", "thread_enter", "thread_leave", "gc_scan_roots", "an unlisted call"]
+
+
+def decode_runtime_status(code):
+    """Describe an exit status of the public Darwin thread build that encodes a failed runtime call, or return "" for any other status."""
+    if not isinstance(code, int) or code < 30 or code >= 30 + 4 * len(RUNTIME_CALLS):
+        return ""
+    call, how = divmod(code - 30, 4)
+    if how == 0:   # 30 + 4 * call is never produced: a zero result does not fail
+        return ""
+    result = "returned %d" % how if how < 3 else "returned a value >= 3"
+    detail = ""
+    if RUNTIME_CALLS[call] == "thread_open_shared":
+        detail = " (it returns 1 for an invalid runtime state, otherwise the first OS error from creating the worker's mutex, condition variable or pthread)"
+    return "thread runtime call %s %s%s" % (RUNTIME_CALLS[call], result, detail)
+
+
+def environment_snapshot():
+    """Kernel limits and load, for a failed run (and once per report): enough to tell a resource refusal from a defect without a second run."""
+    snapshot = {}
+
+    def command(key, shell):
+        try:
+            done = subprocess.run(["sh", "-c", shell], capture_output=True, text=True, timeout=30)
+            snapshot[key] = (done.stdout + done.stderr).strip()[-2000:]
+        except (OSError, subprocess.SubprocessError) as problem:
+            snapshot[key] = "unavailable: %s" % problem
+
+    if platform.system() == "Darwin":
+        command("sysctl", "sysctl -a 2>/dev/null | grep -Ei 'thread|maxproc|ncpu|memsize'")
+        command("threads_in_system", "ps -axM 2>/dev/null | wc -l")
+        command("vm_stat", "vm_stat")
+    elif platform.system() == "Linux":
+        command("limits", "cat /proc/sys/kernel/threads-max /proc/sys/vm/max_map_count 2>&1; ulimit -u")
+        command("threads_in_system", "ps -eL 2>/dev/null | wc -l")
+    command("uptime", "uptime")
+    snapshot["rlimit_nproc"] = list(resource.getrlimit(resource.RLIMIT_NPROC))
+    return snapshot
+
+
 def judge(phase, result):
     """COMPLETE / PARTIAL / FAIL plus the measurement (ms, work) of a complete run."""
     rows = parse(result["stdout"])
     if result["timed_out"]:
         return "PARTIAL", None, "budget exceeded (censored: the true duration is longer than the budget); partial output %r" % result["stdout"][:200]
     if result["exit"] != 0:
-        return "FAIL", None, "exit %s stderr %r" % (result["exit"], result["stderr"][:120])
+        decoded = decode_runtime_status(result["exit"])
+        return "FAIL", None, "exit %s stderr %r%s" % (result["exit"], result["stderr"][:120], " [%s]" % decoded if decoded else "")
     if phase == "mpmc_long":   # tests/threads/mpmc_long.mio prints the received and the sent count
         return ("COMPLETE", {}, "") if result["stdout"] == "200000\n200000\n" else ("FAIL", None, "wrong output %r" % result["stdout"][:80])
     if rows is None:
@@ -237,6 +283,7 @@ def main():
     report = dict(host=dict(system=platform.system(), machine=platform.machine(), release=platform.release(), cpus=os.cpu_count()),
                   target=args.target, executed=runnable, repeat=args.repeat,
                   compilers={label: dict(path=str(path), sha256=sha256(path)) for label, path in contenders}, phases={})
+    report["environment"] = environment_snapshot() if runnable else None
     failed = False
     for phase in phases:
         call = "run();" if phase == "all" else PHASES[phase][0]
@@ -279,6 +326,8 @@ def main():
                         extra = dict(observation=values, waits=summarize_waits(values), instrumented=True)
                         if not values and status == "COMPLETE":
                             status, why = "FAIL", "observed image printed no mio-thread/mio-gc counters"
+                    if status == "FAIL" and result["exit"] not in (0, None):   # a failed run keeps the kernel limits and load seen right after it died
+                        extra["environment_after_failure"] = environment_snapshot()
                     entry["contenders"][label]["runs"].append(dict(status=status, reason=why, rows=rows, **extra, **{k: v for k, v in result.items() if k not in ("stdout", "stderr_full")}))
                     print("%-10s %-9s run %d: %-8s exit %s %.1fs %s" % (phase, label, repeat, status, result["exit"], result["wall_s"], why), flush=True)
             for label in images:

@@ -870,6 +870,74 @@ def darwin_thread_phases(report, cli, work):
     except (OSError, ValueError, KeyError) as problem:
         lines.append("no report: %s" % problem)
     report.check("darwin-thread-phases", "PASS" if code == 0 else "FAIL", "native", " | ".join(lines)[:9000], required=False)
+    darwin_thread_start_repeat(report, cli, Path(work) / "start-repeat", base_cli if base_cli.is_file() else None)
+    darwin_pthread_burst(report, Path(work) / "pthread-burst")
+
+
+def darwin_thread_start_repeat(report, cli, work, baseline_cli=None):
+    """Evidence only (non-required): thread creation and join, repeated, candidate against the baseline compiler on the same runner in the same job.
+    A start_join/candidate sample once ended with status 41 (a failed thread_open_shared: the OS refused a thread resource) in 1 of 86 Darwin samples
+    over 24 runs, never reproduced; the thread start/join code is token-identical to the base, so this check does not assert a cause. It measures how often
+    start_join and fan_join fail on this runner (scripts/ci/thread_bench.py decodes the status and records the kernel limits after every failed run) so
+    the failure rate is known per head and a baseline failing the same way is visible. PASS only if every sample of every contender is COMPLETE; any
+    failed sample is FAIL with its decoded status, never retried and never dropped. The raw output of every sample lands under logs/thread-start-repeat."""
+    import json
+    Path(work).mkdir(parents=True, exist_ok=True)
+    output = report.logs / "thread-start-repeat"
+    argv = [sys.executable, ROOT / "scripts/ci/thread_bench.py", "--mio", str(cli), "--target", "darwin-arm64", "--repeat", "40", "--budget", "120",
+            "--phase", "start_join", "--phase", "fan_join", "--output", str(output)]
+    if baseline_cli is not None and Path(baseline_cli).is_file():
+        argv += ["--baseline-mio", str(baseline_cli)]
+    code, out, err, seconds = run(report, "darwin-thread-start-repeat-run", argv, timeout=1800)
+    lines, failures, samples = [], [], 0
+    try:
+        data = json.loads((output / "report.json").read_text())
+        for phase, entry in data["phases"].items():
+            for label, contender in entry["contenders"].items():
+                runs = contender.get("runs") or []
+                samples += len(runs)
+                bad = [(index, run_["reason"]) for index, run_ in enumerate(runs) if run_.get("status") != "COMPLETE"]
+                failures += ["%s/%s sample %d: %s" % (phase, label[:4], index, reason) for index, reason in bad]
+                lines.append("%s/%s %d/%d COMPLETE" % (phase, label[:4], len(runs) - len(bad), len(runs)))
+    except (OSError, ValueError, KeyError) as problem:
+        report.check("darwin-thread-start-repeat", "FAIL", "native", "no report: %s (exit %s) | %s" % (problem, code, brief(out + err, 300)), required=False)
+        return
+    ok = code == 0 and samples > 0 and not failures
+    report.check("darwin-thread-start-repeat", "PASS" if ok else "FAIL", "native",
+                 (("exit %s; " % code if code != 0 else "") + "; ".join(failures) + " | " if failures or code != 0 else "") + " ".join(lines), required=False)
+
+
+def darwin_pthread_burst(report, work, repeat=40, threads=20000):
+    """Evidence only (non-required): is a refused thread creation an OS limit rather than a Mio defect? tests/threads/pthread_burst.c creates and joins
+    `threads` threads back to back with the worker's 8 MiB stack attribute and no Mio code, `repeat` times on this runner. PASS: every thread of every
+    run was created and joined. FAIL: the OS refused pthread_create without Mio involved (the reason gives the errno and the iteration), or a run
+    failed otherwise. NOT_RUN: no C compiler. A refusal is never retried; the counts are the evidence, next to darwin-thread-start-repeat."""
+    import errno as errno_names
+    Path(work).mkdir(parents=True, exist_ok=True)
+    binary = Path(work) / "pthread-burst"
+    code, out, err, _ = run(report, "darwin-pthread-burst-build", ["clang", "-O2", "-Wall", "-Wextra", "-Werror", "-std=c11", ROOT / "tests/threads/pthread_burst.c", "-o", binary], timeout=300)
+    if code != 0 or not binary.is_file():
+        report.check("darwin-pthread-burst", "NOT_RUN", "native", "the C witness did not build (exit %s): %s" % (code, brief(out + err, 200)), required=False)
+        return
+    refused, created, problems, first = 0, 0, [], None
+    for index in range(repeat):
+        code, out, err, _ = run(report, "darwin-pthread-burst-run-%d" % index, [binary, str(threads)], timeout=300)
+        found = re.search(r"created=(\d+) refused=(\d+) first_refused_at=(-?\d+) first_errno=(\d+)", out)
+        if not found:
+            problems.append("run %d: exit %s without a result line" % (index, code))
+            continue
+        created += int(found.group(1))
+        refused += int(found.group(2))
+        if int(found.group(2)) and first is None:
+            first = "run %d refused thread %s with errno %s (%s)" % (index, found.group(3), found.group(4), errno_names.errorcode.get(int(found.group(4)), "unknown"))
+        if code != (1 if int(found.group(2)) else 0):
+            problems.append("run %d: exit %s" % (index, code))
+    detail = "%d runs x %d threads: %d created, %d refused" % (repeat, threads, created, refused)
+    if first:
+        detail = first + "; " + detail + " (the OS refused pthread_create without any Mio code)"
+    if problems:
+        detail = "; ".join(problems[:3]) + " | " + detail
+    report.check("darwin-pthread-burst", "PASS" if not refused and not problems else "FAIL", "native", detail, required=False)
 
 
 def darwin_thread_observe(report, cli, work):
