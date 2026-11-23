@@ -303,7 +303,7 @@ waza run() -> unit {
     moshi (entry == "" || output == "") { fail(error_message("E_OPTIONS", i18n.key_err_empty_paths, ""), 2); kaesu; }
     // hidouki / matsu are recognised on every target, but only linux-amd64 has the native task runtime: refuse (never block) elsewhere.
     moshi (target != "linux-amd64" && (command == "build" || command == "run") && frontend.async_requested(".", entry, bunko)) {
-        fail(string.concat("E0805 native asynchronous execution (hidouki / matsu) is available only on linux-amd64; the target has no async runtime: ", target), 2); kaesu;
+        fail(error_message("E0805", i18n.key_err_async_target, target), 2); kaesu;
     }
     moshi(command=="check"){
         kaku analyzed=frontend.analyze_source(".",entry,bunko,[],iie);

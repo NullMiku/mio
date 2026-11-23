@@ -10,6 +10,8 @@
 - **Linux AMD64 only:** `kiso/async` (cold tasks, single-threaded FIFO executor) and `kiso/async/net` (epoll-backed TCP through the existing `kiso/reactor`) are implemented and validated natively on Linux AMD64. Every other target recognises the syntax and fails `mio build`/`mio run` with E0805 instead of generating blocking code.
 - Programs that do not use the new keywords keep their exact meaning and their native output. `hidouki` and `matsu` are now reserved words.
 - Fixed a code generator bug: a closure could be matched to a same-numbered closure of an imported package (symptom: "variable has no allocated slot").
+- The Linux ARM64 and Windows ARM64 bootstrap compilers now build the Mochi module in a function of its own, so the sources and the checked packages can be collected before the machine-code lowering starts. Their image heap (1 GiB) was nearly exhausted when compiling the CLI; the output images are unchanged.
+- Native CI checks the async capability boundary on every target: `linux-async` (real programs) on linux-amd64, `async-frontend-accepted` and `async-capability-rejection` (E0805, no executable) elsewhere.
 
 ## 2.1.2 — Unreleased
 
