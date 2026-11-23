@@ -9,7 +9,7 @@ yobu "selfhost/pipeline";
 koukai kata TestPlan { bytes: []uint8; tests: []frontend.TestCase; error: string; entry: string; requested: string; dispatch: []uint8; }
 
 koukai waza plan(root: string, entry: string, bunko_root: string) -> TestPlan {
-    kaku allow_c = pipeline.host_target() == "darwin-arm64";
+    kaku allow_c = pipeline.host_target() == "darwin-arm64" || pipeline.host_target() == "linux-amd64";
     kaku compiled = frontend.compile_tests(root, entry, bunko_root, allow_c);
     kaku identity=frontend.package_identity(root,entry);
     kaku dispatch: []uint8 = [];

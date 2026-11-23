@@ -61,7 +61,7 @@ bash scripts/ci/run.sh macos-arm64 native-release release
 be555a5e51380a0151c3e4b17d57dd79120123ab170dae3103146d32ab5a0c79
 ```
 
-该约定来自现有 `tests/m19ef/README.md`、ABCD 和生产流水线，不新增 Go Seed，也不下载不明原生产物。所有 Mio 原生测试显式传递当前 `--bunko-root`，避免读到 Seed 内嵌的历史库。缺少 Seed 或哈希不符返回 NOT_RUN/2，不降级到 Go 冒充原生。系统 `codesign` 只用于签名验证；普通程序的原生代码生成、链接和签名由 Mio 实现。使用 [Darwin ARM64 C ABI](darwin-arm64-c-ffi.md) 的测试程序另需 Apple Clang、链接器和 macOS SDK。
+该约定来自现有 `tests/m19ef/README.md`、ABCD 和生产流水线，不新增 Go Seed，也不下载不明原生产物。所有 Mio 原生测试显式传递当前 `--bunko-root`，避免读到 Seed 内嵌的历史库。缺少 Seed 或哈希不符返回 NOT_RUN/2，不降级到 Go 冒充原生。系统 `codesign` 只用于签名验证；普通程序的原生代码生成、链接和签名由 Mio 实现。使用 [Darwin ARM64 C ABI](darwin-arm64-c-ffi.md) 的测试程序另需 Apple Clang、链接器和 macOS SDK。使用 [Linux x86-64 C ABI](linux-amd64-c-ffi.md) 的测试程序另需 Linux x86-64 主机上的 `cc`、`gcc` 或 `clang`（链接）、`ar`（静态库），检查 ELF 时使用 `readelf` 和 `ldd`；验收脚本是 `tests/ffi/linux-amd64/run.py`，Native 工作流的 linux-amd64 枢纽以非必需检查 `linux-c-abi` 运行它，日志位于 `logs/linux-c-abi`，PASS 要求报告中没有 FAIL 和 NOT_RUN，SKIP（没有 Clang、没有基线编译器、没有 Go 参考编译器）单列原因且不计为通过。
 
 ## 模块与等级
 

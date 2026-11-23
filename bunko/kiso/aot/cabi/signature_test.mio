@@ -12,3 +12,9 @@ waza test_fixed_c_signature() -> unit {
     testing.expect(valid_symbol("mio_sum") && !valid_symbol("main"), "the Mio entry is reserved");
     testing.expect(type_code("float64") == "j" && type_code("string") == "", "supported scalar names");
 }
+
+waza test_c_target_capabilities() -> unit {
+    testing.expect(supports_target("darwin-arm64") && supports_target("linux-amd64"), "the two C ABI backends");
+    testing.expect(!supports_target("linux-arm64") && !supports_target("darwin-amd64"), "no C ABI backend on the other Unix targets");
+    testing.expect(!supports_target("windows-amd64") && !supports_target("windows-arm64") && !supports_target(""), "no C ABI backend on Windows");
+}

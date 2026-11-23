@@ -59,7 +59,7 @@
     "err.emit_mochi": "questo comando non può emettere bytecode Mochi",
     "err.symbols": "--emit-symbols si applica solo alle build native darwin-arm64 dai sorgenti",
     "err.observe": "--observe si applica solo alle build native darwin-arm64 dai sorgenti",
-    "err.link_options": "Le opzioni del linker richiedono mio build per darwin-arm64 su Apple Silicon macOS",
+    "err.link_options": "Le opzioni del linker richiedono mio build per darwin-arm64 su Apple Silicon macOS o per linux-amd64 su Linux x86-64",
     "err.link_input": "l'input del linker non esiste: {0}",
     "err.link_search": "il percorso di ricerca del linker non è una directory: {0}",
     "lsp.organize_imports": "Organizza importazioni",
