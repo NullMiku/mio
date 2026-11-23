@@ -328,7 +328,7 @@ exit "$result"
                                 required_checks=["native"], suite_checks={"quick": ["independent"]})}
         with tempfile.TemporaryDirectory() as directory:
             seed = Path(directory) / "untrusted"
-            seed.write_bytes(b"not the trusted GF4 seed")
+            seed.write_bytes(b"not the trusted Native V21 seed")
             def forbidden(*args):
                 self.fail("untrusted seed or dependent tests executed")
             code, report = self.dispatch(modules, execute=forbidden, MIO_NATIVE_SEED=str(seed))
@@ -804,6 +804,67 @@ class ThreadBenchmarkEvidenceTests(unittest.TestCase):
 
     def test_wrong_work_count_cannot_pass(self):
         self.assertEqual(self.status(0, self.complete.replace("mpmc,1,400000", "mpmc,1,1")), "FAIL")
+
+
+class SeedVerificationTests(unittest.TestCase):
+    def setUp(self):
+        self.seed_source = load("ci_seed_source", HERE / "seed_source.py")
+        self.identity = runner.ACTIVE_SEED
+
+    def test_default_seed_is_native_v21_and_passes(self):
+        self.assertEqual(runner.SEED_SHA256, "be555a5e51380a0151c3e4b17d57dd79120123ab170dae3103146d32ab5a0c79")
+        default_path = self.seed_source.default_seed_path(self.identity)
+        if default_path.is_file():
+            info = self.seed_source.verify_seed_file(
+                default_path, self.identity, check_arch=True,
+                check_signature=(runner.platform.system() == "Darwin"),
+            )
+            self.assertEqual(info["sha256"], self.identity.sha256)
+            self.assertEqual(info["size"], self.identity.size)
+
+    def test_rejects_wrong_tampered_and_wrong_size_seed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bad = Path(directory) / "bad-seed"
+            bad.write_bytes(b"not-a-valid-seed")
+            with self.assertRaisesRegex(ValueError, "size mismatch"):
+                self.seed_source.verify_seed_file(bad, self.identity, check_arch=False, check_signature=False)
+            tampered = Path(directory) / "tampered-seed"
+            tampered.write_bytes(b"\x00" * self.identity.size)
+            with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+                self.seed_source.verify_seed_file(tampered, self.identity, check_arch=False, check_signature=False)
+
+    def test_rejects_wrong_macho_architecture(self):
+        import struct
+        with tempfile.TemporaryDirectory() as directory:
+            x86_64 = Path(directory) / "x86_64-macho"
+            x86_64.write_bytes(struct.pack("<IIII", 0xFEEDFACF, 0x01000007, 3, 2) + b"\x00" * 64)
+            with self.assertRaisesRegex(ValueError, "darwin-arm64 Mach-O"):
+                self.seed_source.verify_macho_arm64(x86_64)
+
+    def test_rejects_wrong_release_and_asset_identity(self):
+        release = dict(
+            id=self.identity.release_id, tag_name=self.identity.tag, immutable=True, draft=False,
+            assets=[dict(id=self.identity.asset_id, name=self.identity.asset_name, state="uploaded",
+                         size=self.identity.size, url=f"{self.seed_source.API}/assets/{self.identity.asset_id}",
+                         browser_download_url=f"https://github.com/mio-kobo/mio/releases/download/{self.identity.tag}/{self.identity.asset_name}",
+                         digest="sha256:" + self.identity.sha256)],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            dest = Path(directory) / self.identity.asset_name
+            bad_release = dict(release, id=999999)
+            with patch.object(self.seed_source, "request", return_value=io.BytesIO(json.dumps(bad_release).encode())):
+                with self.assertRaisesRegex(ValueError, "release identity"):
+                    self.seed_source.download_seed(self.identity, dest)
+            bad_asset = dict(release, assets=[dict(release["assets"][0], id=888888)])
+            with patch.object(self.seed_source, "request", return_value=io.BytesIO(json.dumps(bad_asset).encode())):
+                with self.assertRaises(self.seed_source.SeedUnavailable):
+                    self.seed_source.download_seed(self.identity, dest)
+
+    def test_missing_seed_returns_not_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing-seed"
+            self.assertEqual(self.seed_source.main(["--check", "--path", str(missing)]), 2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
