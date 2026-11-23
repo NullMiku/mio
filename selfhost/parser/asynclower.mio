@@ -863,6 +863,12 @@ koukai waza lower_async(parsed: ParseResult) -> ParseResult {
         }
         index = index + 1;
     }
+    moshi (len(state.errors) != 0) {
+        sort_errors(state.errors);
+        kaku late = array.with_capacity[ParseError](len(state.errors));
+        array.append_all(late, state.errors);
+        kaesu ParseResult { ast: parsed.ast, root: parsed.root, tokens: parsed.tokens, errors: late };
+    }
     kaku lowered = Node { kind: root.kind, text: root.text, extra: root.extra, integer: root.integer, flag: root.flag, operator: root.operator, children: statements, span: root.span };
     state.arena.nodes[parsed.root] = lowered;
     kaesu ParseResult { ast: state.arena, root: parsed.root, tokens: parsed.tokens, errors: parsed.errors };

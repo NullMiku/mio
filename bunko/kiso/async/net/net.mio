@@ -105,7 +105,12 @@ waza wait_ready<T>(self: async.Task<T>, handle: resource, interest: int64, retry
     kaku maybe = poller_of(self.core.exec[0]);
     moshi (maybe == mu) { kaesu iie; }
     kaku poller = maybe;
-    kaesu async.park(self.core, waza (wake: () -> unit) -> bool { kaesu poller.wait(handle, interest, wake); }, retry);
+    kaku resume = async.park(self.core, retry);
+    moshi (!poller.wait(handle, interest, resume)) {
+        async.unpark(self.core);
+        kaesu iie;
+    }
+    kaesu hai;
 }
 
 // ---- read

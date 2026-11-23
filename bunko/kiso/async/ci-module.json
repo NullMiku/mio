@@ -1,0 +1,1 @@
+{"module": "kiso/async", "targets": ["linux-amd64"], "suites": ["quick", "full", "unit"], "required_checks": ["native"], "skip_reason": "the native task runtime exists on linux-amd64 only (see docs/async-await.md); NOT_RUN on darwin and windows"}

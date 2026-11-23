@@ -206,16 +206,16 @@ koukai waza resume_of(self: TaskCore, next: () -> unit) -> () -> unit {
     };
 }
 
-// Suspends the running task until `register` has arranged for the given continuation to be enqueued (an I/O readiness wait). Returns false
-// (and leaves the task running) when `register` fails.
-koukai waza park(self: TaskCore, register: (() -> unit) -> bool, next: () -> unit) -> bool {
+// Suspends the running task and returns the continuation an I/O readiness wait must enqueue (it runs `next` on the executor).
+// The caller registers that continuation with its poller; when registration fails it calls unpark to leave the task running.
+koukai waza park(self: TaskCore, next: () -> unit) -> () -> unit {
     kaku resume = resume_of(self, next);
     self.state[0] = suspended;
-    moshi (!register(resume)) {
-        self.state[0] = running;
-        kaesu iie;
-    }
-    kaesu hai;
+    kaesu resume;
+}
+
+koukai waza unpark(self: TaskCore) -> unit {
+    moshi (self.state[0] == suspended) { self.state[0] = running; }
 }
 
 koukai waza then(self: TaskCore, awaited: TaskCore, next: () -> unit) -> unit {

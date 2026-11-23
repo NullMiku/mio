@@ -1,0 +1,75 @@
+yobu "kiso/async";
+yobu "kiso/testing";
+
+// The runtime package cannot use hidouki / matsu on itself, so these tests write the lowered (continuation) form by hand.
+
+waza constant(value: int64) -> async.Task<int64> {
+    kaesu async.spawn(waza(self: async.Task<int64>) -> unit {
+        async.complete[int64](self, value);
+        kaesu;
+    });
+}
+
+waza add_one(source: async.Task<int64>) -> async.Task<int64> {
+    kaesu async.spawn(waza(self: async.Task<int64>) -> unit {
+        async.then(self.core, source.core, waza() -> unit {
+            async.check(source.core);
+            kaku value = source.result[0];
+            async.complete[int64](self, value + 1);
+            kaesu;
+        });
+        kaesu;
+    });
+}
+
+waza test_block_on_completes() -> unit {
+    testing.expect(async.block_on(constant(41)) == 41, "block_on returns the task result");
+}
+
+waza test_cold_task_starts_when_awaited() -> unit {
+    kaku exec = async.new_executor();
+    kaku task = constant(1);
+    testing.expect(!async.is_attached(task), "a new task is cold");
+    testing.expect(async.started_tasks(exec) == 0, "nothing started yet");
+    async.attach(exec, task);
+    async.drain(exec);
+    testing.expect(async.is_done(task), "the attached task completes when the executor drains");
+}
+
+waza test_await_chain() -> unit {
+    kaku task = add_one(add_one(add_one(constant(0))));
+    testing.expect(async.block_on(task) == 3, "three chained awaits compose");
+}
+
+waza test_join2() -> unit {
+    kaku pair = async.block_on(async.join2(constant(2), constant(5)));
+    testing.expect(pair.first == 2 && pair.second == 5, "join2 keeps both results");
+}
+
+waza test_join_all_order() -> unit {
+    kaku tasks: []async.Task<int64> = [constant(7), constant(8), constant(9)];
+    kaku values = async.block_on(async.join_all(tasks));
+    testing.expect(len(values) == 3 && values[0] == 7 && values[1] == 8 && values[2] == 9, "join_all preserves input order");
+}
+
+waza test_failure_state() -> unit {
+    kaku task = async.spawn(waza(self: async.Task<int64>) -> unit {
+        async.fail[int64](self, "boom");
+        kaesu;
+    });
+    kaku exec = async.new_executor();
+    async.attach(exec, task);
+    async.drain(exec);
+    testing.expect(async.is_failed(task) && async.failure_message(task) == "boom", "a failed task records its message");
+}
+
+waza test_missing_return_fails() -> unit {
+    kaku task = async.spawn(waza(self: async.Task<int64>) -> unit {
+        async.fail_missing_return[int64](self);
+        kaesu;
+    });
+    kaku exec = async.new_executor();
+    async.attach(exec, task);
+    async.drain(exec);
+    testing.expect(async.is_failed(task), "falling off a value task fails it");
+}

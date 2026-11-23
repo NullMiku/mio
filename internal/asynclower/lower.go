@@ -119,6 +119,10 @@ func Lower(program *ast.Program) (*ast.Program, []error) {
 		}
 		out.Statements = append(out.Statements, statement)
 	}
+	// Errors found while lowering (a kaesu without a value) keep the original program too.
+	if len(l.errors) != 0 {
+		return program, l.sortedErrors()
+	}
 	return out, nil
 }
 

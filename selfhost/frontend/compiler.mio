@@ -416,6 +416,14 @@ koukai waza async_requested(root: string, entry: string, bunko_root: string) -> 
     kaesu contains(state.paths, "kiso/async");
 }
 
+// The same question for a package's test build (identity-scoped source state, as compile_tests uses).
+koukai waza tests_async_requested(root: string, entry: string, bunko_root: string) -> bool {
+    kaku state = source_state(bunko_root, package_identity(root, entry));
+    load_package(state, root, entry);
+    moshi (state.failed[0]) { kaesu iie; }
+    kaesu contains(state.paths, "kiso/async");
+}
+
 koukai waza compile_source_target(root: string, entry: string, bunko_root: string, allow_c: bool) -> FrontendResult {
     kaku state = source_state(bunko_root, "");
     kaesu compile_state(state, root, entry, allow_c);
