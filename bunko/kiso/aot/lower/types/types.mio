@@ -2,6 +2,7 @@ yobu "kiso/array";
 yobu "kiso/aot/cabi";
 yobu "kiso/aot/lower/nativefs";
 yobu "kiso/encoding/mochi";
+yobu "kiso/encoding/win64c";
 
 // Closed value categories used by the pure-Mio lowering pass.  These are
 // representation categories rather than source-language names: in
@@ -1188,6 +1189,21 @@ koukai waza analyze_types_traced(file: mochi.File, trace: bool) -> TypeAnalysis 
                     parameter = parameter + 1;
                 }
                 moshi (function.returns_value) { constrain_c_scalar(arena, result, declaration.result); }
+            }
+        }
+        kaku external = file.functions[index];
+        moshi (win64c.is_external(external.name) && win64c.validate(external.name, external.parameter_count, external.returns_value) == "") {
+            kaku p = win64c.parts(external.name); kaku i = 0;
+            aida (i < external.parameter_count) {
+                kaku d = win64c.descriptor(p[4 + i]); kaku kind = type_integer;
+                moshi (d == 2) { kind = type_float64; } moshi (d == 3) { kind = type_float32; }
+                type_require(arena, slots[i], kind); arena.integer_descriptor[type_root(arena, slots[i])] = d;
+                i = i + 1;
+            }
+            moshi (external.returns_value) {
+                kaku d = win64c.descriptor(p[3]); kaku kind = type_integer;
+                moshi (d == 2) { kind = type_float64; } moshi (d == 3) { kind = type_float32; }
+                type_require(arena, result, kind); arena.integer_descriptor[type_root(arena, result)] = d;
             }
         }
         kaku native_op = nativefs.operation(file.functions[index].name);

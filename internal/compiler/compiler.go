@@ -8,6 +8,7 @@ import (
 	"Mio/internal/cabi"
 	"Mio/internal/code"
 	"Mio/internal/diagnostic"
+	"Mio/internal/ffi"
 	"Mio/internal/resolver"
 	"Mio/internal/token"
 	"Mio/internal/value"
@@ -1102,7 +1103,13 @@ func (c *Compiler) registerFunctions(program *ast.Program) error {
 		c.functionIDs[symbol] = id
 		c.functionReturns[symbol] = returnsValue
 		name := fn.Name.Name
-		if fn.CSymbol != "" {
+		if fn.CABI {
+			params := make([]string, len(fn.Parameters))
+			for i, p := range fn.Parameters {
+				params[i] = p.DeclaredType.Name
+			}
+			name = ffi.Key(fn.CDLL, fn.CSymbol, fn.ReturnType.Name, params)
+		} else if fn.CSymbol != "" {
 			var prototype strings.Builder
 			prototype.WriteString(cabi.Prefix)
 			prototype.WriteString(fn.CSymbol)

@@ -2,6 +2,7 @@ yobu "kiso/array";
 yobu "kiso/aot/cabi";
 yobu "kiso/string";
 yobu "selfhost/lexer";
+yobu "kiso/encoding/win64c";
 
 waza import_alias(path: string) -> string {
     kaku data = string.to_bytes(path);
@@ -282,11 +283,30 @@ waza parse_function_statement(state: ParserState, exported: bool, start: lexer.P
         }
         advance(state);
         kaku external = current_token(state);
-        moshi (current_kind(state) != 5 || !cabi.valid_symbol(external.literal)) {
+        moshi (current_kind(state) != 5) {
             add_parse_error(state, ParseErrorKind.InvalidCDeclaration(), -1); kaesu -1;
         }
-        symbol = external.literal;
         advance(state);
+        moshi (current_kind(state) == 5 || win64c.valid_name(external.literal, hai)) {
+            moshi (return_type < 0 || len(type_parameters) != 0) {
+                add_parse_error(state, ParseErrorKind.InvalidType(), 50); kaesu -1;
+            }
+            kaku export = name;
+            moshi (current_kind(state) == 5) { export = current_token(state).literal; advance(state); }
+            kaku types: []string = []; kaku i = 0;
+            aida (i < len(parameters)) {
+                kaku parameter = state.arena.nodes[parameters[i]];
+                kaku type_name = "";
+                moshi (len(parameter.children) == 1) { type_name = state.arena.nodes[parameter.children[0]].text; }
+                array.push(types, type_name); i = i + 1;
+            }
+            symbol = win64c.key(external.literal, export, state.arena.nodes[return_type].text, types);
+        } sore {
+            moshi (!cabi.valid_symbol(external.literal)) {
+                add_parse_error(state, ParseErrorKind.InvalidCDeclaration(), -1); kaesu -1;
+            }
+            symbol = external.literal;
+        }
         kaku terminator = current_token(state);
         moshi (!expect(state, 23)) { kaesu -1; }
         // 解析器保留空的块节点作为签名结束标记，代码生成只读取外部符号。

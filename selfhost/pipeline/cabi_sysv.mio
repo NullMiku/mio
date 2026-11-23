@@ -36,6 +36,7 @@ koukai waza build_linux_mochi_linked(data: []uint8, gc_stress: bool, link_option
 }
 
 waza build_linux_c_file(file: mochi.File, gc_stress: bool, link_options: []string) -> NativeBuildResult {
+    moshi (mochi.has_win64_c(file)) { kaesu NativeBuildResult { bytes: [], error: "E_FFI_TARGET Windows AMD64 C ABI requires windows-amd64" }; }
     // 交叉构建不能链接 C：这里没有目标平台的 C 工具链和 libc，也不能把交叉编译当作原生执行。
     moshi (host_target() != "linux-amd64") { kaesu c_link_error(cabi.target_error); }
     kaku invalid = duplicate_c_prototype(file);

@@ -2411,6 +2411,7 @@ koukai waza compile_windows_arm64(file: mochi.File, capacity: int64, gc_stress: 
     kaesu compile_worker_target(file,gc_stress,capacity,iie,iie,iie,[],iie,32768,iie,iie,2,hai,0,iie);
 }
 waza compile_worker_target(input_file: mochi.File, gc_stress: bool, capacity: int64, observation: bool, adaptive: bool, attached:bool, worker_bindings:[]int64, old_proto:bool, queue_slots:int64, full_sweep:bool, release_fault:bool, abi: int64, retention: bool, lock_stress: int64, allow_c: bool) -> LowerResult {
+    moshi (mochi.has_win64_c(input_file)) { kaesu failed(LowerError.UnsupportedNative(-64)); }
     kaku file = input_file;
     kaku metadata_bytes = runtime_metadata_bytes;
     moshi (observation) { metadata_bytes = observation_metadata_bytes; }

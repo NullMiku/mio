@@ -14,8 +14,6 @@ const (
 	KindUint8    Kind = "uint8"
 	KindUint16   Kind = "uint16"
 	KindUint32   Kind = "uint32"
-	KindCUint64  Kind = "uint64"
-	KindCPointer Kind = "cptr"
 	KindFloat    Kind = "float64"
 	KindFloat32  Kind = "float32"
 	KindBool     Kind = "bool"
@@ -24,6 +22,8 @@ const (
 	KindUnit     Kind = "unit"
 	KindArray    Kind = "array"
 	KindResource Kind = "resource"
+	KindCPtr     Kind = "cptr"
+	KindUint64   Kind = "uint64"
 )
 
 // IsInteger 判断类型是否为整数

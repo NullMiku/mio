@@ -11,6 +11,7 @@ import (
 	"Mio/internal/cabi"
 	"Mio/internal/code"
 	"Mio/internal/compiler"
+	"Mio/internal/ffi"
 	"Mio/internal/value"
 	"Mio/mma"
 )
@@ -1470,6 +1471,9 @@ func (v *VM) callClosure(functionID int, upvalues []*value.Cell, ip int) error {
 	function := v.bytecode.Functions[functionID]
 	if strings.HasPrefix(function.Name, cabi.Prefix) {
 		return fmt.Errorf("E_CABI the Go Reference VM cannot execute a native C call")
+	}
+	if strings.HasPrefix(function.Name, ffi.Prefix) {
+		return fmt.Errorf("E_FFI_RUNTIME Windows AMD64 C calls require native execution")
 	}
 	if len(v.stack)-v.operandBase() < function.ParameterCount {
 		return fmt.Errorf("stack underflow for OpCall at %d", ip)

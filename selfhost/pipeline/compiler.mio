@@ -66,6 +66,7 @@ waza write_symbols(path: string, file: mochi.File, lowered: lower.LowerResult) -
 // observation: the image dumps its collector and memory counters to stderr at exit (diagnostics only; the program's
 // own behaviour and output are unchanged).
 waza build_file_observed(file: mochi.File, heap_capacity: int64, gc_stress: bool, observation: bool, symbols: string) -> NativeBuildResult {
+    moshi (mochi.has_win64_c(file)) { kaesu NativeBuildResult { bytes: [], error: "E_FFI_TARGET Windows AMD64 C ABI requires windows-amd64" }; }
     moshi (has_c_declarations(file)) { kaesu c_link_error("E_CABI external calls require the Darwin source or Mochi linker"); }
     kaku lowered = lower.compile_with_heap(file, heap_capacity, gc_stress);
     moshi (observation) { lowered = lower.compile_with_observation(file, heap_capacity, gc_stress); }
@@ -115,6 +116,7 @@ koukai waza build_signed_source_linked(root: string, entry: string, bunko_root: 
 
 waza build_signed_file(file: mochi.File, gc_stress: bool, observation: bool, symbols: string,
     link_options: []string) -> NativeBuildResult {
+    moshi (mochi.has_win64_c(file)) { kaesu NativeBuildResult { bytes: [], error: "E_FFI_TARGET Windows AMD64 C ABI requires windows-amd64" }; }
     kaku thread_start = -1; kaku thread_join = -1; kaku scan = 0;
     aida (scan < len(file.functions)) {
         kaku name = file.functions[scan].name;

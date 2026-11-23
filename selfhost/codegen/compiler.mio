@@ -3,6 +3,7 @@ yobu "kiso/aot/cabi";
 yobu "kiso/convert";
 yobu "kiso/string";
 yobu "selfhost/parser";
+yobu "kiso/encoding/win64c";
 yobu "selfhost/resolver";
 yobu "selfhost/typecheck";
 
@@ -340,6 +341,7 @@ waza emit_function_literal(state: CompilerState, parent: CompileContext, file_id
 waza emit_conversion(state: CompilerState, context: CompileContext, file_id: int64, node_id: int64) -> bool {
     kaku node = state.resolved.files[file_id].ast.nodes[node_id];
     moshi (len(node.children) != 2 || !emit_expression(state, context, file_id, node.children[1])) { kaesu iie; }
+    moshi (node.text == "cptr" || node.text == "uint64") { kaesu hai; }
     kaku source = node_type(state, file_id, node.children[1]);
     kaku source_code = typecheck.type_kind_code(state.checked.types[source].kind);
     moshi (node.text == "cptr") { kaesu hai; }
@@ -762,6 +764,11 @@ waza compile_c_declaration(state: CompilerState, reference: resolver.NodeRef, no
     }
     kaku signature = state.checked.signatures[at];
     kaku result = cabi.type_code(state.checked.types[signature.result].name);
+    moshi (win64c.is_external(node.extra)) {
+        state.layout.functions[id] = FunctionLayout { id: id, name: node.extra, parameter_count: node.operator,
+            local_count: node.operator, returns_value: result != "v", captures: [], instructions: [] };
+        kaesu;
+    }
     kaku name = string.concat(cabi.prefix, string.concat(node.extra, string.concat(":", result)));
     at = 0;
     aida (at < len(signature.parameters)) {
@@ -866,7 +873,7 @@ waza compile_modules_mode(packages: []resolver.ResolvedPackage, checked_packages
         aida (ri < len(registry_ids)) {
             kaku id = registry_ids[ri]; kaku fn = layout.functions[id];
             kaku name = string.concat(registry_packages[ri], string.concat("::", registry_names[ri]));
-            moshi (cabi.is_external(fn.name)) { name = fn.name; }
+            moshi (cabi.is_external(fn.name) || win64c.is_external(fn.name)) { name = fn.name; }
             layout.functions[id] = FunctionLayout { id: fn.id, name: name, parameter_count: fn.parameter_count,
                 local_count: fn.local_count, returns_value: fn.returns_value, captures: fn.captures, instructions: fn.instructions };
             ri = ri + 1;

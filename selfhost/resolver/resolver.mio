@@ -25,7 +25,7 @@ waza add_builtin(state: ResolverState, name: string, kind: SymbolKind) -> unit {
 }
 
 waza install_builtins(state: ResolverState) -> unit {
-    kaku types = ["int8", "int16", "int32", "int64", "rune", "uint8", "uint16", "uint32", "uint64", "cptr", "float32", "float64", "bool", "string", "unit", "resource", "Number", "Integer", "Signed", "Float"];
+    kaku types = ["int8", "int16", "int32", "int64", "rune", "uint8", "uint16", "uint32", "float32", "float64", "bool", "string", "unit", "resource", "cptr", "uint64", "Number", "Integer", "Signed", "Float"];
     kaku index = 0;
     aida (index < len(types)) {
         add_builtin(state, types[index], SymbolKind.BuiltinType());

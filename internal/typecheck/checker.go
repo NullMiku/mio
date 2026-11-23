@@ -36,6 +36,7 @@ type Checker struct {
 	globals      map[resolver.Symbol]struct{}
 	structs      map[string]StructDefinition
 	enums        map[string]EnumDefinition
+	cPrototypes  map[string]string
 	nodeTypes    map[ast.Expression]Kind
 
 	returnTypes         []Kind
@@ -382,7 +383,7 @@ func (c *Checker) checkExpression(expr ast.Expression) (result Kind, err error) 
 
 			// 基础非空类型继续使用原有相等规则
 			switch left {
-			case KindInt8, KindInt16, KindInt32, KindInt, KindUint8, KindUint16, KindUint32, KindFloat32, KindFloat, KindBool, KindString, KindCPointer, KindCUint64:
+			case KindInt8, KindInt16, KindInt32, KindInt, KindUint8, KindUint16, KindUint32, KindFloat32, KindFloat, KindBool, KindString, KindCPtr, KindUint64:
 				return KindBool, nil
 
 			default:
@@ -477,25 +478,19 @@ func (c *Checker) checkExpression(expr ast.Expression) (result Kind, err error) 
 		if err != nil {
 			return KindInvalid, err
 		}
-		switch n.Target {
-		case "cptr":
-			if literal, ok := n.Arguments[0].(*ast.IntegerLiteral); ok && literal.Value == 0 {
-				return KindCPointer, nil
-			}
-			return KindInvalid, fmt.Errorf("E_CABI cptr(0) constructs null; other C pointers must come from C")
-		case "uint64":
-			if source.IsInteger() {
-				n.Source = source.String()
-				return KindCUint64, nil
-			}
-			return KindInvalid, fmt.Errorf("E_CABI uint64 conversion requires a Mio integer")
-		case "int64":
-			if source == KindCUint64 {
-				n.Source = source.String()
-				return KindInt, nil
-			}
-		}
 		target := integerKind(n.Target)
+		if n.Target == "cptr" {
+			zero, ok := n.Arguments[0].(*ast.IntegerLiteral)
+			if !ok || zero.Value != 0 || zero.Overflow {
+				return KindInvalid, fmt.Errorf("E_FFI_POINTER only cptr(0) constructs a native pointer")
+			}
+			n.Source = source.String()
+			return KindCPtr, nil
+		}
+		if n.Target == "uint64" && source.IsInteger() || n.Target == "int64" && source == KindUint64 {
+			n.Source = source.String()
+			return Kind(n.Target), nil
+		}
 		if target.IsInteger() {
 			if target == KindInt && (!source.IsInteger() || source == KindInt) && source != KindFloat && source != KindFloat32 {
 				return KindInvalid, fmt.Errorf("conversion to int64 requires float64, got %s", source)

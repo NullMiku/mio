@@ -1499,6 +1499,7 @@ kata Parts {
 waza failed_parts(message: string) -> Parts { kaesu Parts { code: [], error: message, externals: [], bss_size: 0 }; }
 
 waza compile_parts(file: mochi.File, gc_threshold: int64, darwin: bool, c_abi: bool) -> Parts {
+    moshi (mochi.has_win64_c(file)) { kaesu failed_parts("E_FFI_TARGET Windows AMD64 C ABI requires windows-amd64"); }
     moshi (gc_threshold < 4096) { kaesu failed_parts("INVALID_GC_THRESHOLD"); }
     kaku threads = uses_threads(file);
     moshi (threads && darwin) { kaesu failed_parts("UNSUPPORTED_THREADS_TARGET"); }
