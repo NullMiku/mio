@@ -245,7 +245,7 @@ waza load_package(state: PackageState, root: string, requested: string) -> unit 
             moshi (source.error != mu) { state.failed[0] = hai; state.diagnostic[0] = string.concat("E_IO read source: ", file_path); nukeru; }
             data = source.data;
         } }
-        kaku parsed = parser.parse_with_progress(data,state.work);
+        kaku parsed = parser.lower_async(parser.parse_with_progress(data,state.work));
         moshi(progress.cancelled(state.work)){state.failed[0]=hai;state.diagnostic[0]="E_CANCELLED native service request";array.truncate(state.visiting,len(state.visiting)-1);kaesu;}
         moshi (state.analysis_mode) { kaku file_id = len(files); moshi (parsed.root < 0) { file_id = -1; } array.push(state.sources, AnalysisSource { path: file_path, bytes: data, package_path: package_path, file_id: file_id }); }
         moshi (state.analysis_mode) {
@@ -254,6 +254,9 @@ waza load_package(state: PackageState, root: string, requested: string) -> unit 
                 moshi (parser.parse_error_kind_code(problem.kind) == 0) { code = "E0001"; detail = "invalid source token"; }
                 moshi (parser.parse_error_kind_code(problem.kind) == 8) { code = "E_CABI"; detail = "expected a C declaration suffix = c followed by a C symbol string"; }
                 moshi (parser.parse_error_kind_code(problem.kind) == 9) { code = "E_CABI"; detail = "variadic parameters are unsupported"; }
+                moshi (parser.parse_error_kind_code(problem.kind) == 10) { code = "E0801"; detail = "matsu is only valid inside a hidouki function"; }
+                moshi (parser.parse_error_kind_code(problem.kind) == 11) { code = "E0803"; detail = "invalid asynchronous function declaration"; }
+                moshi (parser.parse_error_kind_code(problem.kind) == 12) { code = "E0804"; detail = "an asynchronous entrypoint must be hidouki waza main() -> int64"; }
                 kaku end = problem.position; kaku ti = 0;
                 aida (ti < len(parsed.tokens)) { moshi (parsed.tokens[ti].start.offset == problem.position.offset) { end = parsed.tokens[ti].end; nukeru; } ti = ti + 1; }
                 array.push(state.diagnostics, AnalysisDiagnostic { code: code, path: file_path, span: parser.SourceSpan { start: problem.position, end: end }, detail: detail }); pi = pi + 1;
@@ -263,6 +266,9 @@ waza load_package(state: PackageState, root: string, requested: string) -> unit 
             kaku problem = parsed.errors[0]; kaku code = "E_PARSE"; kaku detail = "invalid source syntax";
             moshi (parser.parse_error_kind_code(problem.kind) == 8) { code = "E_CABI"; detail = "expected a C declaration suffix = c followed by a C symbol string"; }
             moshi (parser.parse_error_kind_code(problem.kind) == 9) { code = "E_CABI"; detail = "variadic parameters are unsupported"; }
+            moshi (parser.parse_error_kind_code(problem.kind) == 10) { code = "E0801"; detail = "matsu is only valid inside a hidouki function"; }
+            moshi (parser.parse_error_kind_code(problem.kind) == 11) { code = "E0803"; detail = "invalid asynchronous function declaration"; }
+            moshi (parser.parse_error_kind_code(problem.kind) == 12) { code = "E0804"; detail = "an asynchronous entrypoint must be hidouki waza main() -> int64"; }
             state.failed[0] = hai; state.diagnostic[0] = diagnostic(code, file_path, problem.position.line, problem.position.column, detail); nukeru;
         }
         moshi (parsed.root < 0 || parsed.root >= len(parsed.ast.nodes)) { index = index + 1; tsuzuku; }
@@ -399,6 +405,15 @@ waza diagnostic(code: string, file: string, line: int64, column: int64, detail: 
 // module has no top-level execution, output files or bootstrap configuration.
 koukai waza compile_source(root: string, entry: string, bunko_root: string) -> FrontendResult {
     kaesu compile_source_target(root, entry, bunko_root, iie);
+}
+
+// Whether the program (with everything it imports) uses the asynchronous runtime package: hidouki / matsu inject an import of kiso/async,
+// and a hand-written import of it is a use of the same runtime. Callers gate this on the target (E0805).
+koukai waza async_requested(root: string, entry: string, bunko_root: string) -> bool {
+    kaku state = source_state(bunko_root, "");
+    load_package(state, root, entry);
+    moshi (state.failed[0]) { kaesu iie; }
+    kaesu contains(state.paths, "kiso/async");
 }
 
 koukai waza compile_source_target(root: string, entry: string, bunko_root: string, allow_c: bool) -> FrontendResult {
