@@ -2,8 +2,10 @@ package typecheck
 
 import (
 	"fmt"
+	"strings"
 
 	"Mio/internal/ast"
+	"Mio/internal/ffi"
 	"Mio/internal/resolver"
 )
 
@@ -49,6 +51,10 @@ func resolveTypeRef(ref *ast.TypeRef) (Kind, error) {
 	}
 
 	switch ref.Name {
+	case "cptr":
+		return KindCPtr, nil
+	case "uint64":
+		return KindUint64, nil
 	case "int8":
 		return KindInt8, nil
 	case "int16":
@@ -106,6 +112,30 @@ func (c *Checker) registerFunctionSignature(
 
 	if fn == nil || fn.Name == nil {
 		return fmt.Errorf("invalid function declaration")
+	}
+	if fn.CABI {
+		params := make([]string, len(fn.Parameters))
+		for i, p := range fn.Parameters {
+			if p.DeclaredType == nil || p.DeclaredType.Element != nil || len(p.DeclaredType.Args) != 0 {
+				return fmt.Errorf("E_FFI_TYPE explicit scalar C parameter required")
+			}
+			params[i] = p.DeclaredType.Name
+		}
+		if fn.ReturnType == nil || fn.ReturnType.Element != nil || len(fn.ReturnType.Args) != 0 || len(fn.TypeParams) != 0 {
+			return fmt.Errorf("E_FFI_TYPE explicit scalar C return required")
+		}
+		if err := ffi.Validate(ffi.Key(fn.CDLL, fn.CSymbol, fn.ReturnType.Name, params), len(params), fn.ReturnType.Name != "unit"); err != nil {
+			return err
+		}
+		if c.cPrototypes == nil {
+			c.cPrototypes = make(map[string]string)
+		}
+		identity := strings.ToLower(fn.CDLL) + "|" + fn.CSymbol
+		prototype := strings.Join(append([]string{fn.ReturnType.Name}, params...), "|")
+		if previous, ok := c.cPrototypes[identity]; ok && previous != prototype {
+			return fmt.Errorf("E_FFI_PROTOTYPE conflicting C export prototypes")
+		}
+		c.cPrototypes[identity] = prototype
 	}
 
 	// 获取函数声明对应的符号

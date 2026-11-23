@@ -1,6 +1,7 @@
 yobu "kiso/array";
 yobu "kiso/string";
 yobu "selfhost/lexer";
+yobu "kiso/encoding/win64c";
 
 waza import_alias(path: string) -> string {
     kaku data = string.to_bytes(path);
@@ -337,6 +338,31 @@ waza parse_function_statement(state: ParserState, exported: bool, start: lexer.P
         advance(state);
         return_type = parse_type(state);
         moshi (return_type < 0) { kaesu -1; }
+    }
+    // c 是声明上下文标记，不增加全局保留关键字。
+    moshi (current_kind(state) == 7) {
+        moshi (return_type < 0 || len(type_parameters) != 0) { add_parse_error(state, ParseErrorKind.InvalidType(), 50); kaesu -1; }
+        advance(state);
+        moshi (current_kind(state) != 2 || current_token(state).literal != "c") { add_parse_error(state, ParseErrorKind.ExpectedToken(), 2); kaesu -1; }
+        advance(state);
+        moshi (current_kind(state) != 5) { add_parse_error(state, ParseErrorKind.ExpectedToken(), 5); kaesu -1; }
+        kaku dll = current_token(state).literal; advance(state);
+        kaku symbol = name;
+        moshi (current_kind(state) == 5) { symbol = current_token(state).literal; advance(state); }
+        moshi (current_kind(state) != 23) { add_parse_error(state, ParseErrorKind.ExpectedToken(), 23); kaesu -1; }
+        kaku end = current_token(state).end; advance(state);
+        kaku types: []string = []; kaku i = 0;
+        aida (i < len(parameters)) {
+            kaku parameter = state.arena.nodes[parameters[i]];
+            kaku type_name = "";
+            moshi (len(parameter.children) == 1) { type_name = state.arena.nodes[parameter.children[0]].text; }
+            array.push(types, type_name); i = i + 1;
+        }
+        kaku metadata = win64c.key(dll, symbol, state.arena.nodes[return_type].text, types);
+        kaku children = empty_children(len(parameters) + 2);
+        array.append_all(children, parameters); array.push(children, return_type);
+        array.push(children, add_node(state.arena, NodeKind.BlockStatement(), "", "", 0, iie, 0, [], SourceSpan { start: start, end: end }));
+        kaesu add_node(state.arena, NodeKind.FunctionStatement(), name, metadata, 0, exported, len(parameters), children, SourceSpan { start: start, end: end });
     }
     moshi (current_kind(state) != 26) {
         add_parse_error(state, ParseErrorKind.ExpectedToken(), 26);

@@ -725,7 +725,7 @@ func (p *Parser) typeArgumentStartsAtPeek() bool {
 
 func looksLikeTypeName(name string) bool {
 	switch name {
-	case "int8", "int16", "int32", "int64", "rune", "uint8", "uint16", "uint32", "float32", "float64", "bool", "string", "unit", "resource", "Map":
+	case "int8", "int16", "int32", "int64", "rune", "uint8", "uint16", "uint32", "float32", "float64", "bool", "string", "unit", "resource", "cptr", "uint64", "Map":
 		return true
 	}
 	return len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z'
@@ -894,7 +894,7 @@ func (p *Parser) parseCallExpression(function ast.Expression) (ast.Expression, e
 
 func isNumericTypeName(name string) bool {
 	switch name {
-	case "int8", "int16", "int32", "int64", "rune", "uint8", "uint16", "uint32", "float32", "float64":
+	case "int8", "int16", "int32", "int64", "rune", "uint8", "uint16", "uint32", "float32", "float64", "uint64", "cptr":
 		return true
 	default:
 		return false
@@ -1297,6 +1297,31 @@ func (p *Parser) parseFunctionStatement() (*ast.FunctionStatement, error) {
 		}
 	}
 
+	// C DLL 声明沿用 waza 签名，但没有 Mio 函数体。
+	if p.peekToken.Type == token.Assign {
+		if returnType == nil || len(typeParams) != 0 {
+			return nil, fmt.Errorf("E_FFI_PROTOTYPE explicit non-generic C prototype required")
+		}
+		p.nextToken()
+		p.nextToken()
+		if p.curToken.Type != token.Ident || p.curToken.Literal != "c" {
+			return nil, fmt.Errorf("E_FFI_ABI expected c DLL declaration")
+		}
+		p.nextToken()
+		if p.curToken.Type != token.String {
+			return nil, fmt.Errorf("E_FFI_DLL expected DLL name")
+		}
+		dll, symbol := p.curToken.Literal, name.Name
+		if p.peekToken.Type == token.String {
+			p.nextToken()
+			symbol = p.curToken.Literal
+		}
+		if p.peekToken.Type != token.Semicolon {
+			return nil, fmt.Errorf("E_FFI_PROTOTYPE expected ';' after C declaration")
+		}
+		p.nextToken()
+		return &ast.FunctionStatement{Name: name, Parameters: params, ReturnType: returnType, Body: &ast.BlockStatement{}, Native: true, CABI: true, CDLL: dll, CSymbol: symbol, Range: ast.Span{Start: start, End: p.curToken.End}}, nil
+	}
 	// 检查函数体左大括号
 	if p.peekToken.Type != token.LBrace {
 		return nil, p.expected("'{'", " after function signature", p.peekToken)

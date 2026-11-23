@@ -169,6 +169,7 @@ koukai waza build_linux_arm64_mochi(data: []uint8, gc_stress: bool) -> NativeBui
 }
 
 waza build_linux_arm64_file(file: mochi.File, gc_stress: bool) -> NativeBuildResult {
+    moshi (mochi.has_win64_c(file)) { kaesu NativeBuildResult { bytes: [], error: "E_FFI_TARGET Windows AMD64 C ABI requires windows-amd64" }; }
     kaku lowered = lower.compile_linux_arm64(file, 1073741824, gc_stress);
     kaku problem = lowered.error;
     moshi (problem != mu) {
@@ -278,6 +279,7 @@ koukai waza build_windows_arm64_mochi(data: []uint8, gc_stress: bool) -> NativeB
 }
 
 waza build_windows_arm64_file(file: mochi.File, gc_stress: bool) -> NativeBuildResult {
+    moshi (mochi.has_win64_c(file)) { kaesu NativeBuildResult { bytes: [], error: "E_FFI_TARGET Windows AMD64 C ABI requires windows-amd64" }; }
     kaku lowered = lower.compile_windows_arm64(file, 1073741824, gc_stress);
     kaku problem = lowered.error;
     moshi (problem != mu) {

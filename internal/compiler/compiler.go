@@ -7,6 +7,7 @@ import (
 	"Mio/internal/ast"
 	"Mio/internal/code"
 	"Mio/internal/diagnostic"
+	"Mio/internal/ffi"
 	"Mio/internal/resolver"
 	"Mio/internal/token"
 	"Mio/internal/value"
@@ -167,6 +168,8 @@ func (c *Compiler) Compile(node ast.Node) error {
 			return err
 		}
 		switch n.Target {
+		case "uint64", "cptr":
+			return nil
 		case "float32":
 			if _, integer := integerTypeCode(n.Source); integer {
 				return c.emit(code.OpIntToFloat32)
@@ -1096,9 +1099,17 @@ func (c *Compiler) registerFunctions(program *ast.Program) error {
 		id := len(c.functions)
 		c.functionIDs[symbol] = id
 		c.functionReturns[symbol] = returnsValue
+		name := fn.Name.Name
+		if fn.CABI {
+			params := make([]string, len(fn.Parameters))
+			for i, p := range fn.Parameters {
+				params[i] = p.DeclaredType.Name
+			}
+			name = ffi.Key(fn.CDLL, fn.CSymbol, fn.ReturnType.Name, params)
+		}
 		c.functions = append(c.functions, CompiledFunction{
 			ID:             id,
-			Name:           fn.Name.Name,
+			Name:           name,
 			ParameterCount: len(fn.Parameters),
 			ReturnsValue:   returnsValue,
 		})

@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 
 	"Mio/internal/code"
 	"Mio/internal/compiler"
@@ -1466,6 +1467,9 @@ func (v *VM) callClosure(functionID int, upvalues []*value.Cell, ip int) error {
 		return fmt.Errorf("call depth limit %d exceeded", MaxCallDepth)
 	}
 	function := v.bytecode.Functions[functionID]
+	if strings.HasPrefix(function.Name, "$win64c|") {
+		return fmt.Errorf("E_FFI_RUNTIME Windows AMD64 C calls require native execution")
+	}
 	if len(v.stack)-v.operandBase() < function.ParameterCount {
 		return fmt.Errorf("stack underflow for OpCall at %d", ip)
 	}

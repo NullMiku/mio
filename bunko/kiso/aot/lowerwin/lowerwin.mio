@@ -4,6 +4,8 @@ yobu "kiso/aot/x86_64";
 yobu "kiso/array";
 yobu "kiso/convert";
 yobu "kiso/encoding/mochi";
+yobu "kiso/encoding/win64c";
+yobu "kiso/aot/win64abi";
 yobu "kiso/string";
 
 // Pure Mio Mochi -> Windows AMD64 PE32+ lowering, scalar subset (no heap, no GC).
@@ -524,7 +526,7 @@ waza emit_block(code: x86_64.Assembler, patches: []pe.Patch, file: mochi.File, a
 }
 
 waza emit_function(code: x86_64.Assembler, patches: []pe.Patch, frames: []pe.FrameFunction, file: mochi.File,
-    analysis: types.TypeAnalysis, index: int64, reachable: bool) -> string {
+    analysis: types.TypeAnalysis, index: int64, reachable: bool, import_slot: int64) -> string {
     kaku function = file.functions[index];
     moshi (!reachable) {
         kaku begin = open_frame(code, function_label(index), 0);
@@ -534,6 +536,7 @@ waza emit_function(code: x86_64.Assembler, patches: []pe.Patch, frames: []pe.Fra
         kaesu "";
     }
     moshi (len(function.captures) != 0) { kaesu string.concat(function.name, ": UNSUPPORTED_CLOSURE"); }
+    moshi (win64c.is_external(function.name)) { win64abi.emit(code, patches, frames, function, function_label(index), import_slot); kaesu ""; }
     moshi (len(function.instructions) == 0) {
         moshi (!native_exit(function.name) || function.parameter_count != 1 || function.returns_value) {
             kaesu string.concat("UNSUPPORTED_NATIVE_FUNCTION ", function.name);
@@ -570,6 +573,9 @@ waza emit_function(code: x86_64.Assembler, patches: []pe.Patch, frames: []pe.Fra
 }
 
 koukai waza compile(file: mochi.File) -> LowerResult {
+    kaku reached = types.reachable_functions(file);
+    kaku plan = win64abi.imports(file, reached, [pe.ImportLibrary { name: "KERNEL32.dll", symbols: ["GetStdHandle", "WriteFile", "ExitProcess"] }]);
+    moshi (plan.error != "") { kaesu failed(plan.error); }
     kaku analysis = types.analyze_types(file);
     kaku code = x86_64.assembler();
     kaku patches: []pe.Patch = [];
@@ -582,10 +588,9 @@ koukai waza compile(file: mochi.File) -> LowerResult {
     x86_64.call(code, "rt.exit");
     emit_epilogue(code);
     close_frame(code, frames, begin, 0);
-    kaku reached = types.reachable_functions(file);
     kaku index = 0;
     aida (index < len(file.functions)) {
-        kaku failure = emit_function(code, patches, frames, file, analysis, index, reached[index]);
+        kaku failure = emit_function(code, patches, frames, file, analysis, index, reached[index], plan.slots[index]);
         moshi (failure != "") { kaesu failed(failure); }
         index = index + 1;
     }
@@ -593,8 +598,9 @@ koukai waza compile(file: mochi.File) -> LowerResult {
     emit_string_constants(code, file);
     kaku assembled = x86_64.assemble(code);
     moshi (assembled.error != "") { kaesu failed(assembled.error); }
+    win64abi.patch_imports(plan, patches);
     kaku image = pe.executable_framed(pe.ImageSpec { text: assembled.bytes, rdata: [], data: [], zero_fill: 8 * file.global_count, entry: 0,
-            imports: [pe.ImportLibrary { name: "KERNEL32.dll", symbols: ["GetStdHandle", "WriteFile", "ExitProcess"] }],
+            imports: plan.libraries,
             patches: patches, unwind: [] }, frames);
     moshi (image.error != mu) { kaesu failed("PE_IMAGE_ERROR"); }
     kaesu LowerResult { bytes: image.bytes, error: "" };

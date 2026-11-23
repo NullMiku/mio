@@ -1,6 +1,7 @@
 yobu "selfhost/progress";
 yobu "kiso/array";
 yobu "selfhost/parser";
+yobu "kiso/encoding/win64c";
 yobu "selfhost/resolver";
 
 waza check_function_literal(env: TypeEnvironment, file_id: int64, node_id: int64) -> int64 {
@@ -47,6 +48,7 @@ waza check_function_literal(env: TypeEnvironment, file_id: int64, node_id: int64
 
 waza check_function_statement(env: TypeEnvironment, file_id: int64, node_id: int64) -> unit {
     kaku node = node_at(env, file_id, node_id);
+    moshi (win64c.is_external(node.extra)) { kaesu; }
     kaku symbol_id = binding_of(env, file_id, node_id);
     kaku signature_index = signature_of(env, symbol_id);
     moshi (signature_index < 0) { kaesu; }

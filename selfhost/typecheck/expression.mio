@@ -837,6 +837,13 @@ waza check_expression(env: TypeEnvironment, file_id: int64, node_id: int64) -> i
         }
         kaku source = check_expression(env, file_id, node.children[1]);
         kaku target = builtin_type(env, node.text);
+        moshi (node.text == "cptr") {
+            kaku zero = node_at(env, file_id, node.children[1]);
+            moshi (parser.node_kind_code(zero.kind) != 5 || zero.integer != 0) { add_type_error(env, TypeErrorKind.InvalidConversion(), "E_FFI_POINTER", file_id, node_id, target, source, "only cptr(0) constructs a native pointer"); kaesu 0; }
+            kaesu set_node_type(env, file_id, node_id, target);
+        }
+        kaku source_code = type_kind_code(env.result.types[source].kind);
+        moshi ((node.text == "uint64" && source_code >= 1 && source_code <= 7) || (node.text == "int64" && source_code == 21)) { kaesu set_node_type(env, file_id, node_id, target); }
         moshi (target == 0 || !is_numeric(env.result, target) || !is_numeric(env.result, source) || target == source) {
             add_type_error(env, TypeErrorKind.InvalidConversion(), "E0302", file_id, node_id, target, source, "invalid numeric conversion");
             kaesu 0;
