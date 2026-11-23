@@ -73,7 +73,10 @@ func repositoryRoot(t testing.TB) string {
 	return root
 }
 
-func parserHarness(paths []string) string {
+func parserHarness(paths []string) string { return parserHarnessMode(paths, false) }
+
+// parserHarnessMode with lower = true emits the tree after the hidouki / matsu lowering instead of the raw parse tree.
+func parserHarnessMode(paths []string, lower bool) string {
 	var source strings.Builder
 	source.WriteString(`
 yobu "kiso/fs";
@@ -120,20 +123,24 @@ waza emit(result: ParseResult) -> unit {
 
 waza emit_path(path: string) -> unit {
     kaku loaded = fs.read_all(path);
-    emit(parse(loaded.data));
+    emit(PARSE_EXPRESSION);
 }
 `)
 	for _, path := range paths {
 		fmt.Fprintf(&source, "emit_path(%s);\n", strconv.Quote(path))
 	}
-	return source.String()
+	text := source.String()
+	if lower {
+		return strings.Replace(text, "PARSE_EXPRESSION", "lower_async(parse(loaded.data))", 1)
+	}
+	return strings.Replace(text, "PARSE_EXPRESSION", "parse(loaded.data)", 1)
 }
 
 func compileParserProgram(t testing.TB, harness string) (*miolang.Environment, *miolang.Program) {
 	t.Helper()
 	root := repositoryRoot(t)
 	directory := t.TempDir()
-	for _, name := range []string{"ast.mio", "cursor.mio", "expression.mio", "statement.mio", "types.mio"} {
+	for _, name := range []string{"ast.mio", "asynclower.mio", "cursor.mio", "expression.mio", "statement.mio", "types.mio"} {
 		content, err := os.ReadFile(filepath.Join(root, "selfhost", "parser", name))
 		if err != nil {
 			t.Fatal(err)
@@ -158,8 +165,12 @@ func compileParserProgram(t testing.TB, harness string) (*miolang.Environment, *
 }
 
 func runMioParser(t testing.TB, paths []string) ([]wireResult, int) {
+	return runMioParserMode(t, paths, false)
+}
+
+func runMioParserMode(t testing.TB, paths []string, lower bool) ([]wireResult, int) {
 	t.Helper()
-	environment, program := compileParserProgram(t, parserHarness(paths))
+	environment, program := compileParserProgram(t, parserHarnessMode(paths, lower))
 	var artifact bytes.Buffer
 	if err := program.Encode(&artifact); err != nil {
 		t.Fatal(err)

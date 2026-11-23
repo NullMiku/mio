@@ -27,10 +27,24 @@ koukai teisu failed = 5;
 teisu inline_limit = 48;
 
 // The executor: a FIFO ready queue (head index in cells[0]), the inline depth (cells[1]), the number of tasks ever started (cells[2]) and
-// the number of steps executed (cells[3]).
+// the number of steps executed (cells[3]), the number of times the executor slept in its poller (cells[4]) and the number of I/O waits the
+// poller woke (cells[5]).
 koukai kata Executor {
     queue: []() -> unit;
     cells: []int64;
+    pollers: []Poller;
+}
+
+// External event source of an executor (the Linux epoll reactor, installed by kiso/async/net). wait registers a one-shot readiness wait
+// on a handle (interest 1 = readable, 2 = writable) and runs `wake` through the ready queue when it fires; block sleeps in the kernel until
+// at least one registered wait fired and enqueues the woken continuations, returning false when no wait is registered (so there is
+// nothing left to wait for); cancel wakes every wait registered on a handle (used before closing it) and returns how many it woke;
+// pending is the number of registered waits that have not fired yet.
+koukai kata Poller {
+    wait: (resource, int64, () -> unit) -> bool;
+    block: () -> bool;
+    cancel: (resource) -> int64;
+    pending: () -> int64;
 }
 
 // The non-generic part of a task. state[0] lifecycle, state[1] how many times the body was started (at most once). exec: empty until
@@ -52,27 +66,51 @@ koukai kata Task<T> {
 }
 
 koukai waza new_executor() -> Executor {
-    kaesu Executor { queue: array.with_capacity[() -> unit](16), cells: [0, 0, 0, 0] };
+    kaesu Executor { queue: array.with_capacity[() -> unit](16), cells: [0, 0, 0, 0, 0, 0], pollers: array.with_capacity[Poller](1) };
 }
 
 koukai waza pending_count(exec: Executor) -> int64 { kaesu len(exec.queue) - exec.cells[0]; }
 koukai waza started_tasks(exec: Executor) -> int64 { kaesu exec.cells[2]; }
 koukai waza steps_run(exec: Executor) -> int64 { kaesu exec.cells[3]; }
+koukai waza poller_sleeps(exec: Executor) -> int64 { kaesu exec.cells[4]; }
+koukai waza io_wakeups(exec: Executor) -> int64 { kaesu exec.cells[5]; }
 
 koukai waza enqueue(exec: Executor, step: () -> unit) -> unit { array.push(exec.queue, step); }
 
-// Takes the oldest ready step; false when the queue is empty. The queue is recycled once it has been drained.
-koukai waza run_one(exec: Executor) -> bool {
+// Drops the already executed prefix of the ready queue once it is at least half of it (and not tiny), so a task graph that always has
+// another step queued cannot keep every executed closure (and what it references) alive: amortized constant work per step.
+waza compact(exec: Executor) -> unit {
     kaku head = exec.cells[0];
-    moshi (head >= len(exec.queue)) {
-        moshi (head > 0) { array.truncate(exec.queue, 0); exec.cells[0] = 0; }
-        kaesu iie;
+    kaku length = len(exec.queue);
+    moshi (head < 256 || head * 2 < length) { kaesu; }
+    kaku live = length - head;
+    kaku index = 0;
+    aida (index < live) {
+        exec.queue[index] = exec.queue[head + index];
+        index = index + 1;
     }
-    kaku step = exec.queue[head];
-    exec.cells[0] = head + 1;
-    exec.cells[3] = exec.cells[3] + 1;
-    step();
-    kaesu hai;
+    array.truncate(exec.queue, live);
+    exec.cells[0] = 0;
+}
+
+// Takes the oldest ready step; false when there is nothing left to run. With an empty queue the executor sleeps in its poller (when one
+// is installed and has registered waits) instead of spinning, then runs what woke. The queue is recycled once it has been drained.
+koukai waza run_one(exec: Executor) -> bool {
+    aida (hai) {
+        kaku head = exec.cells[0];
+        moshi (head < len(exec.queue)) {
+            kaku step = exec.queue[head];
+            exec.cells[0] = head + 1;
+            exec.cells[3] = exec.cells[3] + 1;
+            compact(exec);
+            step();
+            kaesu hai;
+        }
+        moshi (head > 0) { array.truncate(exec.queue, 0); exec.cells[0] = 0; }
+        moshi (len(exec.pollers) == 0) { kaesu iie; }
+        moshi (!exec.pollers[0].block()) { kaesu iie; }
+    }
+    kaesu iie;
 }
 
 // Runs ready steps until none remain. Returns the number of steps executed.
@@ -158,6 +196,28 @@ koukai waza fail<T>(task: Task<T>, message: string) -> bool {
 // Lowering target of `matsu`: runs `next` once `awaited` is done. A done task continues inline (fast path) up to `inline_limit` nested
 // levels and through the ready queue beyond. Otherwise `awaited` joins the awaiter's executor (starting it when cold), the awaiting task is
 // suspended and `next` is registered as a continuation: the awaiting task's whole state is `next`, an ordinary closure.
+// A continuation wrapper that moves the task suspended -> running while `next` executes and back to suspended if `next` suspended it again.
+koukai waza resume_of(self: TaskCore, next: () -> unit) -> () -> unit {
+    kaesu waza () -> unit {
+        moshi (self.state[0] != suspended) { kaesu; }
+        self.state[0] = running;
+        next();
+        moshi (self.state[0] == running) { self.state[0] = suspended; }
+    };
+}
+
+// Suspends the running task until `register` has arranged for the given continuation to be enqueued (an I/O readiness wait). Returns false
+// (and leaves the task running) when `register` fails.
+koukai waza park(self: TaskCore, register: (() -> unit) -> bool, next: () -> unit) -> bool {
+    kaku resume = resume_of(self, next);
+    self.state[0] = suspended;
+    moshi (!register(resume)) {
+        self.state[0] = running;
+        kaesu iie;
+    }
+    kaesu hai;
+}
+
 koukai waza then(self: TaskCore, awaited: TaskCore, next: () -> unit) -> unit {
     kaku exec = self.exec[0];
     moshi (awaited.state[0] >= completed) {
@@ -166,13 +226,7 @@ koukai waza then(self: TaskCore, awaited: TaskCore, next: () -> unit) -> unit {
     }
     attach_core(exec, awaited);
     self.state[0] = suspended;
-    kaku resume = waza () -> unit {
-        moshi (self.state[0] != suspended) { kaesu; }
-        self.state[0] = running;
-        next();
-        moshi (self.state[0] == running) { self.state[0] = suspended; }
-    };
-    array.push(awaited.waiters, resume);
+    array.push(awaited.waiters, resume_of(self, next));
 }
 
 // Runs `next` now when the inline depth allows it, otherwise defers it to the ready queue (loop back edges and fast-path awaits).
